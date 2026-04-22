@@ -8,6 +8,10 @@ size = Vector2(10, 6)
 [node name="Player" type="CharacterBody2D"]
 script = ExtResource("1_player")
 
+[node name="Shadow" type="Polygon2D" parent="."]
+position = Vector2(0, 16)
+color = Color(0, 0, 0, 0.35)
+
 [node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]

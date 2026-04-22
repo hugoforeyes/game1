@@ -1,0 +1,152 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/SceneImporter.gd" id="1_importer"]
+
+[node name="SceneImporter" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_importer")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.0784314, 0.101961, 0.133333, 1)
+
+[node name="Margin" type="MarginContainer" parent="Background"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 64.0
+offset_top = 48.0
+offset_right = -64.0
+offset_bottom = -48.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 18
+theme_override_constants/margin_top = 18
+theme_override_constants/margin_right = 18
+theme_override_constants/margin_bottom = 18
+
+[node name="Panel" type="PanelContainer" parent="Background/Margin"]
+layout_mode = 2
+
+[node name="Content" type="VBoxContainer" parent="Background/Margin/Panel"]
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="Title" type="Label" parent="Background/Margin/Panel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 28
+text = "Scene Package Importer"
+
+[node name="Subtitle" type="Label" parent="Background/Margin/Panel/Content"]
+layout_mode = 2
+autowrap_mode = 3
+text = "Upload a zip that contains scene_package.json and its referenced images. You can also upload a custom character sprite before entering the map."
+
+[node name="PackageSection" type="VBoxContainer" parent="Background/Margin/Panel/Content"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="PackageHeading" type="Label" parent="Background/Margin/Panel/Content/PackageSection"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "1. Scene zip"
+
+[node name="PackageHelp" type="Label" parent="Background/Margin/Panel/Content/PackageSection"]
+layout_mode = 2
+autowrap_mode = 3
+text = "Paste the full zip path here or use Browse."
+
+[node name="PackagePathRow" type="HBoxContainer" parent="Background/Margin/Panel/Content/PackageSection"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="PackageValue" type="LineEdit" parent="Background/Margin/Panel/Content/PackageSection/PackagePathRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+placeholder_text = "Paste zip path here, or browse"
+
+[node name="ChoosePackage" type="Button" parent="Background/Margin/Panel/Content/PackageSection/PackagePathRow"]
+layout_mode = 2
+text = "Browse"
+
+[node name="SpriteSection" type="VBoxContainer" parent="Background/Margin/Panel/Content"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="SpriteHeading" type="Label" parent="Background/Margin/Panel/Content/SpriteSection"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "2. Character sprite"
+
+[node name="SpriteHelp" type="Label" parent="Background/Margin/Panel/Content/SpriteSection"]
+layout_mode = 2
+autowrap_mode = 3
+text = "Optional. Paste a sprite path here or browse. A 4x4 directional sheet works best, but a single image still loads."
+
+[node name="SpritePathRow" type="HBoxContainer" parent="Background/Margin/Panel/Content/SpriteSection"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="SpriteValue" type="LineEdit" parent="Background/Margin/Panel/Content/SpriteSection/SpritePathRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+placeholder_text = "Optional sprite path, or browse"
+
+[node name="ChooseSprite" type="Button" parent="Background/Margin/Panel/Content/SpriteSection/SpritePathRow"]
+layout_mode = 2
+text = "Browse"
+
+[node name="Status" type="Label" parent="Background/Margin/Panel/Content"]
+layout_mode = 2
+autowrap_mode = 3
+text = "Choose a scene zip to build the map. Character sprite upload is optional."
+
+[node name="Actions" type="HBoxContainer" parent="Background/Margin/Panel/Content"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="ImportButton" type="Button" parent="Background/Margin/Panel/Content/Actions"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Import and play"
+
+[node name="DefaultButton" type="Button" parent="Background/Margin/Panel/Content/Actions"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Use built-in scene"
+
+[node name="PackageDialog" type="FileDialog" parent="."]
+title = "Choose scene zip"
+file_mode = 0
+access = 2
+use_native_dialog = false
+size = Vector2i(980, 620)
+min_size = Vector2i(860, 520)
+
+[node name="SpriteDialog" type="FileDialog" parent="."]
+title = "Choose character sprite"
+file_mode = 0
+access = 2
+use_native_dialog = false
+size = Vector2i(980, 620)
+min_size = Vector2i(860, 520)
+
+[connection signal="text_changed" from="Background/Margin/Panel/Content/PackageSection/PackagePathRow/PackageValue" to="." method="_on_package_value_text_changed"]
+[connection signal="pressed" from="Background/Margin/Panel/Content/PackageSection/PackagePathRow/ChoosePackage" to="." method="_on_choose_package_pressed"]
+[connection signal="text_changed" from="Background/Margin/Panel/Content/SpriteSection/SpritePathRow/SpriteValue" to="." method="_on_sprite_value_text_changed"]
+[connection signal="pressed" from="Background/Margin/Panel/Content/SpriteSection/SpritePathRow/ChooseSprite" to="." method="_on_choose_sprite_pressed"]
+[connection signal="pressed" from="Background/Margin/Panel/Content/Actions/ImportButton" to="." method="_on_import_button_pressed"]
+[connection signal="pressed" from="Background/Margin/Panel/Content/Actions/DefaultButton" to="." method="_on_default_button_pressed"]
+[connection signal="file_selected" from="PackageDialog" to="." method="_on_package_dialog_file_selected"]
+[connection signal="file_selected" from="SpriteDialog" to="." method="_on_sprite_dialog_file_selected"]

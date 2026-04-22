@@ -2,41 +2,47 @@ extends CharacterBody2D
 
 const SPEED_WALK := 144.0
 const SPEED_RUN  := 252.0
-const SHEET_PATH := "res://assets/sprites/player/godot_sheet.png"
-const H_FRAMES := 4
-const V_FRAMES := 4
 const FPS := 8.0
+const SORT_FEET_OFFSET := 14
 
 @onready var camera: Camera2D = $Camera2D
 @onready var anim_sprite: AnimatedSprite2D = $AnimatedSprite2D
+@onready var shadow: Polygon2D = $Shadow
 
-var _last_anim := "walk_down"
+var _last_anim: String = "walk_down"
 
 func _ready() -> void:
-	camera.limit_left = 0
-	camera.limit_top = 0
-	camera.limit_right = 32 * 36   # 1152px
-	camera.limit_bottom = 32 * 36 # 1152px
+	_setup_shadow()
 	_setup_sprite_frames()
 
+func _setup_shadow() -> void:
+	var rx: float = 10.0  # bán kính ngang
+	var ry: float = 4.0   # bán kính dọc (dẹt xuống trông như bóng)
+	var segments: int = 16
+	var points: PackedVector2Array = PackedVector2Array()
+	for i in segments:
+		var angle: float = (TAU / segments) * i
+		points.append(Vector2(cos(angle) * rx, sin(angle) * ry))
+	shadow.polygon = points
+
 func _setup_sprite_frames() -> void:
-	var texture := load(SHEET_PATH) as Texture2D
+	var sprite_path: String = GameManager.get_player_sprite_path()
+	var texture: Texture2D = GameManager.load_texture(sprite_path)
 	if texture == null:
-		push_error("Spritesheet not found: " + SHEET_PATH)
+		push_error("Spritesheet not found: " + sprite_path)
 		return
 
-	var frame_w := texture.get_width()  / H_FRAMES
-	var frame_h := texture.get_height() / V_FRAMES
-
-	# Row order matches the sheet: down=0, up=1, right=2, left=3
-	var anim_rows := {
+	var anim_rows: Dictionary = {
 		"walk_down":  0,
 		"walk_up":    1,
 		"walk_right": 2,
 		"walk_left":  3,
 	}
+	var grid: Vector2i = GameManager.infer_player_sprite_grid(texture, sprite_path)
+	var frame_w: int = texture.get_width() / grid.x
+	var frame_h: int = texture.get_height() / grid.y
 
-	var frames := SpriteFrames.new()
+	var frames: SpriteFrames = SpriteFrames.new()
 	frames.remove_animation("default")
 
 	for anim_name: String in anim_rows:
@@ -44,8 +50,10 @@ func _setup_sprite_frames() -> void:
 		frames.add_animation(anim_name)
 		frames.set_animation_speed(anim_name, FPS)
 		frames.set_animation_loop(anim_name, true)
-		for col in H_FRAMES:
-			var atlas := AtlasTexture.new()
+		if grid.y == 1:
+			row = 0
+		for col in grid.x:
+			var atlas: AtlasTexture = AtlasTexture.new()
 			atlas.atlas = texture
 			atlas.region = Rect2(col * frame_w, row * frame_h, frame_w, frame_h)
 			frames.add_frame(anim_name, atlas)
@@ -54,10 +62,11 @@ func _setup_sprite_frames() -> void:
 	anim_sprite.play(_last_anim)
 
 func _physics_process(_delta: float) -> void:
-	var direction := Input.get_vector("move_left", "move_right", "move_up", "move_down")
-	var speed := SPEED_RUN if Input.is_action_pressed("run") else SPEED_WALK
+	var direction: Vector2 = Input.get_vector("move_left", "move_right", "move_up", "move_down")
+	var speed: float = SPEED_RUN if Input.is_action_pressed("run") else SPEED_WALK
 	velocity = direction * speed
 	move_and_slide()
+	z_index = int(global_position.y + SORT_FEET_OFFSET)
 	_update_animation(direction)
 
 func _update_animation(direction: Vector2) -> void:
