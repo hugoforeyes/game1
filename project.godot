@@ -16,7 +16,7 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 config/name="TopDownRPG"
 config/description="Top-down 2D RPG pixel game"
-run/main_scene="res://scenes/ui/SceneImporter.tscn"
+run/main_scene="res://scenes/ui/StartScene.tscn"
 config/features=PackedStringArray("4.6")
 config/icon="res://icon.svg"
 
