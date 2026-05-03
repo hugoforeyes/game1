@@ -1,0 +1,19 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/npc/NPCController.gd" id="1_controller"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_npc"]
+size = Vector2(10, 6)
+
+[node name="NPC" type="CharacterBody2D"]
+script = ExtResource("1_controller")
+
+[node name="Shadow" type="Polygon2D" parent="."]
+position = Vector2(0, 16)
+color = Color(0, 0, 0, 0.35)
+
+[node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+position = Vector2(0, 14)
+shape = SubResource("RectangleShape2D_npc")
