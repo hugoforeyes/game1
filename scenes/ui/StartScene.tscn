@@ -1,6 +1,7 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://scripts/ui/StartScene.gd" id="1_start"]
+[ext_resource type="Texture2D" path="res://assets/ui/start_scene_background.png" id="2_bg"]
 
 [node name="StartScene" type="Control"]
 layout_mode = 3
@@ -20,6 +21,16 @@ grow_horizontal = 2
 grow_vertical = 2
 color = Color(0.0196078, 0.0117647, 0.0588235, 1)
 
+[node name="BackgroundImage" type="TextureRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+texture = ExtResource("2_bg")
+stretch_mode = 6
+
 [node name="Vignette" type="ColorRect" parent="."]
 layout_mode = 1
 anchors_preset = 15
@@ -27,7 +38,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-color = Color(0.02, 0.01, 0.05, 0.42)
+color = Color(0.02, 0.01, 0.05, 0.22)
 mouse_filter = 2
 
 [node name="Scanlines" type="ColorRect" parent="."]
@@ -48,7 +59,7 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 
-[node name="Center" type="CenterContainer" parent="Ui"]
+[node name="MenuLayer" type="Control" parent="Ui"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -56,125 +67,85 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 
-[node name="Column" type="VBoxContainer" parent="Ui/Center"]
-layout_mode = 2
-alignment = 1
-theme_override_constants/separation = 46
-
-[node name="TitleWrap" type="VBoxContainer" parent="Ui/Center/Column"]
+[node name="Menu" type="VBoxContainer" parent="Ui/MenuLayer"]
 modulate = Color(1, 1, 1, 0)
-layout_mode = 2
-alignment = 1
+layout_mode = 0
+offset_left = 187.0
+offset_top = 138.0
+offset_right = 293.0
+offset_bottom = 199.0
+theme_override_constants/separation = 4
 
-[node name="TitleLine1" type="Label" parent="Ui/Center/Column/TitleWrap"]
-layout_mode = 2
-theme_override_colors/font_color = Color(0.929412, 0.847059, 0.529412, 1)
-theme_override_colors/font_shadow_color = Color(0.160784, 0.0470588, 0, 0.75)
-theme_override_constants/shadow_offset_x = 5
-theme_override_constants/shadow_offset_y = 5
-theme_override_font_sizes/font_size = 56
-text = "ONE LIFE"
-horizontal_alignment = 1
-
-[node name="Divider" type="Label" parent="Ui/Center/Column/TitleWrap"]
-layout_mode = 2
-theme_override_colors/font_color = Color(0.784314, 0.627451, 0.27451, 0.45)
-theme_override_font_sizes/font_size = 16
-text = "· ◆ ·"
-horizontal_alignment = 1
-
-[node name="TitleLine2" type="Label" parent="Ui/Center/Column/TitleWrap"]
-layout_mode = 2
-theme_override_colors/font_color = Color(0.788235, 0.658824, 0.360784, 1)
-theme_override_colors/font_shadow_color = Color(0.117647, 0.0392157, 0, 0.65)
-theme_override_constants/shadow_offset_x = 4
-theme_override_constants/shadow_offset_y = 4
-theme_override_font_sizes/font_size = 40
-text = "ONE WORLD"
-horizontal_alignment = 1
-
-[node name="Subtitle" type="Label" parent="Ui/Center/Column/TitleWrap"]
-layout_mode = 2
-theme_override_colors/font_color = Color(0.705882, 0.568627, 0.333333, 0.42)
-theme_override_font_sizes/font_size = 10
-text = "A PIXEL FANTASY ADVENTURE"
-horizontal_alignment = 1
-
-[node name="Menu" type="VBoxContainer" parent="Ui/Center/Column"]
-modulate = Color(1, 1, 1, 0)
-layout_mode = 2
-theme_override_constants/separation = 2
-
-[node name="NewGameButton" type="Button" parent="Ui/Center/Column/Menu"]
-custom_minimum_size = Vector2(360, 48)
+[node name="NewGameButton" type="Button" parent="Ui/MenuLayer/Menu"]
+custom_minimum_size = Vector2(106, 17)
 layout_mode = 2
 focus_mode = 2
-theme_override_colors/font_color = Color(0.82, 0.73, 0.51, 0.55)
-theme_override_colors/font_focus_color = Color(0.96, 0.88, 0.5, 1)
-theme_override_colors/font_hover_color = Color(0.96, 0.88, 0.5, 1)
-theme_override_colors/font_pressed_color = Color(0.96, 0.88, 0.5, 1)
-theme_override_font_sizes/font_size = 18
+theme_override_colors/font_color = Color(0.82, 0.73, 0.51, 0.78)
+theme_override_colors/font_focus_color = Color(0.98, 0.93, 0.78, 1)
+theme_override_colors/font_hover_color = Color(0.98, 0.93, 0.78, 1)
+theme_override_colors/font_pressed_color = Color(0.98, 0.93, 0.78, 1)
+theme_override_font_sizes/font_size = 9
 flat = true
-text = "   NEW GAME"
-alignment = 0
+text = "NEW GAME"
+alignment = 1
 
-[node name="Cursor" type="Label" parent="Ui/Center/Column/Menu/NewGameButton"]
+[node name="Cursor" type="Label" parent="Ui/MenuLayer/Menu/NewGameButton"]
 visible = false
 layout_mode = 0
-offset_left = 2.0
-offset_top = 10.0
-offset_right = 22.0
-offset_bottom = 34.0
+offset_left = 8.0
+offset_top = 2.0
+offset_right = 20.0
+offset_bottom = 14.0
 theme_override_colors/font_color = Color(0.909804, 0.752941, 0.313726, 1)
-theme_override_font_sizes/font_size = 16
+theme_override_font_sizes/font_size = 8
 text = "▶"
 
-[node name="ContinueButton" type="Button" parent="Ui/Center/Column/Menu"]
-custom_minimum_size = Vector2(360, 48)
+[node name="ContinueButton" type="Button" parent="Ui/MenuLayer/Menu"]
+custom_minimum_size = Vector2(106, 17)
 layout_mode = 2
 focus_mode = 2
-theme_override_colors/font_color = Color(0.82, 0.73, 0.51, 0.55)
-theme_override_colors/font_focus_color = Color(0.96, 0.88, 0.5, 1)
-theme_override_colors/font_hover_color = Color(0.96, 0.88, 0.5, 1)
-theme_override_colors/font_pressed_color = Color(0.96, 0.88, 0.5, 1)
-theme_override_font_sizes/font_size = 18
+theme_override_colors/font_color = Color(0.82, 0.73, 0.51, 0.78)
+theme_override_colors/font_focus_color = Color(0.98, 0.93, 0.78, 1)
+theme_override_colors/font_hover_color = Color(0.98, 0.93, 0.78, 1)
+theme_override_colors/font_pressed_color = Color(0.98, 0.93, 0.78, 1)
+theme_override_font_sizes/font_size = 9
 flat = true
-text = "   CONTINUE"
-alignment = 0
+text = "CONTINUE"
+alignment = 1
 
-[node name="Cursor" type="Label" parent="Ui/Center/Column/Menu/ContinueButton"]
+[node name="Cursor" type="Label" parent="Ui/MenuLayer/Menu/ContinueButton"]
 visible = false
 layout_mode = 0
-offset_left = 2.0
-offset_top = 10.0
-offset_right = 22.0
-offset_bottom = 34.0
+offset_left = 8.0
+offset_top = 2.0
+offset_right = 20.0
+offset_bottom = 14.0
 theme_override_colors/font_color = Color(0.909804, 0.752941, 0.313726, 1)
-theme_override_font_sizes/font_size = 16
+theme_override_font_sizes/font_size = 8
 text = "▶"
 
-[node name="SettingsButton" type="Button" parent="Ui/Center/Column/Menu"]
-custom_minimum_size = Vector2(360, 48)
+[node name="SettingsButton" type="Button" parent="Ui/MenuLayer/Menu"]
+custom_minimum_size = Vector2(106, 17)
 layout_mode = 2
 focus_mode = 2
-theme_override_colors/font_color = Color(0.82, 0.73, 0.51, 0.55)
-theme_override_colors/font_focus_color = Color(0.96, 0.88, 0.5, 1)
-theme_override_colors/font_hover_color = Color(0.96, 0.88, 0.5, 1)
-theme_override_colors/font_pressed_color = Color(0.96, 0.88, 0.5, 1)
-theme_override_font_sizes/font_size = 18
+theme_override_colors/font_color = Color(0.82, 0.73, 0.51, 0.78)
+theme_override_colors/font_focus_color = Color(0.98, 0.93, 0.78, 1)
+theme_override_colors/font_hover_color = Color(0.98, 0.93, 0.78, 1)
+theme_override_colors/font_pressed_color = Color(0.98, 0.93, 0.78, 1)
+theme_override_font_sizes/font_size = 9
 flat = true
-text = "   SETTINGS"
-alignment = 0
+text = "SETTINGS"
+alignment = 1
 
-[node name="Cursor" type="Label" parent="Ui/Center/Column/Menu/SettingsButton"]
+[node name="Cursor" type="Label" parent="Ui/MenuLayer/Menu/SettingsButton"]
 visible = false
 layout_mode = 0
-offset_left = 2.0
-offset_top = 10.0
-offset_right = 22.0
-offset_bottom = 34.0
+offset_left = 8.0
+offset_top = 2.0
+offset_right = 20.0
+offset_bottom = 14.0
 theme_override_colors/font_color = Color(0.909804, 0.752941, 0.313726, 1)
-theme_override_font_sizes/font_size = 16
+theme_override_font_sizes/font_size = 8
 text = "▶"
 
 [node name="PressKey" type="Label" parent="."]
@@ -533,12 +504,12 @@ use_native_dialog = false
 size = Vector2i(980, 620)
 min_size = Vector2i(860, 520)
 
-[connection signal="focus_entered" from="Ui/Center/Column/Menu/NewGameButton" to="." method="_on_menu_focus_entered"]
-[connection signal="pressed" from="Ui/Center/Column/Menu/NewGameButton" to="." method="_on_new_game_pressed"]
-[connection signal="focus_entered" from="Ui/Center/Column/Menu/ContinueButton" to="." method="_on_menu_focus_entered"]
-[connection signal="pressed" from="Ui/Center/Column/Menu/ContinueButton" to="." method="_on_continue_pressed"]
-[connection signal="focus_entered" from="Ui/Center/Column/Menu/SettingsButton" to="." method="_on_menu_focus_entered"]
-[connection signal="pressed" from="Ui/Center/Column/Menu/SettingsButton" to="." method="_on_settings_pressed"]
+[connection signal="focus_entered" from="Ui/MenuLayer/Menu/NewGameButton" to="." method="_on_menu_focus_entered"]
+[connection signal="pressed" from="Ui/MenuLayer/Menu/NewGameButton" to="." method="_on_new_game_pressed"]
+[connection signal="focus_entered" from="Ui/MenuLayer/Menu/ContinueButton" to="." method="_on_menu_focus_entered"]
+[connection signal="pressed" from="Ui/MenuLayer/Menu/ContinueButton" to="." method="_on_continue_pressed"]
+[connection signal="focus_entered" from="Ui/MenuLayer/Menu/SettingsButton" to="." method="_on_menu_focus_entered"]
+[connection signal="pressed" from="Ui/MenuLayer/Menu/SettingsButton" to="." method="_on_settings_pressed"]
 [connection signal="pressed" from="SettingsOverlay/Center/Wrap/Panel/Margin/Content/MusicRow/ValueWrap/DownButton" to="." method="_on_music_down_pressed"]
 [connection signal="pressed" from="SettingsOverlay/Center/Wrap/Panel/Margin/Content/MusicRow/ValueWrap/UpButton" to="." method="_on_music_up_pressed"]
 [connection signal="pressed" from="SettingsOverlay/Center/Wrap/Panel/Margin/Content/SfxRow/ValueWrap/DownButton" to="." method="_on_sfx_down_pressed"]

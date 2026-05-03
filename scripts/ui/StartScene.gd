@@ -11,22 +11,15 @@ var music_value: int = 8
 var sfx_value: int = 10
 var scanlines_enabled: bool = true
 
-var mouse_parallax: Vector2 = Vector2.ZERO
-var mouse_target: Vector2 = Vector2.ZERO
 var flash_timer: float = 0.0
 
-var stars: Array[Dictionary] = []
-var worlds: Array[Dictionary] = []
-var nebulae: Array[Dictionary] = []
-
-@onready var bg: ColorRect = $Background
+@onready var bg: TextureRect = $BackgroundImage
 @onready var vignette: ColorRect = $Vignette
 @onready var scanlines: ColorRect = $Scanlines
-@onready var title_wrap: VBoxContainer = $Ui/Center/Column/TitleWrap
-@onready var menu: VBoxContainer = $Ui/Center/Column/Menu
-@onready var new_game_button: Button = $Ui/Center/Column/Menu/NewGameButton
-@onready var continue_button: Button = $Ui/Center/Column/Menu/ContinueButton
-@onready var settings_button: Button = $Ui/Center/Column/Menu/SettingsButton
+@onready var menu: VBoxContainer = $Ui/MenuLayer/Menu
+@onready var new_game_button: Button = $Ui/MenuLayer/Menu/NewGameButton
+@onready var continue_button: Button = $Ui/MenuLayer/Menu/ContinueButton
+@onready var settings_button: Button = $Ui/MenuLayer/Menu/SettingsButton
 @onready var press_key: Label = $PressKey
 @onready var version_label: Label = $Version
 @onready var settings_overlay: Control = $SettingsOverlay
@@ -44,7 +37,6 @@ var nebulae: Array[Dictionary] = []
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_PASS
-	_build_background_data()
 	package_dialog.filters = PackedStringArray(["*.zip ; Zip archives"])
 	sprite_dialog.filters = PackedStringArray(["*.png,*.jpg,*.jpeg,*.webp ; Image files"])
 	_apply_visual_styles()
@@ -57,14 +49,8 @@ func _ready() -> void:
 	get_viewport().size_changed.connect(_on_viewport_resized)
 
 func _process(delta: float) -> void:
-	mouse_parallax = mouse_parallax.lerp(mouse_target, 1.0 - pow(0.001, delta))
-
 	var time: float = Time.get_ticks_msec() * 0.001
-	title_wrap.modulate.a = clampf(title_wrap.modulate.a + delta * 1.5, 0.0, 1.0)
 	menu.modulate.a = clampf(menu.modulate.a + delta * 1.1, 0.0, 1.0)
-
-	title_wrap.position.y = 0.0 + sin(time * 1.2) * 4.0
-	menu.position.y = 0.0 + sin(time * 0.9) * 2.0
 
 	press_key.modulate.a = 0.35 + (sin(time * 2.2) * 0.5 + 0.5) * 0.35
 	scanlines.modulate.a = 0.12 if scanlines_enabled else 0.0
@@ -74,51 +60,6 @@ func _process(delta: float) -> void:
 		flash_label.modulate.a = min(flash_timer * 3.0, 1.0)
 	else:
 		flash_label.modulate.a = max(flash_label.modulate.a - delta * 4.0, 0.0)
-
-	queue_redraw()
-
-func _draw() -> void:
-	var viewport_size: Vector2 = get_viewport_rect().size
-	var center: Vector2 = viewport_size * 0.5
-	var time: float = Time.get_ticks_msec() * 0.001
-
-	for nebula in nebulae:
-		var pos: Vector2 = Vector2(nebula["fx"] * viewport_size.x, nebula["fy"] * viewport_size.y)
-		pos += Vector2(sin(time * nebula["sx"] + nebula["phase"]), cos(time * nebula["sy"] + nebula["phase"])) * nebula["drift"]
-		draw_circle(pos, nebula["radius"] * min(viewport_size.x, viewport_size.y), nebula["color"])
-
-	for star in stars:
-		var star_pos: Vector2 = Vector2(star["x"] * viewport_size.x, star["y"] * viewport_size.y)
-		star_pos += Vector2(mouse_parallax.x * star["layer"] * -28.0, mouse_parallax.y * star["layer"] * -18.0)
-		star_pos.x = wrapf(star_pos.x, 0.0, viewport_size.x)
-		star_pos.y = wrapf(star_pos.y, 0.0, viewport_size.y)
-
-		var twinkle: float = 0.45 + 0.55 * sin(time * star["speed"] + star["phase"])
-		var color: Color = star["color"]
-		color.a = 0.25 + 0.75 * twinkle
-		var star_size: float = star["size"]
-		draw_rect(Rect2(star_pos.floor(), Vector2.ONE * star_size), color, true)
-
-	for world in worlds:
-		var angle: float = world["phase"] + time * world["speed"]
-		var world_pos: Vector2 = center
-		world_pos.x += cos(angle) * world["orbit_rx"] * viewport_size.x
-		world_pos.y += sin(angle) * world["orbit_ry"] * viewport_size.y
-		world_pos += Vector2(mouse_parallax.x * world["layer"] * -28.0, mouse_parallax.y * world["layer"] * -18.0)
-
-		var radius: float = world["size"]
-		var glow: Color = Color(world["glow"].r, world["glow"].g, world["glow"].b, 0.14)
-		draw_circle(world_pos, radius * 1.2, glow)
-		draw_circle(world_pos, radius, world["base"])
-		draw_circle(world_pos + Vector2(-radius * 0.18, -radius * 0.18), radius * 0.72, world["mid"])
-		draw_circle(world_pos + Vector2(radius * 0.12, radius * 0.1), radius * 0.42, world["highlight"])
-
-func _gui_input(event: InputEvent) -> void:
-	if event is InputEventMouseMotion:
-		var viewport_size: Vector2 = get_viewport_rect().size
-		if viewport_size.x > 0.0 and viewport_size.y > 0.0:
-			mouse_target.x = ((event.position.x / viewport_size.x) - 0.5) * 2.0
-			mouse_target.y = ((event.position.y / viewport_size.y) - 0.5) * 2.0
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel"):
@@ -131,38 +72,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 
-func _build_background_data() -> void:
-	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
-	rng.randomize()
-
-	stars.clear()
-	for i in range(340):
-		var warm: bool = rng.randf() < 0.3
-		stars.append({
-			"x": rng.randf(),
-			"y": rng.randf(),
-			"size": 2.0 if rng.randf() < 0.12 else 1.0,
-			"phase": rng.randf() * TAU,
-			"speed": 1.2 + rng.randf() * 3.8,
-			"layer": rng.randf() * 0.6 + 0.1,
-			"color": Color(0.91, 0.85, 0.63, 1.0) if warm else Color(0.66, 0.75, 0.86, 1.0),
-		})
-
-	nebulae = [
-		{"fx": 0.18, "fy": 0.28, "radius": 0.38, "color": Color(0.22, 0.06, 0.47, 0.06), "sx": 0.18, "sy": 0.22, "phase": 0.8, "drift": 18.0},
-		{"fx": 0.76, "fy": 0.62, "radius": 0.32, "color": Color(0.06, 0.14, 0.43, 0.07), "sx": 0.21, "sy": 0.19, "phase": 1.7, "drift": 15.0},
-		{"fx": 0.48, "fy": 0.82, "radius": 0.28, "color": Color(0.32, 0.06, 0.31, 0.05), "sx": 0.14, "sy": 0.16, "phase": 2.3, "drift": 12.0},
-	]
-
-	worlds = [
-		{"size": 54.0, "orbit_rx": 0.30, "orbit_ry": 0.20, "speed": 0.17, "phase": 0.0, "layer": 0.25, "base": Color(0.10, 0.29, 0.19), "mid": Color(0.22, 0.48, 0.20), "highlight": Color(0.50, 0.73, 0.41), "glow": Color(0.31, 0.78, 0.38)},
-		{"size": 40.0, "orbit_rx": 0.36, "orbit_ry": 0.17, "speed": -0.13, "phase": 1.26, "layer": 0.37, "base": Color(0.42, 0.06, 0.00), "mid": Color(0.78, 0.19, 0.00), "highlight": Color(0.96, 0.54, 0.25), "glow": Color(0.96, 0.34, 0.12)},
-		{"size": 48.0, "orbit_rx": 0.28, "orbit_ry": 0.22, "speed": 0.10, "phase": 2.51, "layer": 0.49, "base": Color(0.10, 0.23, 0.42), "mid": Color(0.29, 0.56, 0.75), "highlight": Color(0.87, 0.95, 1.00), "glow": Color(0.54, 0.76, 0.95)},
-		{"size": 35.0, "orbit_rx": 0.40, "orbit_ry": 0.15, "speed": -0.16, "phase": 3.77, "layer": 0.61, "base": Color(0.48, 0.25, 0.06), "mid": Color(0.85, 0.54, 0.13), "highlight": Color(0.96, 0.83, 0.46), "glow": Color(0.93, 0.63, 0.23)},
-		{"size": 44.0, "orbit_rx": 0.32, "orbit_ry": 0.18, "speed": 0.08, "phase": 5.03, "layer": 0.73, "base": Color(0.04, 0.10, 0.38), "mid": Color(0.12, 0.24, 0.72), "highlight": Color(0.32, 0.44, 0.91), "glow": Color(0.22, 0.38, 0.96)},
-	]
-
 func _apply_visual_styles() -> void:
+	var empty_box: StyleBoxEmpty = StyleBoxEmpty.new()
 	var panel_box: StyleBoxFlat = StyleBoxFlat.new()
 	panel_box.bg_color = PANEL_BG
 	panel_box.border_color = PANEL_BORDER
@@ -230,6 +141,17 @@ func _apply_visual_styles() -> void:
 		button.add_theme_stylebox_override("focus", button_hover)
 		button.add_theme_color_override("font_color", Color(0.91, 0.75, 0.31, 1.0))
 
+	var menu_buttons: Array[Button] = [
+		new_game_button,
+		continue_button,
+		settings_button,
+	]
+	for button in menu_buttons:
+		button.add_theme_stylebox_override("normal", empty_box)
+		button.add_theme_stylebox_override("hover", empty_box)
+		button.add_theme_stylebox_override("pressed", empty_box)
+		button.add_theme_stylebox_override("focus", empty_box)
+
 	var input_fields: Array[LineEdit] = [package_value, sprite_value]
 	for field in input_fields:
 		field.add_theme_stylebox_override("normal", line_edit_box)
@@ -270,6 +192,11 @@ func _show_flash(message: String) -> void:
 	flash_timer = 1.8
 
 func _open_importer() -> void:
+	scene_zip_path = ""
+	character_sprite_path = ""
+	GameManager.reset_runtime_imports(true)
+	_refresh_import_ui()
+	_set_status("Choose a new scene zip and optional character sprite.")
 	importer_overlay.show()
 	package_value.grab_focus()
 

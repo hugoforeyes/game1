@@ -1,0 +1,126 @@
+# TopDownRPG
+
+## Export To Web
+
+### Quick Start
+
+You can export and serve the web build with one command:
+
+```bash
+/Users/dinhhuynh/Documents/GameV1/run_web.sh
+```
+
+Or choose a different port:
+
+```bash
+/Users/dinhhuynh/Documents/GameV1/run_web.sh 8001
+```
+
+### 1. Install Godot export templates
+
+This project uses Godot `4.6.1`.
+
+In Godot editor:
+
+`Editor` -> `Manage Export Templates`
+
+Install the templates for `4.6.1` before exporting.
+
+### 2. Export the project
+
+Run from the project root:
+
+```bash
+cd /Users/dinhhuynh/Documents/GameV1
+mkdir -p exports/web
+/Applications/Godot.app/Contents/MacOS/Godot --headless --path /Users/dinhhuynh/Documents/GameV1 --export-release Web exports/web/index.html
+```
+
+If export succeeds, these files should exist in `/Users/dinhhuynh/Documents/GameV1/exports/web`:
+
+- `index.html`
+- `index.js`
+- `index.wasm`
+- `index.pck`
+
+### 3. Run the web build locally
+
+Serve the exported folder, not the project root:
+
+```bash
+cd /Users/dinhhuynh/Documents/GameV1/exports/web
+python3 -m http.server 8000
+```
+
+Open:
+
+- [http://localhost:8000](http://localhost:8000)
+
+If port `8000` is already in use, use another port:
+
+```bash
+python3 -m http.server 8001
+```
+
+Then open:
+
+- [http://localhost:8001](http://localhost:8001)
+
+## Common Problems
+
+### Browser shows a directory listing
+
+You started the server from the wrong folder.
+
+Wrong:
+
+```bash
+cd /Users/dinhhuynh/Documents/GameV1
+python3 -m http.server 8000
+```
+
+Correct:
+
+```bash
+cd /Users/dinhhuynh/Documents/GameV1/exports/web
+python3 -m http.server 8000
+```
+
+### `Address already in use`
+
+Another local server is already using that port.
+
+Either:
+
+```bash
+python3 -m http.server 8001
+```
+
+Or stop the old process:
+
+```bash
+lsof -i :8000
+kill <PID>
+```
+
+### Export fails because templates are missing
+
+Install Godot export templates from:
+
+`Editor` -> `Manage Export Templates`
+
+### Intro video on web
+
+This project includes a custom web intro flow.
+
+When you export for web, the file `assets/intro/intro.webm` is copied into the exported folder by the plugin in:
+
+- [addons/intro_copy/export_plugin.gd](/Users/dinhhuynh/Documents/GameV1/addons/intro_copy/export_plugin.gd)
+
+So after export you should also see:
+
+- `intro.webm`
+
+inside:
+
+- `/Users/dinhhuynh/Documents/GameV1/exports/web`
