@@ -1,6 +1,9 @@
 extends Node
 
 const TILE_SIZE := 36
+const CHARACTER_SHEET_SIZE := Vector2i(144, 144)
+const CHARACTER_SPRITE_GRID := Vector2i(4, 4)
+const CHARACTER_FRAME_SIZE := TILE_SIZE
 const DEFAULT_PLAYER_SPRITE_PATH := "res://assets/sprites/player/godot_sheet.png"
 const IMPORT_ROOT_DIR := "user://imports"
 const SCENE_IMPORT_DIR := "user://imports/scene_package"
@@ -82,31 +85,22 @@ func import_scene_package_zip(zip_path: String) -> Error:
 	if typeof(parsed_data) != TYPE_DICTIONARY:
 		return ERR_PARSE_ERROR
 
-	var package_data: Dictionary = parsed_data as Dictionary
-	if not package_data.has("background_image"):
-		return ERR_INVALID_DATA
-	if not package_data.has("definitions"):
-		return ERR_INVALID_DATA
-	if not package_data.has("instances"):
-		return ERR_INVALID_DATA
-
 	var scene_root_dir: String = scene_json_path.get_base_dir()
-	var background_path: String = scene_root_dir.path_join(str(package_data.get("background_image", "")))
-	if not FileAccess.file_exists(background_path):
-		return ERR_FILE_NOT_FOUND
-
-	for definition in package_data.get("definitions", []):
-		if not (definition is Dictionary):
-			continue
-		var file_name: String = str(definition.get("file", ""))
-		if file_name.is_empty():
-			return ERR_INVALID_DATA
-		if not FileAccess.file_exists(scene_root_dir.path_join(file_name)):
-			return ERR_FILE_NOT_FOUND
-
-	imported_scene_package = package_data
-	imported_scene_root_dir = scene_root_dir
+	var load_error: Error = _apply_scene_package(parsed_data as Dictionary, scene_root_dir)
+	if load_error != OK:
+		return load_error
 	return OK
+
+func load_scene_package_file(scene_json_path: String) -> Error:
+	var json_file: FileAccess = FileAccess.open(scene_json_path, FileAccess.READ)
+	if json_file == null:
+		return FileAccess.get_open_error()
+
+	var parsed_data: Variant = JSON.parse_string(json_file.get_as_text())
+	if typeof(parsed_data) != TYPE_DICTIONARY:
+		return ERR_PARSE_ERROR
+
+	return _apply_scene_package(parsed_data as Dictionary, scene_json_path.get_base_dir())
 
 func import_player_sprite(sprite_path: String) -> Error:
 	_remove_tree(PLAYER_IMPORT_DIR)
@@ -124,6 +118,8 @@ func import_player_sprite(sprite_path: String) -> Error:
 	var image_error: Error = source_image.load(sprite_path)
 	if image_error != OK:
 		return image_error
+	if source_image.get_size() != CHARACTER_SHEET_SIZE:
+		return ERR_INVALID_DATA
 
 	var destination_path: String = PLAYER_IMPORT_DIR.path_join("player_sprite.%s" % extension)
 	var destination_file: FileAccess = FileAccess.open(destination_path, FileAccess.WRITE)
@@ -221,14 +217,15 @@ func get_blocked_tiles(package_data: Dictionary) -> Dictionary:
 
 	return blocked_tiles
 
-func infer_player_sprite_grid(texture: Texture2D, texture_path: String) -> Vector2i:
+func get_character_sprite_grid(texture: Texture2D, texture_path := "") -> Vector2i:
 	if texture == null:
-		return Vector2i(1, 1)
-	if texture_path == DEFAULT_PLAYER_SPRITE_PATH:
-		return Vector2i(4, 4)
-	if texture.get_width() % 4 == 0 and texture.get_height() % 4 == 0:
-		return Vector2i(4, 4)
-	return Vector2i(1, 1)
+		return CHARACTER_SPRITE_GRID
+	if Vector2i(texture.get_width(), texture.get_height()) != CHARACTER_SHEET_SIZE:
+		push_warning("Character spritesheet should be 144x144 px: %s" % texture_path)
+	return CHARACTER_SPRITE_GRID
+
+func infer_player_sprite_grid(texture: Texture2D, texture_path: String) -> Vector2i:
+	return get_character_sprite_grid(texture, texture_path)
 
 func _definitions_by_id(package_data: Dictionary) -> Dictionary:
 	var definitions: Dictionary = {}
@@ -236,6 +233,71 @@ func _definitions_by_id(package_data: Dictionary) -> Dictionary:
 		if definition is Dictionary:
 			definitions[str(definition.get("id", ""))] = definition
 	return definitions
+
+func _apply_scene_package(package_data: Dictionary, scene_root_dir: String) -> Error:
+	if not package_data.has("background_image"):
+		return ERR_INVALID_DATA
+	if not package_data.has("definitions"):
+		return ERR_INVALID_DATA
+	if not package_data.has("instances"):
+		return ERR_INVALID_DATA
+
+	var background_path: String = scene_root_dir.path_join(str(package_data.get("background_image", "")))
+	if not FileAccess.file_exists(background_path):
+		return ERR_FILE_NOT_FOUND
+
+	for definition in package_data.get("definitions", []):
+		if not (definition is Dictionary):
+			continue
+		var file_name: String = str(definition.get("file", ""))
+		if file_name.is_empty():
+			return ERR_INVALID_DATA
+		if not FileAccess.file_exists(scene_root_dir.path_join(file_name)):
+			return ERR_FILE_NOT_FOUND
+
+	var characters: Dictionary = package_data.get("characters", {}) as Dictionary
+	var main_character: Dictionary = characters.get("main_character", {}) as Dictionary
+	var main_sprite_file: String = str(main_character.get("sprite_sheet_file", ""))
+	if not main_sprite_file.is_empty():
+		var main_sprite_error: Error = _validate_character_sprite_file(scene_root_dir.path_join(main_sprite_file))
+		if main_sprite_error != OK:
+			return main_sprite_error
+
+	for npc in characters.get("npcs", []):
+		if not (npc is Dictionary):
+			continue
+		var sprite_file: String = str((npc as Dictionary).get("sprite_sheet_file", ""))
+		if sprite_file.is_empty():
+			continue
+		var sprite_error: Error = _validate_character_sprite_file(scene_root_dir.path_join(sprite_file))
+		if sprite_error != OK:
+			return sprite_error
+
+	imported_scene_package = package_data
+	imported_scene_root_dir = scene_root_dir
+	if not main_sprite_file.is_empty():
+		imported_player_sprite_path = scene_root_dir.path_join(main_sprite_file)
+	return OK
+
+func _validate_character_sprite_file(sprite_path: String) -> Error:
+	if not FileAccess.file_exists(sprite_path):
+		return ERR_FILE_NOT_FOUND
+
+	if sprite_path.begins_with("res://"):
+		var texture: Texture2D = load(sprite_path) as Texture2D
+		if texture == null:
+			return ERR_FILE_CANT_OPEN
+		if Vector2i(texture.get_width(), texture.get_height()) != CHARACTER_SHEET_SIZE:
+			return ERR_INVALID_DATA
+		return OK
+
+	var image: Image = Image.new()
+	var image_error: Error = image.load(sprite_path)
+	if image_error != OK:
+		return image_error
+	if image.get_size() != CHARACTER_SHEET_SIZE:
+		return ERR_INVALID_DATA
+	return OK
 
 func _blocked_tiles_has(blocked_tiles: Dictionary, tile: Vector2i) -> bool:
 	return blocked_tiles.has(_tile_key(tile))

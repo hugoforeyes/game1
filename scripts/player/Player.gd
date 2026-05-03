@@ -3,7 +3,6 @@ extends CharacterBody2D
 const SPEED_WALK := 144.0
 const SPEED_RUN  := 252.0
 const FPS := 8.0
-const SORT_FEET_OFFSET := 14
 
 @onready var camera: Camera2D = $Camera2D
 @onready var anim_sprite: AnimatedSprite2D = $AnimatedSprite2D
@@ -39,8 +38,7 @@ func _setup_sprite_frames() -> void:
 		"walk_left":  3,
 	}
 	var grid: Vector2i = GameManager.infer_player_sprite_grid(texture, sprite_path)
-	var frame_w: int = texture.get_width() / grid.x
-	var frame_h: int = texture.get_height() / grid.y
+	var frame_size: int = GameManager.CHARACTER_FRAME_SIZE
 
 	var frames: SpriteFrames = SpriteFrames.new()
 	frames.remove_animation("default")
@@ -50,12 +48,10 @@ func _setup_sprite_frames() -> void:
 		frames.add_animation(anim_name)
 		frames.set_animation_speed(anim_name, FPS)
 		frames.set_animation_loop(anim_name, true)
-		if grid.y == 1:
-			row = 0
 		for col in grid.x:
 			var atlas: AtlasTexture = AtlasTexture.new()
 			atlas.atlas = texture
-			atlas.region = Rect2(col * frame_w, row * frame_h, frame_w, frame_h)
+			atlas.region = Rect2(col * frame_size, row * frame_size, frame_size, frame_size)
 			frames.add_frame(anim_name, atlas)
 
 	anim_sprite.sprite_frames = frames
@@ -66,7 +62,6 @@ func _physics_process(_delta: float) -> void:
 	var speed: float = SPEED_RUN if Input.is_action_pressed("run") else SPEED_WALK
 	velocity = direction * speed
 	move_and_slide()
-	z_index = int(global_position.y + SORT_FEET_OFFSET)
 	_update_animation(direction)
 
 func _update_animation(direction: Vector2) -> void:

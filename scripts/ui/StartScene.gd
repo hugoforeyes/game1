@@ -4,12 +4,15 @@ const MENU_DEFAULT_COLOR := Color(0.82, 0.73, 0.51, 0.55)
 const MENU_ACTIVE_COLOR := Color(0.96, 0.88, 0.50, 1.0)
 const PANEL_BG := Color(0.03, 0.02, 0.09, 0.93)
 const PANEL_BORDER := Color(0.78, 0.61, 0.24, 0.35)
+const NEW_GAME_SCENE_PACKAGE_URL := "http://127.0.0.1:5001/api/godot/runs/20260425_072136/chapters/1/scenes/zone_01/scene-package.zip"
+const NEW_GAME_DOWNLOAD_PATH := "user://downloads/scene-package.zip"
 
 var scene_zip_path: String = ""
 var character_sprite_path: String = ""
 var music_value: int = 8
 var sfx_value: int = 10
 var scanlines_enabled: bool = true
+var is_loading_new_game: bool = false
 
 var flash_timer: float = 0.0
 
@@ -212,7 +215,64 @@ func _close_settings() -> void:
 	settings_button.grab_focus()
 
 func _on_new_game_pressed() -> void:
-	_open_importer()
+	if is_loading_new_game:
+		return
+
+	is_loading_new_game = true
+	new_game_button.disabled = true
+	_show_flash("— DOWNLOADING SCENE —")
+
+	GameManager.reset_runtime_imports(true)
+	var download_error: Error = await _download_scene_package(NEW_GAME_SCENE_PACKAGE_URL, NEW_GAME_DOWNLOAD_PATH)
+	if download_error != OK:
+		is_loading_new_game = false
+		new_game_button.disabled = false
+		_show_flash("— DOWNLOAD FAILED —")
+		_set_status("Could not download the scene package: %s" % error_string(download_error), true)
+		return
+
+	var import_error: Error = GameManager.import_scene_package_zip(NEW_GAME_DOWNLOAD_PATH)
+	if import_error != OK:
+		is_loading_new_game = false
+		new_game_button.disabled = false
+		_show_flash("— SCENE LOAD FAILED —")
+		_set_status("Could not import the downloaded scene package: %s" % error_string(import_error), true)
+		return
+
+	get_tree().change_scene_to_file(GameManager.WORLD_SCENE_PATH)
+
+func _download_scene_package(url: String, output_path: String) -> Error:
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output_path.get_base_dir()))
+
+	var request: HTTPRequest = HTTPRequest.new()
+	request.timeout = 30.0
+	add_child(request)
+
+	var request_error: Error = request.request(url)
+	if request_error != OK:
+		request.queue_free()
+		return request_error
+
+	var response: Array = await request.request_completed
+	request.queue_free()
+
+	var result: int = int(response[0])
+	var response_code: int = int(response[1])
+	var body: PackedByteArray = response[3] as PackedByteArray
+	if result != HTTPRequest.RESULT_SUCCESS:
+		return ERR_CANT_CONNECT
+	if response_code < 200 or response_code >= 300:
+		return ERR_FILE_CANT_READ
+	if body.is_empty():
+		return ERR_FILE_CORRUPT
+
+	var output_file: FileAccess = FileAccess.open(output_path, FileAccess.WRITE)
+	if output_file == null:
+		return FileAccess.get_open_error()
+
+	output_file.store_buffer(body)
+	output_file.flush()
+	return OK
 
 func _on_continue_pressed() -> void:
 	_show_flash("— NO SAVE FOUND —")

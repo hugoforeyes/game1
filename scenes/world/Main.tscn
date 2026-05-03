@@ -14,10 +14,19 @@ position = Vector2(576, 576)
 texture = ExtResource("2_background")
 centered = true
 
-[node name="Player" parent="World" instance=ExtResource("1_player")]
+[node name="GeneratedProps" type="Node2D" parent="World"]
+
+[node name="CharacterLayer" type="Node2D" parent="World"]
+z_index = 1
+
+[node name="GeneratedCharacters" type="Node2D" parent="World/CharacterLayer"]
+y_sort_enabled = true
+
+[node name="Player" parent="World/CharacterLayer/GeneratedCharacters" instance=ExtResource("1_player")]
 position = Vector2(576, 576)
 
-[node name="GeneratedProps" type="Node2D" parent="World"]
+[node name="GeneratedPropTops" type="Node2D" parent="World"]
+z_index = 2
 
 [node name="GeneratedCollisions" type="Node2D" parent="World"]
 
