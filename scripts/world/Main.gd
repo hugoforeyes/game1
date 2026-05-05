@@ -42,10 +42,13 @@ func _build_imported_world() -> void:
 		_create_instance_sprite(definition, tile_position)
 
 		if bool(definition.get("solid", false)):
+			# Use the full composite sprite for hull tracing; base_file is only the floor layer
+			var hull_file: String = str(definition.get("file", definition.get("base_file", "")))
 			solid_instances.append({
 				"definition_id": instance_id,
 				"position_tile": position_tile,
 				"size_tiles": definition.get("size_tiles", {}),
+				"sprite_file": hull_file,
 			})
 
 	var characters: Dictionary = package_data.get("characters", {}) as Dictionary

@@ -27,6 +27,25 @@ func initialize(
 	_spawn_instance_lights(world_node, package_data, map_pixel_size)
 	_spawn_occluders(occluder_parent, solid_instances)
 
+func _ready() -> void:
+	add_to_group("lighting")
+
+func get_dominant_light_pos(char_pos: Vector2) -> Vector2:
+	var best_pos   := Vector2.ZERO
+	var best_score := -INF
+	for i in _lights.size():
+		var light: PointLight2D = _lights[i]
+		if not is_instance_valid(light):
+			continue
+		var dist: float = char_pos.distance_to(light.global_position)
+		if dist < 1.0:
+			dist = 1.0
+		var score: float = (light.energy * light.texture_scale) / dist
+		if score > best_score:
+			best_score = score
+			best_pos   = light.global_position
+	return best_pos
+
 func cleanup() -> void:
 	for n in _dynamic_nodes:
 		if is_instance_valid(n):
@@ -210,28 +229,90 @@ func _build_light(cfg: Dictionary, pixel_pos: Vector2) -> PointLight2D:
 func _spawn_occluders(parent: Node2D, solid_instances: Array[Dictionary]) -> void:
 	for info in solid_instances:
 		var def_id := str(info.get("definition_id", ""))
-		# Skip objects that are also light sources
 		if not _light_config(def_id, "").is_empty():
 			continue
 		var pos_tile:   Dictionary = info.get("position_tile", {}) as Dictionary
 		var size_tiles: Dictionary = info.get("size_tiles", {}) as Dictionary
 		var tw: int = max(int(size_tiles.get("w", 1)), 1)
 		var th: int = max(int(size_tiles.get("h", 1)), 1)
-		# Only cast shadows from large objects (area >= 4 tiles)
-		# Small furniture (benches, crates, signs) block too much light near sources
 		if tw * th < 4:
 			continue
-		_add_occluder(
-			parent,
-			int(pos_tile.get("x", 0)),
-			int(pos_tile.get("y", 0)),
-			tw, th,
-		)
+		var tx: int = int(pos_tile.get("x", 0))
+		var ty: int = int(pos_tile.get("y", 0))
 
-func _add_occluder(parent: Node2D, tx: int, ty: int, tw: int, th: int) -> void:
+		var sprite_file: String = str(info.get("sprite_file", ""))
+		var hull: PackedVector2Array = _pixel_hull_for_sprite(sprite_file)
+		if hull.size() >= 3:
+			_add_occluder_hull(parent, tx, ty, hull)
+		else:
+			_add_occluder_rect(parent, tx, ty, tw, th)
+
+func _pixel_hull_for_sprite(sprite_file: String) -> PackedVector2Array:
+	if sprite_file.is_empty():
+		return PackedVector2Array()
+	var full_path := GameManager.get_scene_asset_path(sprite_file)
+	var tex: Texture2D = GameManager.load_texture(full_path)
+	if tex == null:
+		return PackedVector2Array()
+	var img: Image = tex.get_image()
+	if img == null or img.get_width() == 0 or img.get_height() == 0:
+		return PackedVector2Array()
+	if img.get_format() >= Image.FORMAT_DXT1:
+		return PackedVector2Array()
+	return _convex_hull_of_opaque(img)
+
+func _convex_hull_of_opaque(img: Image) -> PackedVector2Array:
+	var w := img.get_width()
+	var h := img.get_height()
+	# Sample ~24 steps per axis — enough resolution without too many hull points
+	var step: int = max(int(min(w, h) / 24), 1)
+	var pts: Array[Vector2] = []
+	for y in range(0, h, step):
+		for x in range(0, w, step):
+			if img.get_pixel(x, y).a > 0.15:
+				pts.append(Vector2(x, y))
+	if pts.size() < 3:
+		return PackedVector2Array()
+	return _convex_hull(pts)
+
+# Gift-wrapping (Jarvis march) convex hull on a list of 2-D points.
+func _convex_hull(pts: Array[Vector2]) -> PackedVector2Array:
+	var n := pts.size()
+	if n < 3:
+		return PackedVector2Array(pts)
+	# Find leftmost (then topmost) point as start
+	var start := 0
+	for i in range(1, n):
+		if pts[i].x < pts[start].x or (pts[i].x == pts[start].x and pts[i].y < pts[start].y):
+			start = i
+	var hull: Array[Vector2] = []
+	var cur := start
+	while true:
+		hull.append(pts[cur])
+		var nxt := (cur + 1) % n
+		for i in range(n):
+			if i == cur:
+				continue
+			# Negative cross product → pts[i] is more counter-clockwise
+			if (pts[nxt] - pts[cur]).cross(pts[i] - pts[cur]) < 0.0:
+				nxt = i
+		cur = nxt
+		if cur == start or hull.size() > n:
+			break
+	return PackedVector2Array(hull)
+
+func _add_occluder_hull(parent: Node2D, tx: int, ty: int, hull: PackedVector2Array) -> void:
 	var occ  := LightOccluder2D.new()
 	var poly := OccluderPolygon2D.new()
-	# Inset by 4px so shadows don't start at the very pixel edge of the object
+	poly.polygon = hull
+	occ.occluder = poly
+	occ.position = Vector2(float(tx) * TILE_SIZE, float(ty) * TILE_SIZE)
+	parent.add_child(occ)
+	_dynamic_nodes.append(occ)
+
+func _add_occluder_rect(parent: Node2D, tx: int, ty: int, tw: int, th: int) -> void:
+	var occ  := LightOccluder2D.new()
+	var poly := OccluderPolygon2D.new()
 	const INSET := 4.0
 	var pw := float(tw) * TILE_SIZE - INSET * 2.0
 	var ph := float(th) * TILE_SIZE - INSET * 2.0

@@ -9,10 +9,12 @@ const FPS := 8.0
 @onready var shadow: Polygon2D = $Shadow
 
 var _last_anim: String = "walk_down"
+var _lighting_sys: Node = null
 
 func _ready() -> void:
 	_setup_shadow()
 	_setup_sprite_frames()
+	_lighting_sys = get_tree().get_first_node_in_group("lighting")
 
 func _setup_shadow() -> void:
 	var rx: float = 10.0  # bán kính ngang
@@ -63,6 +65,27 @@ func _physics_process(_delta: float) -> void:
 	velocity = direction * speed
 	move_and_slide()
 	_update_animation(direction)
+	_update_shadow()
+
+func _update_shadow() -> void:
+	if _lighting_sys == null or not is_instance_valid(_lighting_sys):
+		_lighting_sys = get_tree().get_first_node_in_group("lighting")
+	if _lighting_sys == null:
+		return
+	var light_pos: Vector2 = _lighting_sys.get_dominant_light_pos(global_position)
+	if light_pos == Vector2.ZERO:
+		shadow.position = Vector2(0.0, 14.0)
+		shadow.rotation = 0.0
+		shadow.modulate.a = 0.35
+		return
+	var to_char: Vector2 = global_position - light_pos
+	var dist: float = to_char.length()
+	var dir: Vector2 = to_char.normalized() if dist > 1.0 else Vector2(0.0, 1.0)
+	var tile_dist: float = dist / 36.0
+	var offset_px: float = clampf(tile_dist * 1.8, 2.0, 12.0)
+	shadow.position = Vector2(0.0, 14.0) + dir * offset_px
+	shadow.rotation = dir.angle()
+	shadow.modulate.a = clampf(0.65 - tile_dist * 0.04, 0.15, 0.60)
 
 func _update_animation(direction: Vector2) -> void:
 	if direction == Vector2.ZERO:

@@ -41,6 +41,7 @@ var previous_position := Vector2.ZERO
 var stuck_timer: float = 0.0
 var erratic_returning_to_anchor: bool = false
 var last_facing: String = "down"
+var _lighting_sys: Node = null
 
 func setup(data: Dictionary, world_context: Dictionary) -> void:
 	npc_data = data
@@ -59,6 +60,7 @@ func setup(data: Dictionary, world_context: Dictionary) -> void:
 	global_position = target_position
 	speed = max(float(movement.get("speed", speed)), 0.0)
 	path_tiles = _read_path_tiles(movement.get("path_tiles", []))
+	_lighting_sys = get_tree().get_first_node_in_group("lighting")
 	_setup_shadow()
 	_setup_sprite_frames()
 	_start_behavior()
@@ -78,6 +80,27 @@ func _physics_process(delta: float) -> void:
 			velocity = Vector2.ZERO
 
 	_update_animation()
+	_update_shadow()
+
+func _update_shadow() -> void:
+	if _lighting_sys == null or not is_instance_valid(_lighting_sys):
+		_lighting_sys = get_tree().get_first_node_in_group("lighting")
+	if _lighting_sys == null:
+		return
+	var light_pos: Vector2 = _lighting_sys.get_dominant_light_pos(global_position)
+	if light_pos == Vector2.ZERO:
+		shadow.position = Vector2(0.0, 14.0)
+		shadow.rotation = 0.0
+		shadow.modulate.a = 0.35
+		return
+	var to_char: Vector2 = global_position - light_pos
+	var dist: float = to_char.length()
+	var dir: Vector2 = to_char.normalized() if dist > 1.0 else Vector2(0.0, 1.0)
+	var tile_dist: float = dist / 36.0
+	var offset_px: float = clampf(tile_dist * 1.8, 2.0, 12.0)
+	shadow.position = Vector2(0.0, 14.0) + dir * offset_px
+	shadow.rotation = dir.angle()
+	shadow.modulate.a = clampf(0.65 - tile_dist * 0.04, 0.15, 0.60)
 
 func _setup_shadow() -> void:
 	var rx: float = 10.0
