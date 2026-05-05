@@ -4,7 +4,7 @@ const MENU_DEFAULT_COLOR := Color(0.82, 0.73, 0.51, 0.55)
 const MENU_ACTIVE_COLOR := Color(0.96, 0.88, 0.50, 1.0)
 const PANEL_BG := Color(0.03, 0.02, 0.09, 0.93)
 const PANEL_BORDER := Color(0.78, 0.61, 0.24, 0.35)
-const NEW_GAME_SCENE_PACKAGE_URL := "http://127.0.0.1:5001/api/godot/runs/20260425_072136/chapters/1/scenes/zone_01/scene-package.zip"
+const NEW_GAME_SCENE_PACKAGE_URL := "http://127.0.0.1:5001/api/godot/runs/20260425_072136/chapters/1/scenes/zone_02/scene-package.zip"
 const NEW_GAME_DOWNLOAD_PATH := "user://downloads/scene-package.zip"
 
 var scene_zip_path: String = ""

@@ -8,6 +8,7 @@ const NPC_SCENE := preload("res://scenes/npc/NPC.tscn")
 @onready var generated_characters: Node2D = $World/CharacterLayer/GeneratedCharacters
 @onready var generated_prop_tops: Node2D = $World/GeneratedPropTops
 @onready var generated_collisions: Node2D = $World/GeneratedCollisions
+@onready var lighting_system: Node = $LightingSystem
 
 func _ready() -> void:
 	if GameManager.has_scene_package():
@@ -28,6 +29,7 @@ func _build_imported_world() -> void:
 		background.position = background.texture.get_size() / 2.0
 
 	var definitions: Dictionary = _definitions_by_id(package_data)
+	var solid_instances: Array[Dictionary] = []
 	for instance in package_data.get("instances", []):
 		if not (instance is Dictionary):
 			continue
@@ -38,6 +40,13 @@ func _build_imported_world() -> void:
 		var tile_position: Vector2i = Vector2i(int(position_tile.get("x", 0)), int(position_tile.get("y", 0)))
 
 		_create_instance_sprite(definition, tile_position)
+
+		if bool(definition.get("solid", false)):
+			solid_instances.append({
+				"definition_id": instance_id,
+				"position_tile": position_tile,
+				"size_tiles": definition.get("size_tiles", {}),
+			})
 
 	var characters: Dictionary = package_data.get("characters", {}) as Dictionary
 	var npc_occupied_tiles: Dictionary = {}
@@ -59,6 +68,9 @@ func _build_imported_world() -> void:
 	player.global_position = _tile_to_pixel_center(spawn_tile)
 	player.z_index = 0
 	_apply_background_limits(background.texture)
+
+	var map_pixel_size: Vector2 = GameManager.get_map_pixel_size(package_data, background.texture)
+	lighting_system.initialize($World, package_data, map_pixel_size, generated_props, solid_instances)
 
 func _apply_background_limits(texture: Texture2D) -> void:
 	if texture == null:
@@ -278,6 +290,7 @@ func _metadata_tags(metadata: Dictionary) -> Array[String]:
 	return tags
 
 func _clear_generated_content() -> void:
+	lighting_system.cleanup()
 	for child in generated_props.get_children():
 		child.queue_free()
 	for child in generated_characters.get_children():
