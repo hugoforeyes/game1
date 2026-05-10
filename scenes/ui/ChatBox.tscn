@@ -1,0 +1,39 @@
+[gd_scene format=3 uid="uid://chatbox"]
+
+[ext_resource type="Script" path="res://scripts/ui/ChatBox.gd" id="1"]
+[ext_resource type="Texture2D" path="res://assets/ui/chatbox_panel.png" id="2"]
+[ext_resource type="Texture2D" path="res://assets/ui/chatbox_gem.png" id="3"]
+[ext_resource type="Texture2D" path="res://assets/ui/chatbox_portrait_bg.png" id="4"]
+[ext_resource type="Texture2D" path="res://assets/ui/chatbox_portrait_fg.png" id="5"]
+[ext_resource type="Texture2D" path="res://assets/ui/chatbox_npc_portrait.png" id="6"]
+
+[node name="ChatBox" type="CanvasLayer"]
+script = ExtResource("1")
+
+[node name="Panel" type="TextureRect" parent="."]
+texture = ExtResource("2")
+expand_mode = 1
+stretch_mode = 5
+
+[node name="PortraitBg" type="TextureRect" parent="."]
+texture = ExtResource("4")
+expand_mode = 1
+stretch_mode = 5
+
+[node name="PortraitClip" type="Control" parent="."]
+clip_contents = true
+
+[node name="NpcPortrait" type="TextureRect" parent="PortraitClip"]
+texture = ExtResource("6")
+expand_mode = 1
+stretch_mode = 5
+
+[node name="PortraitFg" type="TextureRect" parent="."]
+texture = ExtResource("5")
+expand_mode = 1
+stretch_mode = 5
+
+[node name="Gem" type="TextureRect" parent="."]
+texture = ExtResource("3")
+expand_mode = 1
+stretch_mode = 5

@@ -2,6 +2,7 @@ extends CharacterBody2D
 
 const SpeechBubble       := preload("res://scripts/npc/SpeechBubble.gd")
 const InteractionPrompt  := preload("res://scripts/npc/InteractionPrompt.gd")
+const ChatBoxScene       := preload("res://scenes/ui/ChatBox.tscn")
 const FPS := 8.0
 const BUBBLE_FULL_TILES  := 2.5
 const BUBBLE_FADE_TILES  := 4.0
@@ -132,7 +133,11 @@ func _setup_interaction() -> void:
 	_prompt.item_confirmed.connect(_on_interaction_item_confirmed)
 
 func _on_interaction_item_confirmed(item: String, _index: int) -> void:
-	print("[NPC] %s → %s" % [str(npc_data.get("name", "")), item])
+	if item == "Talk":
+		var chatbox: Node = ChatBoxScene.instantiate()
+		get_tree().root.add_child(chatbox)
+		chatbox.open(str(npc_data.get("name", "")), npc_data)
+		_prompt.hide_prompt()
 
 func _update_interaction() -> void:
 	if not _interaction_enabled or _player == null or not is_instance_valid(_player):
