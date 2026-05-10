@@ -1,7 +1,10 @@
 extends CharacterBody2D
 
-const SpeechBubble := preload("res://scripts/npc/SpeechBubble.gd")
+const SpeechBubble       := preload("res://scripts/npc/SpeechBubble.gd")
+const InteractionPrompt  := preload("res://scripts/npc/InteractionPrompt.gd")
 const FPS := 8.0
+const BUBBLE_FULL_TILES  := 2.5
+const BUBBLE_FADE_TILES  := 4.0
 const ARRIVE_DISTANCE := 2.0
 const STUCK_DISTANCE_EPSILON := 0.75
 const STUCK_TIME_LIMIT := 0.8
@@ -44,6 +47,14 @@ var erratic_returning_to_anchor: bool = false
 var last_facing: String = "down"
 var _lighting_sys: Node = null
 var _bubble: Node2D = null
+var _prompt: Node2D = null
+var _prompt_layer: CanvasLayer = null
+var _player: Node2D = null
+var _bubble_lines: Array = []
+var _bubble_showing: bool = false
+var _interaction_enabled: bool = false
+var _interaction_radius: float = 1.5
+var _in_interaction_range: bool = false
 
 func setup(data: Dictionary, world_context: Dictionary) -> void:
 	npc_data = data
@@ -53,6 +64,7 @@ func setup(data: Dictionary, world_context: Dictionary) -> void:
 	blocked_tiles = (world_context.get("blocked_tiles", {}) as Dictionary).duplicate()
 	occupied_tiles = (world_context.get("occupied_tiles", {}) as Dictionary).duplicate()
 	tile_metadata = (world_context.get("tile_metadata", {}) as Dictionary).duplicate(true)
+	_player = world_context.get("player") as Node2D
 	current_tile = _read_tile_position(data)
 	anchor_tile = _read_tile_position(movement.get("anchor_tile", {}) as Dictionary)
 	if anchor_tile == Vector2i.ZERO:
@@ -67,48 +79,15 @@ func setup(data: Dictionary, world_context: Dictionary) -> void:
 	_setup_sprite_frames()
 	_start_behavior()
 	_setup_bubble()
+	_setup_interaction()
 
 func _setup_bubble() -> void:
-	var npc_id := str(npc_data.get("id", ""))
-	if npc_id.is_empty():
+	_bubble_lines = (npc_data.get("interaction", {}) as Dictionary).get("lines", []) as Array
+	if _bubble_lines.is_empty():
 		return
-
 	_bubble = SpeechBubble.new()
 	_bubble.position = Vector2(0.0, -24.0)
 	add_child(_bubble)
-
-	_fetch_bubble(npc_id)
-
-func _fetch_bubble(npc_id: String) -> void:
-	var ctx := GameManager.get_scene_context()
-	var body := JSON.stringify({
-		"run_id": ctx.get("run_id", ""),
-		"chapter": ctx.get("chapter", 1),
-		"zone_id": ctx.get("zone_id", ""),
-		"npc_id": npc_id,
-		"player_state": {"distance_tiles": 2, "has_interacted_before": false},
-		"force": false
-	})
-
-	var request := HTTPRequest.new()
-	add_child(request)
-	request.request(
-		GameManager.API_BASE_URL + "/api/npc-bubbles/generate",
-		PackedStringArray(["Content-Type: application/json"]),
-		HTTPClient.METHOD_POST, body
-	)
-	var response: Array = await request.request_completed
-	request.queue_free()
-
-	if not is_instance_valid(_bubble):
-		return
-	var result: int = int(response[0])
-	var code: int = int(response[1])
-	if result != HTTPRequest.RESULT_SUCCESS or code < 200 or code >= 300:
-		return
-	var parsed: Variant = JSON.parse_string((response[3] as PackedByteArray).get_string_from_utf8())
-	if parsed is Dictionary and bool((parsed as Dictionary).get("show", false)):
-		_bubble.show_text(str((parsed as Dictionary).get("line", "")))
 
 func _physics_process(delta: float) -> void:
 	match state:
@@ -126,6 +105,80 @@ func _physics_process(delta: float) -> void:
 
 	_update_animation()
 	_update_shadow()
+	_update_bubble_alpha()
+	_update_interaction()
+
+func _setup_interaction() -> void:
+	var inter := npc_data.get("interaction", {}) as Dictionary
+	_interaction_enabled = bool(inter.get("enabled", false))
+	if not _interaction_enabled:
+		return
+	_interaction_radius = float(inter.get("proximity_radius_tiles", 1.5))
+	_prompt_layer = CanvasLayer.new()
+	_prompt_layer.layer = 128
+	add_child(_prompt_layer)
+	_prompt = InteractionPrompt.new()
+	_prompt_layer.add_child(_prompt)
+	var npc_name := str(npc_data.get("name", "NPC"))
+	var raw_opts: Variant = inter.get("options", [])
+	var items: Array[String] = []
+	if raw_opts is Array:
+		for opt in raw_opts:
+			items.append(str(opt))
+	if items.is_empty():
+		items = ["Talk"]
+	_prompt.setup_menu(npc_name, items)
+	_prompt.track(_player, Vector2(0.0, 0.0))
+	_prompt.item_confirmed.connect(_on_interaction_item_confirmed)
+
+func _on_interaction_item_confirmed(item: String, _index: int) -> void:
+	print("[NPC] %s → %s" % [str(npc_data.get("name", "")), item])
+
+func _update_interaction() -> void:
+	if not _interaction_enabled or _player == null or not is_instance_valid(_player):
+		return
+	var dist_tiles := global_position.distance_to(_player.global_position) / GameManager.TILE_SIZE
+	var in_range   := dist_tiles <= _interaction_radius
+	if in_range and not _in_interaction_range:
+		_in_interaction_range = true
+		state     = State.IDLE
+		velocity  = Vector2.ZERO
+		_prompt.show_prompt()
+	elif not in_range and _in_interaction_range:
+		_in_interaction_range = false
+		state = State.CHOOSING_TARGET
+		_prompt.hide_prompt()
+	if _in_interaction_range:
+		_face_player()
+
+func _face_player() -> void:
+	var diff := _player.global_position - global_position
+	if abs(diff.x) >= abs(diff.y):
+		last_facing = "right" if diff.x > 0.0 else "left"
+	else:
+		last_facing = "down" if diff.y > 0.0 else "up"
+
+func _update_bubble_alpha() -> void:
+	if _bubble == null:
+		return
+	if _player == null or not is_instance_valid(_player):
+		_bubble.target_alpha = 0.0
+		_bubble_showing = false
+		return
+	var dist_tiles := global_position.distance_to(_player.global_position) / GameManager.TILE_SIZE
+	var alpha: float
+	if dist_tiles <= BUBBLE_FULL_TILES:
+		alpha = 1.0
+	elif dist_tiles >= BUBBLE_FADE_TILES:
+		alpha = 0.0
+	else:
+		alpha = 1.0 - (dist_tiles - BUBBLE_FULL_TILES) / (BUBBLE_FADE_TILES - BUBBLE_FULL_TILES)
+	if alpha > 0.0 and not _bubble_showing:
+		_bubble_showing = true
+		_bubble.show_text(str(_bubble_lines.pick_random()))
+	elif alpha == 0.0:
+		_bubble_showing = false
+	_bubble.target_alpha = alpha
 
 func _update_shadow() -> void:
 	if _lighting_sys == null or not is_instance_valid(_lighting_sys):

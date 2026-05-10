@@ -122,6 +122,7 @@ func _spawn_npc(npc_data: Dictionary, tile_context: Dictionary, occupied_tiles: 
 		"blocked_tiles": tile_context.get("blocked_tiles", {}),
 		"occupied_tiles": occupied_tiles,
 		"tile_metadata": tile_context.get("tile_metadata", {}),
+		"player": player,
 	}
 	npc.setup(npc_data, world_context)
 
