@@ -9,6 +9,7 @@ const IMPORT_ROOT_DIR := "user://imports"
 const SCENE_IMPORT_DIR := "user://imports/scene_package"
 const PLAYER_IMPORT_DIR := "user://imports/player"
 const WORLD_SCENE_PATH := "res://scenes/world/Main.tscn"
+const API_BASE_URL := "http://127.0.0.1:5001"
 
 var player_data := {
 	"health": 100,
@@ -20,11 +21,13 @@ var player_data := {
 var imported_scene_package: Dictionary = {}
 var imported_scene_root_dir: String = ""
 var imported_player_sprite_path: String = ""
+var imported_scene_context: Dictionary = {}
 
 func reset_runtime_imports(clear_files := false) -> void:
 	imported_scene_package.clear()
 	imported_scene_root_dir = ""
 	imported_player_sprite_path = ""
+	imported_scene_context.clear()
 	if clear_files:
 		_remove_tree(IMPORT_ROOT_DIR)
 
@@ -33,6 +36,9 @@ func has_scene_package() -> bool:
 
 func get_scene_package() -> Dictionary:
 	return imported_scene_package.duplicate(true)
+
+func get_scene_context() -> Dictionary:
+	return imported_scene_context.duplicate(true)
 
 func get_scene_asset_path(relative_path: String) -> String:
 	if imported_scene_root_dir.is_empty() or relative_path.is_empty():
@@ -275,6 +281,7 @@ func _apply_scene_package(package_data: Dictionary, scene_root_dir: String) -> E
 
 	imported_scene_package = package_data
 	imported_scene_root_dir = scene_root_dir
+	imported_scene_context = package_data.get("scene_context", {}) as Dictionary
 	if not main_sprite_file.is_empty():
 		imported_player_sprite_path = scene_root_dir.path_join(main_sprite_file)
 	return OK

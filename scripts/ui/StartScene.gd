@@ -15,6 +15,10 @@ var scanlines_enabled: bool = true
 var is_loading_new_game: bool = false
 
 var flash_timer: float = 0.0
+var spinner_timer: float = 0.0
+var spinner_index: int = 0
+const SPINNER_FRAMES := ["◆ ◇ ◇ ◇", "◇ ◆ ◇ ◇", "◇ ◇ ◆ ◇", "◇ ◇ ◇ ◆"]
+
 
 @onready var bg: TextureRect = $BackgroundImage
 @onready var vignette: ColorRect = $Vignette
@@ -37,6 +41,10 @@ var flash_timer: float = 0.0
 @onready var package_dialog: FileDialog = $PackageDialog
 @onready var sprite_dialog: FileDialog = $SpriteDialog
 @onready var flash_label: Label = $FlashMessage
+@onready var loading_overlay: Control = $LoadingOverlay
+@onready var loading_chapter_label: Label = $LoadingOverlay/Center/Content/ChapterLabel
+@onready var loading_status_label: Label = $LoadingOverlay/Center/Content/StatusLabel
+@onready var loading_spinner_label: Label = $LoadingOverlay/Center/Content/SpinnerLabel
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_PASS
@@ -63,6 +71,13 @@ func _process(delta: float) -> void:
 		flash_label.modulate.a = min(flash_timer * 3.0, 1.0)
 	else:
 		flash_label.modulate.a = max(flash_label.modulate.a - delta * 4.0, 0.0)
+
+	if loading_overlay.visible:
+		spinner_timer += delta
+		if spinner_timer >= 0.25:
+			spinner_timer = 0.0
+			spinner_index = (spinner_index + 1) % SPINNER_FRAMES.size()
+			loading_spinner_label.text = SPINNER_FRAMES[spinner_index]
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel"):
@@ -220,26 +235,55 @@ func _on_new_game_pressed() -> void:
 
 	is_loading_new_game = true
 	new_game_button.disabled = true
-	_show_flash("— DOWNLOADING SCENE —")
+	_show_loading("Connecting to server...")
 
 	GameManager.reset_runtime_imports(true)
 	var download_error: Error = await _download_scene_package(NEW_GAME_SCENE_PACKAGE_URL, NEW_GAME_DOWNLOAD_PATH)
 	if download_error != OK:
 		is_loading_new_game = false
 		new_game_button.disabled = false
+		_hide_loading()
 		_show_flash("— DOWNLOAD FAILED —")
-		_set_status("Could not download the scene package: %s" % error_string(download_error), true)
 		return
+
+	_set_loading_status("Loading scene...")
 
 	var import_error: Error = GameManager.import_scene_package_zip(NEW_GAME_DOWNLOAD_PATH)
 	if import_error != OK:
 		is_loading_new_game = false
 		new_game_button.disabled = false
+		_hide_loading()
 		_show_flash("— SCENE LOAD FAILED —")
-		_set_status("Could not import the downloaded scene package: %s" % error_string(import_error), true)
 		return
 
 	get_tree().change_scene_to_file(GameManager.WORLD_SCENE_PATH)
+
+func _show_loading(initial_status: String) -> void:
+	loading_chapter_label.text = _parse_chapter_zone_label(NEW_GAME_SCENE_PACKAGE_URL)
+	loading_status_label.text = initial_status
+	spinner_index = 0
+	spinner_timer = 0.0
+	loading_spinner_label.text = SPINNER_FRAMES[0]
+	loading_overlay.show()
+
+func _hide_loading() -> void:
+	loading_overlay.hide()
+
+func _set_loading_status(message: String) -> void:
+	loading_status_label.text = message
+
+func _parse_chapter_zone_label(url: String) -> String:
+	var parts := url.split("/")
+	var chapter_str := ""
+	var zone_str := ""
+	for i in range(parts.size()):
+		if parts[i] == "chapters" and i + 1 < parts.size():
+			chapter_str = parts[i + 1]
+		if parts[i] == "scenes" and i + 1 < parts.size():
+			zone_str = parts[i + 1].replace("_", " ").to_upper()
+	if chapter_str.is_empty() or zone_str.is_empty():
+		return ""
+	return "CHAPTER %s  ·  %s" % [chapter_str, zone_str]
 
 func _download_scene_package(url: String, output_path: String) -> Error:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output_path.get_base_dir()))

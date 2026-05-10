@@ -1,5 +1,6 @@
 extends CharacterBody2D
 
+const SpeechBubble := preload("res://scripts/npc/SpeechBubble.gd")
 const FPS := 8.0
 const ARRIVE_DISTANCE := 2.0
 const STUCK_DISTANCE_EPSILON := 0.75
@@ -42,6 +43,7 @@ var stuck_timer: float = 0.0
 var erratic_returning_to_anchor: bool = false
 var last_facing: String = "down"
 var _lighting_sys: Node = null
+var _bubble: Node2D = null
 
 func setup(data: Dictionary, world_context: Dictionary) -> void:
 	npc_data = data
@@ -64,6 +66,49 @@ func setup(data: Dictionary, world_context: Dictionary) -> void:
 	_setup_shadow()
 	_setup_sprite_frames()
 	_start_behavior()
+	_setup_bubble()
+
+func _setup_bubble() -> void:
+	var npc_id := str(npc_data.get("id", ""))
+	if npc_id.is_empty():
+		return
+
+	_bubble = SpeechBubble.new()
+	_bubble.position = Vector2(0.0, -24.0)
+	add_child(_bubble)
+
+	_fetch_bubble(npc_id)
+
+func _fetch_bubble(npc_id: String) -> void:
+	var ctx := GameManager.get_scene_context()
+	var body := JSON.stringify({
+		"run_id": ctx.get("run_id", ""),
+		"chapter": ctx.get("chapter", 1),
+		"zone_id": ctx.get("zone_id", ""),
+		"npc_id": npc_id,
+		"player_state": {"distance_tiles": 2, "has_interacted_before": false},
+		"force": false
+	})
+
+	var request := HTTPRequest.new()
+	add_child(request)
+	request.request(
+		GameManager.API_BASE_URL + "/api/npc-bubbles/generate",
+		PackedStringArray(["Content-Type: application/json"]),
+		HTTPClient.METHOD_POST, body
+	)
+	var response: Array = await request.request_completed
+	request.queue_free()
+
+	if not is_instance_valid(_bubble):
+		return
+	var result: int = int(response[0])
+	var code: int = int(response[1])
+	if result != HTTPRequest.RESULT_SUCCESS or code < 200 or code >= 300:
+		return
+	var parsed: Variant = JSON.parse_string((response[3] as PackedByteArray).get_string_from_utf8())
+	if parsed is Dictionary and bool((parsed as Dictionary).get("show", false)):
+		_bubble.show_text(str((parsed as Dictionary).get("line", "")))
 
 func _physics_process(delta: float) -> void:
 	match state:

@@ -504,6 +504,66 @@ use_native_dialog = false
 size = Vector2i(980, 620)
 min_size = Vector2i(860, 520)
 
+[node name="LoadingOverlay" type="Control" parent="."]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+
+[node name="Dim" type="ColorRect" parent="LoadingOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.0156863, 0.00784314, 0.0470588, 0.97)
+mouse_filter = 2
+
+[node name="Center" type="CenterContainer" parent="LoadingOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Content" type="VBoxContainer" parent="LoadingOverlay/Center"]
+layout_mode = 2
+theme_override_constants/separation = 18
+
+[node name="TitleLabel" type="Label" parent="LoadingOverlay/Center/Content"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.909804, 0.752941, 0.313726, 1)
+theme_override_font_sizes/font_size = 20
+text = "— NEW JOURNEY —"
+horizontal_alignment = 1
+
+[node name="ChapterLabel" type="Label" parent="LoadingOverlay/Center/Content"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.784314, 0.686275, 0.470588, 0.7)
+theme_override_font_sizes/font_size = 11
+text = ""
+horizontal_alignment = 1
+
+[node name="StatusLabel" type="Label" parent="LoadingOverlay/Center/Content"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.705882, 0.568627, 0.333333, 0.8)
+theme_override_font_sizes/font_size = 10
+text = ""
+horizontal_alignment = 1
+
+[node name="SpinnerLabel" type="Label" parent="LoadingOverlay/Center/Content"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.909804, 0.752941, 0.313726, 0.9)
+theme_override_font_sizes/font_size = 13
+text = "◆ ◇ ◇ ◇"
+horizontal_alignment = 1
+
 [connection signal="focus_entered" from="Ui/MenuLayer/Menu/NewGameButton" to="." method="_on_menu_focus_entered"]
 [connection signal="pressed" from="Ui/MenuLayer/Menu/NewGameButton" to="." method="_on_new_game_pressed"]
 [connection signal="focus_entered" from="Ui/MenuLayer/Menu/ContinueButton" to="." method="_on_menu_focus_entered"]
