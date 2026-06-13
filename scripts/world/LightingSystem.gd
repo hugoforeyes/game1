@@ -1,6 +1,6 @@
 extends Node
 
-const TILE_SIZE := 36
+const TILE_SIZE := 72
 const TEX_SIZE  := 128
 
 var _canvas_mod:    CanvasModulate  = null
@@ -86,7 +86,7 @@ func _animate_light(light: PointLight2D, cfg: Dictionary, idx: int) -> void:
 
 func _setup_ambient(world: Node2D, package_data: Dictionary) -> void:
 	var lighting: Dictionary = package_data.get("lighting", {}) as Dictionary
-	var level: float = float(lighting.get("base_light_level", 0.5))
+	var level: float = maxf(float(lighting.get("base_light_level", 0.5)), 0.35)
 
 	var dim     := level * 0.75
 	var ambient := Color(dim * 0.82, dim * 0.90, dim * 1.0)

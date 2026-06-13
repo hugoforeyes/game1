@@ -12,6 +12,8 @@ const CAP_H      := 10.0
 # Left-pointing arrow drawn in code at the panel's vertical centre.
 const ARROW_W    := 5.0
 const ARROW_H    := 8.0
+const IND_W      := 8.0
+const IND_H      := 6.0
 
 # Horizontal interior margins as fraction of the *panel body* width
 # (measured from the 1389×220 texture, same on every slice row).
@@ -124,7 +126,7 @@ func _process(delta: float) -> void:
 # ── layout ─────────────────────────────────────────────────────────────────────
 func _build() -> void:
 	var line_h := _font.get_height(FONT_SIZE) + LINE_GAP
-	var ind_w  := _font.get_string_size("▶ ", HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE).x
+	var ind_w  := IND_W
 
 	# Widest text (title or any item + indicator prefix)
 	var max_tw := _font.get_string_size(_title, HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE).x
@@ -136,12 +138,13 @@ func _build() -> void:
 	var body_w := maxf(need_int_w / (INT_R_FRAC - INT_L_FRAC), 60.0)
 
 	# Interior y-space needed:
-	#   title row, optional divider+gap, N item rows, top+bottom inner padding
-	var rows  := 1  # title always
+	#   optional title row, optional divider+gap, N item rows, top+bottom inner padding
+	var rows  := 1 if not _title.is_empty() else 0
 	var div_h := 0.0
 	if not _items.is_empty():
 		rows  += _items.size()
-		div_h  = 3.0   # divider + 1 px gap each side
+		if not _title.is_empty():
+			div_h = 3.0   # divider + 1 px gap each side
 
 	var need_int_h := rows * line_h + div_h + INNER_PAD.y * 2.0
 
@@ -157,7 +160,8 @@ func _build() -> void:
 	_item_rects.clear()
 	if not _items.is_empty():
 		var lh   := _font.get_height(FONT_SIZE) + LINE_GAP
-		var iy   := CAP_TOP_INT_FRAC * CAP_H + INNER_PAD.y + lh + 3.0
+		var base := CAP_TOP_INT_FRAC * CAP_H + INNER_PAD.y
+		var iy   := base + (lh + 3.0 if not _title.is_empty() else 0.0)
 		var rx   := ARROW_W
 		for _i in range(_items.size()):
 			_item_rects.append(Rect2(rx, iy - 1.0, ARROW_W + body_w - rx, lh + 1.0))
@@ -192,32 +196,41 @@ func _draw() -> void:
 	# --- text layout ---
 	var line_h := _font.get_height(FONT_SIZE) + LINE_GAP
 	var ascent := _font.get_ascent(FONT_SIZE)
-	var ind_w  := _font.get_string_size("▶ ", HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE).x
+	var ind_w  := IND_W
 
 	# Interior origin
 	var ix  := px + pw * INT_L_FRAC + INNER_PAD.x
 	var irx := px + pw * INT_R_FRAC - INNER_PAD.x
 	var iy  := CAP_TOP_INT_FRAC * CAP_H + INNER_PAD.y
 
-	# Title
-	draw_string(_font, Vector2(ix, iy + ascent), _title,
-			HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE, TITLE_COLOR)
-	iy += line_h
+	# Title (optional)
+	if not _title.is_empty():
+		draw_string(_font, Vector2(ix, iy + ascent), _title,
+				HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE, TITLE_COLOR)
+		iy += line_h
 
 	if _items.is_empty():
 		return
 
-	# Divider
-	iy += 1.0
-	draw_line(Vector2(ix, iy), Vector2(irx, iy), DIVIDER_COL, 0.5)
-	iy += 2.0
+	# Divider (only when title exists)
+	if not _title.is_empty():
+		iy += 1.0
+		draw_line(Vector2(ix, iy), Vector2(irx, iy), DIVIDER_COL, 0.5)
+		iy += 2.0
 
 	# Items
 	for i in range(_items.size()):
 		if i == _selected:
 			draw_rect(Rect2(ix - 2.0, iy - 1.0, irx - ix + 4.0, line_h + 1.0), SELECT_BG)
-			draw_string(_font, Vector2(ix, iy + ascent), "▶",
-					HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE, INDICATOR_COL)
+			_draw_item_indicator(Vector2(ix + 1.0, iy + line_h * 0.5))
 		draw_string(_font, Vector2(ix + ind_w, iy + ascent), _items[i],
 				HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE, TEXT_COLOR)
 		iy += line_h
+
+func _draw_item_indicator(center: Vector2) -> void:
+	var points := PackedVector2Array([
+		Vector2(center.x, center.y - IND_H * 0.5),
+		Vector2(center.x + IND_W - 2.0, center.y),
+		Vector2(center.x, center.y + IND_H * 0.5),
+	])
+	draw_colored_polygon(points, INDICATOR_COL)

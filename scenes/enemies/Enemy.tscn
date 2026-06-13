@@ -1,0 +1,28 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/enemies/EnemyController.gd" id="1_controller"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_enemy"]
+size = Vector2(20, 12)
+
+[node name="Enemy" type="CharacterBody2D"]
+script = ExtResource("1_controller")
+
+[node name="Shadow" type="Polygon2D" parent="."]
+position = Vector2(0, 32)
+color = Color(0, 0, 0, 0.35)
+
+[node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+position = Vector2(0, 28)
+shape = SubResource("RectangleShape2D_enemy")
+
+[node name="AlertLabel" type="Label" parent="."]
+offset_left = -12.0
+offset_top = -68.0
+offset_right = 16.0
+offset_bottom = -32.0
+text = "!"
+theme_override_colors/font_color = Color(1, 0.3, 0.25, 1)
+theme_override_font_sizes/font_size = 26

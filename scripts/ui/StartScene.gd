@@ -4,8 +4,6 @@ const MENU_DEFAULT_COLOR := Color(0.82, 0.73, 0.51, 0.55)
 const MENU_ACTIVE_COLOR := Color(0.96, 0.88, 0.50, 1.0)
 const PANEL_BG := Color(0.03, 0.02, 0.09, 0.93)
 const PANEL_BORDER := Color(0.78, 0.61, 0.24, 0.35)
-const NEW_GAME_SCENE_PACKAGE_URL := "http://127.0.0.1:5001/api/godot/runs/20260425_072136/chapters/1/scenes/zone_02/scene-package.zip"
-const NEW_GAME_DOWNLOAD_PATH := "user://downloads/scene-package.zip"
 
 var scene_zip_path: String = ""
 var character_sprite_path: String = ""
@@ -17,7 +15,7 @@ var is_loading_new_game: bool = false
 var flash_timer: float = 0.0
 var spinner_timer: float = 0.0
 var spinner_index: int = 0
-const SPINNER_FRAMES := ["◆ ◇ ◇ ◇", "◇ ◆ ◇ ◇", "◇ ◇ ◆ ◇", "◇ ◇ ◇ ◆"]
+const SPINNER_FRAMES := ["* . . .", ". * . .", ". . * .", ". . . *"]
 
 
 @onready var bg: TextureRect = $BackgroundImage
@@ -47,6 +45,11 @@ const SPINNER_FRAMES := ["◆ ◇ ◇ ◇", "◇ ◆ ◇ ◇", "◇ ◇ ◆ ◇"
 @onready var loading_spinner_label: Label = $LoadingOverlay/Center/Content/SpinnerLabel
 
 func _ready() -> void:
+	# Authored in 480x270 design space, scaled 2x to the 960x540 viewport.
+	set_anchors_preset(Control.PRESET_TOP_LEFT)
+	position = Vector2.ZERO
+	size = Vector2(480, 270)
+	scale = Vector2(2, 2)
 	mouse_filter = Control.MOUSE_FILTER_PASS
 	package_dialog.filters = PackedStringArray(["*.zip ; Zip archives"])
 	sprite_dialog.filters = PackedStringArray(["*.png,*.jpg,*.jpeg,*.webp ; Image files"])
@@ -186,8 +189,8 @@ func _style_menu_button(button: Button) -> void:
 	var active: bool = button.has_focus()
 	button.modulate = MENU_ACTIVE_COLOR if active else MENU_DEFAULT_COLOR
 	button.position.x = 10.0 if active else 0.0
-	var cursor_label := button.get_node("Cursor") as Label
-	cursor_label.visible = active
+	var cursor: CanvasItem = button.get_node("Cursor") as CanvasItem
+	cursor.visible = active
 
 func _refresh_import_ui() -> void:
 	package_value.text = scene_zip_path
@@ -233,33 +236,29 @@ func _on_new_game_pressed() -> void:
 	if is_loading_new_game:
 		return
 
+	print("[StartScene] New Game pressed — fetching world flow from server")
 	is_loading_new_game = true
 	new_game_button.disabled = true
-	_show_loading("Connecting to server...")
+	_show_loading("Connecting to story server...")
+	if not ChapterFlow.loading_status.is_connected(_on_flow_status):
+		ChapterFlow.loading_status.connect(_on_flow_status)
 
-	GameManager.reset_runtime_imports(true)
-	var download_error: Error = await _download_scene_package(NEW_GAME_SCENE_PACKAGE_URL, NEW_GAME_DOWNLOAD_PATH)
-	if download_error != OK:
+	var flow_error: Error = await ChapterFlow.start_new_game()
+	if flow_error != OK:
+		print("[StartScene] flow start failed err=%d" % flow_error)
 		is_loading_new_game = false
 		new_game_button.disabled = false
 		_hide_loading()
-		_show_flash("— DOWNLOAD FAILED —")
+		_show_flash("- COULD NOT REACH STORY SERVER -")
 		return
+	# ChapterFlow has switched the scene (intro slides or world).
 
-	_set_loading_status("Loading scene...")
-
-	var import_error: Error = GameManager.import_scene_package_zip(NEW_GAME_DOWNLOAD_PATH)
-	if import_error != OK:
-		is_loading_new_game = false
-		new_game_button.disabled = false
-		_hide_loading()
-		_show_flash("— SCENE LOAD FAILED —")
-		return
-
-	get_tree().change_scene_to_file(GameManager.WORLD_SCENE_PATH)
+func _on_flow_status(message: String) -> void:
+	_set_loading_status(message)
+	loading_chapter_label.text = ChapterFlow.progress_label()
 
 func _show_loading(initial_status: String) -> void:
-	loading_chapter_label.text = _parse_chapter_zone_label(NEW_GAME_SCENE_PACKAGE_URL)
+	loading_chapter_label.text = ""
 	loading_status_label.text = initial_status
 	spinner_index = 0
 	spinner_timer = 0.0
@@ -272,54 +271,10 @@ func _hide_loading() -> void:
 func _set_loading_status(message: String) -> void:
 	loading_status_label.text = message
 
-func _parse_chapter_zone_label(url: String) -> String:
-	var parts := url.split("/")
-	var chapter_str := ""
-	var zone_str := ""
-	for i in range(parts.size()):
-		if parts[i] == "chapters" and i + 1 < parts.size():
-			chapter_str = parts[i + 1]
-		if parts[i] == "scenes" and i + 1 < parts.size():
-			zone_str = parts[i + 1].replace("_", " ").to_upper()
-	if chapter_str.is_empty() or zone_str.is_empty():
-		return ""
-	return "CHAPTER %s  ·  %s" % [chapter_str, zone_str]
 
-func _download_scene_package(url: String, output_path: String) -> Error:
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output_path.get_base_dir()))
-
-	var request: HTTPRequest = HTTPRequest.new()
-	request.timeout = 30.0
-	add_child(request)
-
-	var request_error: Error = request.request(url)
-	if request_error != OK:
-		request.queue_free()
-		return request_error
-
-	var response: Array = await request.request_completed
-	request.queue_free()
-
-	var result: int = int(response[0])
-	var response_code: int = int(response[1])
-	var body: PackedByteArray = response[3] as PackedByteArray
-	if result != HTTPRequest.RESULT_SUCCESS:
-		return ERR_CANT_CONNECT
-	if response_code < 200 or response_code >= 300:
-		return ERR_FILE_CANT_READ
-	if body.is_empty():
-		return ERR_FILE_CORRUPT
-
-	var output_file: FileAccess = FileAccess.open(output_path, FileAccess.WRITE)
-	if output_file == null:
-		return FileAccess.get_open_error()
-
-	output_file.store_buffer(body)
-	output_file.flush()
-	return OK
 
 func _on_continue_pressed() -> void:
-	_show_flash("— NO SAVE FOUND —")
+	_show_flash("- NO SAVE FOUND -")
 
 func _on_settings_pressed() -> void:
 	_open_settings()

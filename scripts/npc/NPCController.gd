@@ -3,11 +3,12 @@ extends CharacterBody2D
 const SpeechBubble       := preload("res://scripts/npc/SpeechBubble.gd")
 const InteractionPrompt  := preload("res://scripts/npc/InteractionPrompt.gd")
 const ChatBoxScene       := preload("res://scenes/ui/ChatBox.tscn")
+const LoadingPopupScript := preload("res://scripts/ui/LoadingPopup.gd")
 const FPS := 8.0
 const BUBBLE_FULL_TILES  := 2.5
 const BUBBLE_FADE_TILES  := 4.0
-const ARRIVE_DISTANCE := 2.0
-const STUCK_DISTANCE_EPSILON := 0.75
+const ARRIVE_DISTANCE := 4.0
+const STUCK_DISTANCE_EPSILON := 1.5
 const STUCK_TIME_LIMIT := 0.8
 const MAX_PATH_SEARCH_NODES := 240
 
@@ -56,11 +57,15 @@ var _bubble_showing: bool = false
 var _interaction_enabled: bool = false
 var _interaction_radius: float = 1.5
 var _in_interaction_range: bool = false
+var _loading_popup: Node = null
+var _awaited_npc_id: String = ""
+var _quest_marker: Label = null
 
 func setup(data: Dictionary, world_context: Dictionary) -> void:
 	npc_data = data
-	movement = data.get("movement", {}) as Dictionary
-	interaction = data.get("interaction", {}) as Dictionary
+	# Packages may carry explicit nulls for these — guard the casts.
+	movement = data.get("movement") if data.get("movement") is Dictionary else {}
+	interaction = data.get("interaction") if data.get("interaction") is Dictionary else {}
 	map_tile_size = world_context.get("map_tile_size", Vector2i.ZERO) as Vector2i
 	blocked_tiles = (world_context.get("blocked_tiles", {}) as Dictionary).duplicate()
 	occupied_tiles = (world_context.get("occupied_tiles", {}) as Dictionary).duplicate()
@@ -73,7 +78,7 @@ func setup(data: Dictionary, world_context: Dictionary) -> void:
 	target_tile = current_tile
 	target_position = _tile_to_pixel_center(current_tile)
 	global_position = target_position
-	speed = max(float(movement.get("speed", speed)), 0.0)
+	speed = max(float(movement.get("speed", speed)), 0.0) * (float(GameManager.TILE_SIZE) / 36.0)
 	path_tiles = _read_path_tiles(movement.get("path_tiles", []))
 	_lighting_sys = get_tree().get_first_node_in_group("lighting")
 	_setup_shadow()
@@ -81,16 +86,55 @@ func setup(data: Dictionary, world_context: Dictionary) -> void:
 	_start_behavior()
 	_setup_bubble()
 	_setup_interaction()
+	_setup_quest_marker()
+
+func _setup_quest_marker() -> void:
+	_quest_marker = Label.new()
+	_quest_marker.text = "!"
+	_quest_marker.position = Vector2(-6, -68)
+	_quest_marker.add_theme_font_size_override("font_size", 26)
+	_quest_marker.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3, 1.0))
+	_quest_marker.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
+	_quest_marker.add_theme_constant_override("shadow_offset_y", 1)
+	_quest_marker.visible = false
+	add_child(_quest_marker)
+	update_quest_marker()
+
+func update_quest_marker() -> void:
+	if _quest_marker == null:
+		return
+	var marker: String = QuestManager.marker_for_npc(str(npc_data.get("id", "")))
+	_quest_marker.text = marker
+	var should_show: bool = not marker.is_empty()
+	if should_show and not _quest_marker.visible:
+		_quest_marker.visible = true
+		var bounce := create_tween().set_loops()
+		bounce.tween_property(_quest_marker, "position:y", -74.0, 0.5).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		bounce.tween_property(_quest_marker, "position:y", -68.0, 0.5).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		_quest_marker.set_meta("bounce", bounce)
+	elif not should_show and _quest_marker.visible:
+		_quest_marker.visible = false
+		var bounce: Variant = _quest_marker.get_meta("bounce") if _quest_marker.has_meta("bounce") else null
+		if bounce is Tween and (bounce as Tween).is_valid():
+			(bounce as Tween).kill()
 
 func _setup_bubble() -> void:
-	_bubble_lines = (npc_data.get("interaction", {}) as Dictionary).get("lines", []) as Array
+	var lines: Variant = interaction.get("lines", [])
+	_bubble_lines = lines if lines is Array else []
 	if _bubble_lines.is_empty():
 		return
 	_bubble = SpeechBubble.new()
-	_bubble.position = Vector2(0.0, -24.0)
+	_bubble.position = Vector2(0.0, -48.0)
+	_bubble.scale = Vector2(2, 2)  # bubble art authored for 36px characters
 	add_child(_bubble)
 
 func _physics_process(delta: float) -> void:
+	if GameManager.ui_blocking_input:
+		# Frozen during chats, battles, and cutscenes; cutscenes may drive
+		# position and animation directly while this gate holds.
+		velocity = Vector2.ZERO
+		_update_shadow()
+		return
 	match state:
 		State.WAITING, State.BLOCKED:
 			wait_timer -= delta
@@ -110,8 +154,10 @@ func _physics_process(delta: float) -> void:
 	_update_interaction()
 
 func _setup_interaction() -> void:
-	var inter := npc_data.get("interaction", {}) as Dictionary
-	_interaction_enabled = bool(inter.get("enabled", false))
+	var inter: Dictionary = interaction
+	# Quest participants must always be approachable, whatever the package says.
+	_interaction_enabled = bool(inter.get("enabled", false)) \
+		or QuestManager.is_quest_npc(str(npc_data.get("id", "")))
 	if not _interaction_enabled:
 		return
 	_interaction_radius = float(inter.get("proximity_radius_tiles", 1.5))
@@ -119,25 +165,34 @@ func _setup_interaction() -> void:
 	_prompt_layer.layer = 128
 	add_child(_prompt_layer)
 	_prompt = InteractionPrompt.new()
+	_prompt.scale = Vector2(2, 2)  # prompt art authored for the 480x270 UI space
 	_prompt_layer.add_child(_prompt)
 	var npc_name := str(npc_data.get("name", "NPC"))
 	var raw_opts: Variant = inter.get("options", [])
 	var items: Array[String] = []
 	if raw_opts is Array:
 		for opt in raw_opts:
-			items.append(str(opt))
+			var opt_str := str(opt)
+			items.append("Talk to %s" % npc_name if opt_str == "Talk" else opt_str)
 	if items.is_empty():
-		items = ["Talk"]
-	_prompt.setup_menu(npc_name, items)
+		items = ["Talk to %s" % npc_name]
+	_prompt.setup_menu("", items)
 	_prompt.track(_player, Vector2(0.0, 0.0))
 	_prompt.item_confirmed.connect(_on_interaction_item_confirmed)
 
 func _on_interaction_item_confirmed(item: String, _index: int) -> void:
-	if item == "Talk":
+	if item.begins_with("Talk"):
+		_prompt.hide_prompt()
+		if _bubble != null:
+			_bubble.target_alpha = 0.0
+			_bubble_showing = false
+		var bubble_line := ""
+		if not _bubble_lines.is_empty():
+			bubble_line = str(_bubble_lines.pick_random())
 		var chatbox: Node = ChatBoxScene.instantiate()
 		get_tree().root.add_child(chatbox)
-		chatbox.open(str(npc_data.get("name", "")), npc_data)
-		_prompt.hide_prompt()
+		chatbox.open(str(npc_data.get("name", "")), npc_data, str(npc_data.get("id", "")), bubble_line)
+		QuestManager.notify_npc_talked(str(npc_data.get("id", "")))
 
 func _update_interaction() -> void:
 	if not _interaction_enabled or _player == null or not is_instance_valid(_player):
@@ -192,16 +247,16 @@ func _update_shadow() -> void:
 		return
 	var light_pos: Vector2 = _lighting_sys.get_dominant_light_pos(global_position)
 	if light_pos == Vector2.ZERO:
-		shadow.position = Vector2(0.0, 14.0)
+		shadow.position = Vector2(0.0, 28.0)
 		shadow.rotation = 0.0
 		shadow.modulate.a = 0.35
 		return
 	var to_char: Vector2 = global_position - light_pos
 	var dist: float = to_char.length()
 	var dir: Vector2 = to_char.normalized() if dist > 1.0 else Vector2(0.0, 1.0)
-	var tile_dist: float = dist / 36.0
-	var offset_px: float = clampf(tile_dist * 1.8, 2.0, 12.0)
-	shadow.position = Vector2(0.0, 14.0) + dir * offset_px
+	var tile_dist: float = dist / float(GameManager.TILE_SIZE)
+	var offset_px: float = clampf(tile_dist * 3.6, 4.0, 24.0)
+	shadow.position = Vector2(0.0, 28.0) + dir * offset_px
 	shadow.rotation = dir.angle()
 	shadow.modulate.a = clampf(0.65 - tile_dist * 0.04, 0.15, 0.60)
 
@@ -217,9 +272,18 @@ func _setup_shadow() -> void:
 
 func _setup_sprite_frames() -> void:
 	var sprite_sheet_file: String = str(npc_data.get("sprite_sheet_file", ""))
-	var texture: Texture2D = GameManager.load_texture(GameManager.get_scene_asset_path(sprite_sheet_file))
+	if sprite_sheet_file == "<null>":
+		sprite_sheet_file = ""
+	var texture: Texture2D = null
+	if not sprite_sheet_file.is_empty():
+		texture = GameManager.load_texture(GameManager.get_scene_asset_path(sprite_sheet_file))
+	if texture == null:
+		print("[NPC] %s texture missing, using fallback sheet" % npc_data.get("id","?"))
+		texture = GameManager.load_texture(GameManager.DEFAULT_PLAYER_SPRITE_PATH)
+		modulate = Color(0.78, 0.86, 1.0)
 	if texture == null:
 		return
+	print("[NPC] %s texture OK size=%s" % [npc_data.get("id","?"), texture.get_size()])
 
 	var frames: SpriteFrames = SpriteFrames.new()
 	frames.remove_animation("default")

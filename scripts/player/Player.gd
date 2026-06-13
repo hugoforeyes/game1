@@ -1,7 +1,7 @@
 extends CharacterBody2D
 
-const SPEED_WALK := 144.0
-const SPEED_RUN  := 252.0
+const SPEED_WALK := 288.0
+const SPEED_RUN  := 504.0
 const FPS := 8.0
 
 @onready var camera: Camera2D = $Camera2D
@@ -17,8 +17,8 @@ func _ready() -> void:
 	_lighting_sys = get_tree().get_first_node_in_group("lighting")
 
 func _setup_shadow() -> void:
-	var rx: float = 10.0  # bán kính ngang
-	var ry: float = 4.0   # bán kính dọc (dẹt xuống trông như bóng)
+	var rx: float = 20.0  # bán kính ngang
+	var ry: float = 8.0   # bán kính dọc (dẹt xuống trông như bóng)
 	var segments: int = 16
 	var points: PackedVector2Array = PackedVector2Array()
 	for i in segments:
@@ -60,6 +60,10 @@ func _setup_sprite_frames() -> void:
 	anim_sprite.play(_last_anim)
 
 func _physics_process(_delta: float) -> void:
+	if GameManager.ui_blocking_input:
+		velocity = Vector2.ZERO
+		move_and_slide()
+		return
 	var direction: Vector2 = Input.get_vector("move_left", "move_right", "move_up", "move_down")
 	var speed: float = SPEED_RUN if Input.is_action_pressed("run") else SPEED_WALK
 	velocity = direction * speed
@@ -74,16 +78,16 @@ func _update_shadow() -> void:
 		return
 	var light_pos: Vector2 = _lighting_sys.get_dominant_light_pos(global_position)
 	if light_pos == Vector2.ZERO:
-		shadow.position = Vector2(0.0, 14.0)
+		shadow.position = Vector2(0.0, 28.0)
 		shadow.rotation = 0.0
 		shadow.modulate.a = 0.35
 		return
 	var to_char: Vector2 = global_position - light_pos
 	var dist: float = to_char.length()
 	var dir: Vector2 = to_char.normalized() if dist > 1.0 else Vector2(0.0, 1.0)
-	var tile_dist: float = dist / 36.0
-	var offset_px: float = clampf(tile_dist * 1.8, 2.0, 12.0)
-	shadow.position = Vector2(0.0, 14.0) + dir * offset_px
+	var tile_dist: float = dist / float(GameManager.TILE_SIZE)
+	var offset_px: float = clampf(tile_dist * 3.6, 4.0, 24.0)
+	shadow.position = Vector2(0.0, 28.0) + dir * offset_px
 	shadow.rotation = dir.angle()
 	shadow.modulate.a = clampf(0.65 - tile_dist * 0.04, 0.15, 0.60)
 

@@ -1,7 +1,8 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=4 format=3]
 
 [ext_resource type="Script" path="res://scripts/ui/StartScene.gd" id="1_start"]
 [ext_resource type="Texture2D" path="res://assets/ui/start_scene_background.png" id="2_bg"]
+[ext_resource type="Script" path="res://scripts/ui/MenuCursor.gd" id="3_cursor"]
 
 [node name="StartScene" type="Control"]
 layout_mode = 3
@@ -89,16 +90,15 @@ flat = true
 text = "NEW GAME"
 alignment = 1
 
-[node name="Cursor" type="Label" parent="Ui/MenuLayer/Menu/NewGameButton"]
+[node name="Cursor" type="Control" parent="Ui/MenuLayer/Menu/NewGameButton"]
 visible = false
 layout_mode = 0
-offset_left = 8.0
-offset_top = 2.0
-offset_right = 20.0
-offset_bottom = 14.0
-theme_override_colors/font_color = Color(0.909804, 0.752941, 0.313726, 1)
-theme_override_font_sizes/font_size = 8
-text = "▶"
+offset_left = 10.0
+offset_top = 4.0
+offset_right = 17.0
+offset_bottom = 13.0
+mouse_filter = 2
+script = ExtResource("3_cursor")
 
 [node name="ContinueButton" type="Button" parent="Ui/MenuLayer/Menu"]
 custom_minimum_size = Vector2(106, 17)
@@ -113,16 +113,15 @@ flat = true
 text = "CONTINUE"
 alignment = 1
 
-[node name="Cursor" type="Label" parent="Ui/MenuLayer/Menu/ContinueButton"]
+[node name="Cursor" type="Control" parent="Ui/MenuLayer/Menu/ContinueButton"]
 visible = false
 layout_mode = 0
-offset_left = 8.0
-offset_top = 2.0
-offset_right = 20.0
-offset_bottom = 14.0
-theme_override_colors/font_color = Color(0.909804, 0.752941, 0.313726, 1)
-theme_override_font_sizes/font_size = 8
-text = "▶"
+offset_left = 10.0
+offset_top = 4.0
+offset_right = 17.0
+offset_bottom = 13.0
+mouse_filter = 2
+script = ExtResource("3_cursor")
 
 [node name="SettingsButton" type="Button" parent="Ui/MenuLayer/Menu"]
 custom_minimum_size = Vector2(106, 17)
@@ -137,16 +136,15 @@ flat = true
 text = "SETTINGS"
 alignment = 1
 
-[node name="Cursor" type="Label" parent="Ui/MenuLayer/Menu/SettingsButton"]
+[node name="Cursor" type="Control" parent="Ui/MenuLayer/Menu/SettingsButton"]
 visible = false
 layout_mode = 0
-offset_left = 8.0
-offset_top = 2.0
-offset_right = 20.0
-offset_bottom = 14.0
-theme_override_colors/font_color = Color(0.909804, 0.752941, 0.313726, 1)
-theme_override_font_sizes/font_size = 8
-text = "▶"
+offset_left = 10.0
+offset_top = 4.0
+offset_right = 17.0
+offset_bottom = 13.0
+mouse_filter = 2
+script = ExtResource("3_cursor")
 
 [node name="PressKey" type="Label" parent="."]
 layout_mode = 0
@@ -186,7 +184,7 @@ grow_horizontal = 2
 grow_vertical = 2
 theme_override_colors/font_color = Color(0.909804, 0.752941, 0.313726, 1)
 theme_override_font_sizes/font_size = 16
-text = "— STARTING NEW GAME —"
+text = "- STARTING NEW GAME -"
 horizontal_alignment = 1
 vertical_alignment = 1
 
@@ -241,7 +239,7 @@ theme_override_constants/separation = 28
 layout_mode = 2
 theme_override_colors/font_color = Color(0.909804, 0.752941, 0.313726, 1)
 theme_override_font_sizes/font_size = 20
-text = "— SETTINGS —"
+text = "- SETTINGS -"
 horizontal_alignment = 1
 
 [node name="MusicRow" type="HBoxContainer" parent="SettingsOverlay/Center/Wrap/Panel/Margin/Content"]
@@ -262,7 +260,7 @@ theme_override_constants/separation = 14
 [node name="DownButton" type="Button" parent="SettingsOverlay/Center/Wrap/Panel/Margin/Content/MusicRow/ValueWrap"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 12
-text = "◀"
+text = "<"
 
 [node name="Value" type="Label" parent="SettingsOverlay/Center/Wrap/Panel/Margin/Content/MusicRow/ValueWrap"]
 custom_minimum_size = Vector2(40, 0)
@@ -275,7 +273,7 @@ horizontal_alignment = 1
 [node name="UpButton" type="Button" parent="SettingsOverlay/Center/Wrap/Panel/Margin/Content/MusicRow/ValueWrap"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 12
-text = "▶"
+text = ">"
 
 [node name="SfxRow" type="HBoxContainer" parent="SettingsOverlay/Center/Wrap/Panel/Margin/Content"]
 layout_mode = 2
@@ -295,7 +293,7 @@ theme_override_constants/separation = 14
 [node name="DownButton" type="Button" parent="SettingsOverlay/Center/Wrap/Panel/Margin/Content/SfxRow/ValueWrap"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 12
-text = "◀"
+text = "<"
 
 [node name="Value" type="Label" parent="SettingsOverlay/Center/Wrap/Panel/Margin/Content/SfxRow/ValueWrap"]
 custom_minimum_size = Vector2(40, 0)
@@ -308,7 +306,7 @@ horizontal_alignment = 1
 [node name="UpButton" type="Button" parent="SettingsOverlay/Center/Wrap/Panel/Margin/Content/SfxRow/ValueWrap"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 12
-text = "▶"
+text = ">"
 
 [node name="ScanlineRow" type="HBoxContainer" parent="SettingsOverlay/Center/Wrap/Panel/Margin/Content"]
 layout_mode = 2
@@ -351,7 +349,7 @@ text = "TOGGLE"
 [node name="CloseSettingsButton" type="Button" parent="SettingsOverlay/Center/Wrap"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 12
-text = "◀ BACK"
+text = "< BACK"
 
 [node name="ImporterOverlay" type="Control" parent="."]
 visible = false
@@ -486,7 +484,7 @@ text = "USE BUILT-IN SCENE"
 [node name="CloseButton" type="Button" parent="ImporterOverlay/Center/Panel/Margin/Content"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 12
-text = "◀ BACK"
+text = "< BACK"
 
 [node name="PackageDialog" type="FileDialog" parent="."]
 title = "Choose scene zip"
@@ -540,7 +538,7 @@ theme_override_constants/separation = 18
 layout_mode = 2
 theme_override_colors/font_color = Color(0.909804, 0.752941, 0.313726, 1)
 theme_override_font_sizes/font_size = 20
-text = "— NEW JOURNEY —"
+text = "- NEW JOURNEY -"
 horizontal_alignment = 1
 
 [node name="ChapterLabel" type="Label" parent="LoadingOverlay/Center/Content"]
@@ -561,7 +559,7 @@ horizontal_alignment = 1
 layout_mode = 2
 theme_override_colors/font_color = Color(0.909804, 0.752941, 0.313726, 0.9)
 theme_override_font_sizes/font_size = 13
-text = "◆ ◇ ◇ ◇"
+text = "* . . ."
 horizontal_alignment = 1
 
 [connection signal="focus_entered" from="Ui/MenuLayer/Menu/NewGameButton" to="." method="_on_menu_focus_entered"]

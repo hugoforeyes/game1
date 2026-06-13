@@ -1,7 +1,7 @@
 extends Node
 
-const TILE_SIZE := 36
-const CHARACTER_SHEET_SIZE := Vector2i(144, 144)
+const TILE_SIZE := 72  # world pixel density: 72 px/tile (Option C)
+const CHARACTER_SHEET_SIZE := Vector2i(288, 288)
 const CHARACTER_SPRITE_GRID := Vector2i(4, 4)
 const CHARACTER_FRAME_SIZE := TILE_SIZE
 const DEFAULT_PLAYER_SPRITE_PATH := "res://assets/sprites/player/godot_sheet.png"
@@ -11,6 +11,16 @@ const PLAYER_IMPORT_DIR := "user://imports/player"
 const WORLD_SCENE_PATH := "res://scenes/world/Main.tscn"
 const API_BASE_URL := "http://127.0.0.1:5001"
 
+# On web exports the page is served with a same-origin /api proxy to the
+# backend (see run_game.sh). HTTPRequest needs absolute URLs, so use the
+# page origin (e.g. http://localhost:8000) instead of 127.0.0.1:5001.
+func api_base_url() -> String:
+	if OS.has_feature("web"):
+		var origin: Variant = JavaScriptBridge.eval("window.location.origin", true)
+		if origin is String and not str(origin).is_empty():
+			return str(origin)
+	return API_BASE_URL
+
 var player_data := {
 	"health": 100,
 	"max_health": 100,
@@ -18,12 +28,97 @@ var player_data := {
 	"experience": 0,
 }
 
+# ── combat / progression ──────────────────────────────────────────────────────
+
+signal player_stats_changed
+
+var player_level: int = 1
+var player_xp: int = 0
+var player_hp: int = -1  # -1 = full (computed lazily from level)
+var defeated_enemy_ids: Dictionary = {}
+var spared_enemy_ids: Dictionary = {}
+
+func player_battle_stats() -> Dictionary:
+	return {
+		"max_hp": 60 + 20 * player_level,
+		"attack": 9 + 3 * player_level,
+		"defense": 3 + 2 * player_level,
+		"speed": 8 + player_level,
+		"sp_max": 3 + int(player_level / 2.0),
+	}
+
+func get_player_hp() -> int:
+	var max_hp: int = int(player_battle_stats()["max_hp"])
+	if player_hp < 0 or player_hp > max_hp:
+		player_hp = max_hp
+	return player_hp
+
+func set_player_hp(value: int) -> void:
+	player_hp = clampi(value, 0, int(player_battle_stats()["max_hp"]))
+	player_stats_changed.emit()
+
+func xp_to_next_level() -> int:
+	return 30 * player_level
+
+func gain_xp(amount: int) -> int:
+	var levels_gained := 0
+	player_xp += max(amount, 0)
+	while player_xp >= xp_to_next_level():
+		player_xp -= xp_to_next_level()
+		player_level += 1
+		levels_gained += 1
+		player_hp = -1  # level up fully heals
+	player_stats_changed.emit()
+	return levels_gained
+
+func lose_xp_on_defeat() -> void:
+	player_xp = int(player_xp * 0.75)
+	player_hp = -1
+	player_stats_changed.emit()
+
+func player_skills() -> Array[Dictionary]:
+	var skills: Array[Dictionary] = [
+		{"id": "strike", "name": "Strike", "power": 1.0, "sp_cost": 0, "unlock_level": 1},
+		{"id": "power_strike", "name": "Power Strike", "power": 1.6, "sp_cost": 1, "unlock_level": 1},
+		{"id": "focus", "name": "Focus", "power": 0.0, "sp_cost": 1, "unlock_level": 2, "effect": "focus"},
+		{"id": "crush", "name": "Crushing Blow", "power": 2.2, "sp_cost": 2, "unlock_level": 3},
+	]
+	var unlocked: Array[Dictionary] = []
+	for skill in skills:
+		if player_level >= int(skill["unlock_level"]):
+			unlocked.append(skill)
+	return unlocked
+
+func mark_enemy_defeated(enemy_id: String) -> void:
+	defeated_enemy_ids[enemy_id] = true
+
+func mark_enemy_spared(enemy_id: String) -> void:
+	spared_enemy_ids[enemy_id] = true
+
+func reset_combat_progress() -> void:
+	player_level = 1
+	player_xp = 0
+	player_hp = -1
+	defeated_enemy_ids.clear()
+	spared_enemy_ids.clear()
+
+func get_enemy_roster() -> Array:
+	var enemies: Dictionary = imported_scene_package.get("enemies", {}) as Dictionary
+	var roster: Array = enemies.get("roster", []) as Array
+	var valid: Array = []
+	for item in roster:
+		if item is Dictionary and not str((item as Dictionary).get("id", "")).is_empty():
+			valid.append(item)
+	return valid
+
 var imported_scene_package: Dictionary = {}
 var imported_scene_root_dir: String = ""
 var imported_player_sprite_path: String = ""
 var imported_scene_context: Dictionary = {}
+var ui_blocking_input: bool = false
 
 func reset_runtime_imports(clear_files := false) -> void:
+	reset_combat_progress()
 	imported_scene_package.clear()
 	imported_scene_root_dir = ""
 	imported_player_sprite_path = ""
@@ -49,25 +144,30 @@ func get_player_sprite_path() -> String:
 	return imported_player_sprite_path if not imported_player_sprite_path.is_empty() else DEFAULT_PLAYER_SPRITE_PATH
 
 func import_scene_package_zip(zip_path: String) -> Error:
+	print("[GameManager] import_scene_package_zip path='%s'" % zip_path)
 	_remove_tree(SCENE_IMPORT_DIR)
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SCENE_IMPORT_DIR))
 
 	var zip_reader: ZIPReader = ZIPReader.new()
 	var open_error: Error = zip_reader.open(zip_path)
 	if open_error != OK:
+		print("[GameManager] zip open failed err=%d" % open_error)
 		return open_error
 
 	var scene_json_internal_path: String = ""
-	for internal_path in zip_reader.get_files():
+	var zip_files: PackedStringArray = zip_reader.get_files()
+	print("[GameManager] zip file count=%d" % zip_files.size())
+	for internal_path in zip_files:
 		if internal_path.get_file() == "scene_package.json":
 			scene_json_internal_path = internal_path
 			break
 
 	if scene_json_internal_path.is_empty():
 		zip_reader.close()
+		print("[GameManager] scene_package.json missing in zip")
 		return ERR_FILE_NOT_FOUND
 
-	for internal_path in zip_reader.get_files():
+	for internal_path in zip_files:
 		if internal_path.ends_with("/"):
 			continue
 		var bytes: PackedByteArray = zip_reader.read_file(internal_path)
@@ -94,7 +194,9 @@ func import_scene_package_zip(zip_path: String) -> Error:
 	var scene_root_dir: String = scene_json_path.get_base_dir()
 	var load_error: Error = _apply_scene_package(parsed_data as Dictionary, scene_root_dir)
 	if load_error != OK:
+		print("[GameManager] apply scene package failed err=%d" % load_error)
 		return load_error
+	print("[GameManager] import complete root='%s'" % imported_scene_root_dir)
 	return OK
 
 func load_scene_package_file(scene_json_path: String) -> Error:
@@ -146,6 +248,7 @@ func load_texture(texture_path: String) -> Texture2D:
 	var image: Image = Image.new()
 	var error: Error = image.load(texture_path)
 	if error != OK:
+		print("[GameManager] load_texture FAILED path='%s' err=%d" % [texture_path, error])
 		return null
 
 	return ImageTexture.create_from_image(image)
@@ -241,15 +344,27 @@ func _definitions_by_id(package_data: Dictionary) -> Dictionary:
 	return definitions
 
 func _apply_scene_package(package_data: Dictionary, scene_root_dir: String) -> Error:
+	var characters_for_log: Dictionary = package_data.get("characters", {}) as Dictionary
+	var npcs_for_log: Array = characters_for_log.get("npcs", []) as Array
+	print("[GameManager] apply_scene_package root='%s' definitions=%d instances=%d npcs=%d" % [
+		scene_root_dir,
+		(package_data.get("definitions", []) as Array).size(),
+		(package_data.get("instances", []) as Array).size(),
+		npcs_for_log.size(),
+	])
 	if not package_data.has("background_image"):
+		print("[GameManager] package missing background_image")
 		return ERR_INVALID_DATA
 	if not package_data.has("definitions"):
+		print("[GameManager] package missing definitions")
 		return ERR_INVALID_DATA
 	if not package_data.has("instances"):
+		print("[GameManager] package missing instances")
 		return ERR_INVALID_DATA
 
 	var background_path: String = scene_root_dir.path_join(str(package_data.get("background_image", "")))
 	if not FileAccess.file_exists(background_path):
+		print("[GameManager] background missing path='%s'" % background_path)
 		return ERR_FILE_NOT_FOUND
 
 	for definition in package_data.get("definitions", []):
@@ -257,8 +372,10 @@ func _apply_scene_package(package_data: Dictionary, scene_root_dir: String) -> E
 			continue
 		var file_name: String = str(definition.get("file", ""))
 		if file_name.is_empty():
+			print("[GameManager] definition has empty file id='%s'" % str(definition.get("id", "")))
 			return ERR_INVALID_DATA
 		if not FileAccess.file_exists(scene_root_dir.path_join(file_name)):
+			print("[GameManager] definition file missing path='%s'" % scene_root_dir.path_join(file_name))
 			return ERR_FILE_NOT_FOUND
 
 	var characters: Dictionary = package_data.get("characters", {}) as Dictionary
@@ -267,16 +384,23 @@ func _apply_scene_package(package_data: Dictionary, scene_root_dir: String) -> E
 	if not main_sprite_file.is_empty():
 		var main_sprite_error: Error = _validate_character_sprite_file(scene_root_dir.path_join(main_sprite_file))
 		if main_sprite_error != OK:
+			print("[GameManager] main sprite invalid path='%s' err=%d" % [scene_root_dir.path_join(main_sprite_file), main_sprite_error])
 			return main_sprite_error
 
 	for npc in characters.get("npcs", []):
 		if not (npc is Dictionary):
 			continue
 		var sprite_file: String = str((npc as Dictionary).get("sprite_sheet_file", ""))
-		if sprite_file.is_empty():
+		if sprite_file.is_empty() or sprite_file == "<null>":
+			# NPC without a generated sheet — the runtime uses a fallback sprite.
 			continue
 		var sprite_error: Error = _validate_character_sprite_file(scene_root_dir.path_join(sprite_file))
 		if sprite_error != OK:
+			print("[GameManager] npc sprite invalid id='%s' path='%s' err=%d" % [
+				str((npc as Dictionary).get("id", "")),
+				scene_root_dir.path_join(sprite_file),
+				sprite_error,
+			])
 			return sprite_error
 
 	imported_scene_package = package_data

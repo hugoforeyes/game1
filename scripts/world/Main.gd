@@ -1,6 +1,10 @@
 extends Node2D
 
 const NPC_SCENE := preload("res://scenes/npc/NPC.tscn")
+const ENEMY_SCENE := preload("res://scenes/enemies/Enemy.tscn")
+const BattleSceneScript := preload("res://scripts/battle/BattleScene.gd")
+const CutscenePlayerScript := preload("res://scripts/cutscene/CutscenePlayer.gd")
+const ItemPickupScript := preload("res://scripts/world/ItemPickup.gd")
 
 @onready var background: Sprite2D = $World/Background
 @onready var player: CharacterBody2D = $World/CharacterLayer/GeneratedCharacters/Player
@@ -10,20 +14,42 @@ const NPC_SCENE := preload("res://scenes/npc/NPC.tscn")
 @onready var generated_collisions: Node2D = $World/GeneratedCollisions
 @onready var lighting_system: Node = $LightingSystem
 
+var _player_spawn_tile := Vector2i.ZERO
+var _battle_active: bool = false
+var _zone_advancing: bool = false
+
 func _ready() -> void:
+	NPCConversationManager._start_prewarm()
+	print("[Main] ready has_scene_package=%s root='%s'" % [GameManager.has_scene_package(), GameManager.imported_scene_root_dir])
+	QuestManager.quests_changed.connect(_on_quests_changed)
 	if GameManager.has_scene_package():
 		_build_imported_world()
+		_maybe_start_cutscene.call_deferred()
+		if ChapterFlow.active:
+			QuestManager.notify_zone_entered.call_deferred(str(GameManager.get_scene_context().get("zone_id", "")))
 	else:
 		_apply_background_limits(background.texture)
+		_spawn_enemies_for_builtin_world()
 
 func _build_imported_world() -> void:
 	_clear_generated_content()
 
 	var package_data: Dictionary = GameManager.get_scene_package()
+	var characters: Dictionary = package_data.get("characters", {}) as Dictionary
+	var npcs: Array = characters.get("npcs", []) as Array
+	print("[Main] build imported world definitions=%d instances=%d npcs=%d" % [
+		(package_data.get("definitions", []) as Array).size(),
+		(package_data.get("instances", []) as Array).size(),
+		npcs.size(),
+	])
+
 	var background_path: String = GameManager.get_scene_asset_path(str(package_data.get("background_image", "")))
 	var background_texture: Texture2D = GameManager.load_texture(background_path)
 	if background_texture != null:
 		background.texture = background_texture
+		print("[Main] background loaded size=%s path='%s'" % [background_texture.get_size(), background_path])
+	else:
+		print("[Main] background load FAILED path='%s'" % background_path)
 
 	if background.texture != null:
 		background.position = background.texture.get_size() / 2.0
@@ -51,14 +77,16 @@ func _build_imported_world() -> void:
 				"sprite_file": hull_file,
 			})
 
-	var characters: Dictionary = package_data.get("characters", {}) as Dictionary
 	var npc_occupied_tiles: Dictionary = {}
 	var tile_context: Dictionary = _build_tile_context(package_data, background.texture)
-	for npc in characters.get("npcs", []):
+	var spawned_count := 0
+	for npc in npcs:
 		if npc is Dictionary:
 			var npc_data: Dictionary = npc as Dictionary
 			_spawn_npc(npc_data, tile_context, npc_occupied_tiles)
 			npc_occupied_tiles[_tile_key(_read_tile_position(npc_data))] = true
+			spawned_count += 1
+	print("[Main] spawned_npcs=%d generated_children=%d" % [spawned_count, generated_characters.get_child_count()])
 
 	var occupied_tiles: Dictionary = GameManager.get_blocked_tiles(package_data)
 	for key in occupied_tiles.keys():
@@ -68,9 +96,13 @@ func _build_imported_world() -> void:
 	_create_map_boundaries(GameManager.get_map_pixel_size(package_data, background.texture))
 
 	var spawn_tile: Vector2i = _find_player_spawn_tile(package_data)
+	_player_spawn_tile = spawn_tile
 	player.global_position = _tile_to_pixel_center(spawn_tile)
 	player.z_index = 0
 	_apply_background_limits(background.texture)
+
+	_spawn_enemies(package_data, tile_context)
+	_spawn_item_pickups(tile_context)
 
 	var map_pixel_size: Vector2 = GameManager.get_map_pixel_size(package_data, background.texture)
 	lighting_system.initialize($World, package_data, map_pixel_size, generated_props, solid_instances)
@@ -117,6 +149,13 @@ func _create_layered_prop_sprite(file_name: String, tile_position: Vector2i, par
 func _spawn_npc(npc_data: Dictionary, tile_context: Dictionary, occupied_tiles: Dictionary) -> void:
 	var npc: CharacterBody2D = NPC_SCENE.instantiate() as CharacterBody2D
 	generated_characters.add_child(npc)
+	var tile_position: Vector2i = _read_tile_position(npc_data)
+	print("[Main] spawn npc id='%s' name='%s' tile=%s sprite='%s'" % [
+		str(npc_data.get("id", "")),
+		str(npc_data.get("name", "")),
+		tile_position,
+		str(npc_data.get("sprite_sheet_file", "")),
+	])
 	var world_context := {
 		"map_tile_size": tile_context.get("map_tile_size", Vector2i.ZERO),
 		"blocked_tiles": tile_context.get("blocked_tiles", {}),
@@ -292,6 +331,287 @@ func _metadata_tags(metadata: Dictionary) -> Array[String]:
 		for raw_tag in raw_tags:
 			tags.append(str(raw_tag))
 	return tags
+
+func _spawn_enemies_for_builtin_world() -> void:
+	var map_tile_size := Vector2i(12, 12)
+	if background.texture != null:
+		map_tile_size = Vector2i(
+			int(background.texture.get_width() / GameManager.TILE_SIZE),
+			int(background.texture.get_height() / GameManager.TILE_SIZE),
+		)
+	_player_spawn_tile = Vector2i(
+		int(player.global_position.x / GameManager.TILE_SIZE),
+		int(player.global_position.y / GameManager.TILE_SIZE),
+	)
+	_spawn_enemies({}, {
+		"map_tile_size": map_tile_size,
+		"blocked_tiles": {},
+	})
+
+func _spawn_enemies(package_data: Dictionary, tile_context: Dictionary) -> void:
+	var roster: Array = GameManager.get_enemy_roster()
+	if roster.is_empty():
+		roster = _fallback_enemy_roster(tile_context)
+		print("[Main] no enemies in package, using fallback roster size=%d" % roster.size())
+
+	var spawned := 0
+	for enemy_data in roster:
+		if not (enemy_data is Dictionary):
+			continue
+		var data: Dictionary = (enemy_data as Dictionary).duplicate(true)
+		var enemy_id: String = str(data.get("id", ""))
+		if GameManager.defeated_enemy_ids.has(enemy_id):
+			continue
+		if GameManager.spared_enemy_ids.has(enemy_id):
+			data["_spared"] = true
+		var enemy: CharacterBody2D = ENEMY_SCENE.instantiate() as CharacterBody2D
+		generated_characters.add_child(enemy)
+		enemy.setup(data, {
+			"map_tile_size": tile_context.get("map_tile_size", Vector2i.ZERO),
+			"blocked_tiles": tile_context.get("blocked_tiles", {}),
+			"player": player,
+		})
+		enemy.battle_requested.connect(_on_battle_requested)
+		spawned += 1
+	print("[Main] spawned_enemies=%d" % spawned)
+
+func _on_battle_requested(enemy: Node) -> void:
+	if _battle_active:
+		return
+	_battle_active = true
+	print("[Main] battle start enemy='%s'" % str((enemy.enemy_data as Dictionary).get("id", "?")))
+	var battle: CanvasLayer = BattleSceneScript.new()
+	add_child(battle)
+	battle.battle_finished.connect(_on_battle_finished.bind(enemy))
+	battle.open(enemy.enemy_data)
+
+func _on_battle_finished(result: String, enemy_id: String, enemy: Node) -> void:
+	_battle_active = false
+	print("[Main] battle finished result=%s enemy=%s" % [result, enemy_id])
+	match result:
+		"victory":
+			GameManager.mark_enemy_defeated(enemy_id)
+			QuestManager.notify_enemy_defeated(enemy_id)
+			if is_instance_valid(enemy):
+				enemy.queue_free()
+			_check_zone_cleared.call_deferred()
+		"spared":
+			GameManager.mark_enemy_spared(enemy_id)
+			QuestManager.notify_enemy_defeated(enemy_id)
+			if is_instance_valid(enemy):
+				enemy.become_passive()
+			_check_zone_cleared.call_deferred()
+		"fled":
+			if is_instance_valid(enemy):
+				enemy.start_battle_cooldown()
+		"defeat":
+			player.global_position = _tile_to_pixel_center(_player_spawn_tile)
+			if is_instance_valid(enemy):
+				enemy.global_position = enemy._tile_to_pixel_center(enemy.spawn_tile)
+				enemy.start_battle_cooldown()
+
+func _spawn_item_pickups(tile_context: Dictionary) -> void:
+	if InventoryManager.catalog.is_empty():
+		return
+	var zone_id: String = str(GameManager.get_scene_context().get("zone_id", ""))
+	var blocked: Dictionary = tile_context.get("blocked_tiles", {}) as Dictionary
+	var map_size: Vector2i = tile_context.get("map_tile_size", Vector2i(12, 12)) as Vector2i
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(zone_id)  # deterministic scatter per zone
+	var used: Dictionary = {}
+	var spawned := 0
+	for item in InventoryManager.catalog:
+		if not (item is Dictionary):
+			continue
+		var definition: Dictionary = item as Dictionary
+		if not (definition.get("found_in", []) as Array).has(zone_id):
+			continue
+		for _n in range(int(definition.get("world_spawn_count", 1))):
+			var tile: Vector2i = _find_pickup_tile(rng, map_size, blocked, used)
+			if tile == Vector2i(-1, -1):
+				continue
+			used["%s:%s" % [tile.x, tile.y]] = true
+			var pickup: Area2D = ItemPickupScript.new() as Area2D
+			generated_props.add_child(pickup)
+			pickup.setup(definition, tile)
+			spawned += 1
+	print("[Main] spawned_item_pickups=%d" % spawned)
+
+func _find_pickup_tile(rng: RandomNumberGenerator, map_size: Vector2i, blocked: Dictionary, used: Dictionary) -> Vector2i:
+	for _attempt in range(60):
+		var tile := Vector2i(rng.randi_range(1, max(map_size.x - 2, 1)), rng.randi_range(1, max(map_size.y - 2, 1)))
+		var key := "%s:%s" % [tile.x, tile.y]
+		if blocked.has(key) or used.has(key):
+			continue
+		if tile.distance_to(_player_spawn_tile) < 3:
+			continue
+		return tile
+	return Vector2i(-1, -1)
+
+func _maybe_start_cutscene() -> void:
+	var actions: Array = ChapterFlow.take_pending_cutscene()
+	if actions.is_empty():
+		return
+	print("[Main] starting chapter cutscene actions=%d" % actions.size())
+	var cutscene: CanvasLayer = CutscenePlayerScript.new()
+	add_child(cutscene)
+	cutscene.cutscene_finished.connect(_check_zone_cleared)
+	cutscene.play(actions, self, player, generated_characters)
+
+func _remaining_hostile_count() -> int:
+	var count := 0
+	for child in generated_characters.get_children():
+		if child.has_method("is_hostile") and child.is_hostile():
+			count += 1
+	return count
+
+func _on_quests_changed() -> void:
+	_refresh_quest_markers()
+	_check_zone_cleared.call_deferred()
+
+func _refresh_quest_markers() -> void:
+	for child in generated_characters.get_children():
+		if child.has_method("update_quest_marker"):
+			child.update_quest_marker()
+
+func _check_zone_cleared() -> void:
+	if not ChapterFlow.active or _battle_active or _zone_advancing:
+		return
+	if _remaining_hostile_count() > 0:
+		return
+	var zone_id: String = str(GameManager.get_scene_context().get("zone_id", ""))
+	QuestManager.notify_zone_hostiles_cleared(zone_id)
+	# Quest objectives staged in this zone (talks, choices) hold the door open.
+	if QuestManager.has_blocking_objectives_in_zone(zone_id):
+		return
+	_zone_advancing = true
+	_show_zone_cleared_and_advance()
+
+func _show_zone_cleared_and_advance() -> void:
+	GameManager.ui_blocking_input = true
+	var overlay := CanvasLayer.new()
+	overlay.layer = 90
+	overlay.transform = Transform2D.IDENTITY.scaled(Vector2(2, 2))  # UI authored in 480x270
+	add_child(overlay)
+
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.0)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(dim)
+
+	var label := Label.new()
+	label.text = "AREA CLEARED"
+	label.add_theme_font_size_override("font_size", 16)
+	label.add_theme_color_override("font_color", Color(0.96, 0.88, 0.50, 1.0))
+	label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
+	label.add_theme_constant_override("shadow_offset_y", 2)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.position = Vector2(20, 110)
+	label.size = Vector2(440, 30)
+	label.modulate.a = 0.0
+	overlay.add_child(label)
+
+	var status := Label.new()
+	status.text = "Loading the next part of the story..."
+	status.add_theme_font_size_override("font_size", 8)
+	status.add_theme_color_override("font_color", Color(0.93, 0.88, 0.75, 0.85))
+	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	status.position = Vector2(20, 146)
+	status.size = Vector2(440, 16)
+	overlay.add_child(status)
+	var status_updater := Callable(self, "_set_zone_overlay_status").bind(status)
+	ChapterFlow.loading_status.connect(status_updater)
+	overlay.tree_exiting.connect(func() -> void:
+		if ChapterFlow.loading_status.is_connected(status_updater):
+			ChapterFlow.loading_status.disconnect(status_updater)
+	)
+
+	var tween := create_tween()
+	tween.tween_property(label, "modulate:a", 1.0, 0.7)
+	tween.parallel().tween_property(dim, "color:a", 0.55, 0.9)
+	await tween.finished
+	await get_tree().create_timer(1.4).timeout
+
+	var fade := create_tween()
+	fade.tween_property(dim, "color:a", 1.0, 0.6)
+	await fade.finished
+
+	GameManager.ui_blocking_input = false
+	await ChapterFlow.advance_after_zone_cleared()
+
+func _set_zone_overlay_status(message: String, status: Label) -> void:
+	if is_instance_valid(status):
+		status.text = message
+
+func _fallback_enemy_roster(tile_context: Dictionary) -> Array:
+	var blocked: Dictionary = tile_context.get("blocked_tiles", {}) as Dictionary
+	var map_size: Vector2i = tile_context.get("map_tile_size", Vector2i(12, 12)) as Vector2i
+	var spawn_tiles: Array[Vector2i] = []
+	var offsets := [Vector2i(6, 0), Vector2i(-6, 2), Vector2i(0, 7), Vector2i(4, -5)]
+	for offset in offsets:
+		var tile: Vector2i = _player_spawn_tile + offset
+		tile.x = clampi(tile.x, 1, max(map_size.x - 2, 1))
+		tile.y = clampi(tile.y, 1, max(map_size.y - 2, 1))
+		if not blocked.has(_tile_key(tile)):
+			spawn_tiles.append(tile)
+		if spawn_tiles.size() >= 2:
+			break
+	while spawn_tiles.size() < 2:
+		spawn_tiles.append(_player_spawn_tile + Vector2i(3 + spawn_tiles.size(), 3))
+
+	return [
+		_fallback_enemy("fallback_echo_1", "Lost Echo", "minion", 1, false, spawn_tiles[0]),
+		_fallback_enemy("fallback_echo_2", "Hollow Warden", "elite", 2, true, spawn_tiles[1]),
+	]
+
+func _fallback_enemy(id: String, display_name: String, rank: String, level: int, can_spare: bool, tile: Vector2i) -> Dictionary:
+	var mult: float = 1.4 if rank == "elite" else 1.0
+	return {
+		"id": id,
+		"name": display_name,
+		"rank": rank,
+		"level": level,
+		"can_spare": can_spare,
+		"stats": {
+			"max_hp": int((30 + 14 * level) * mult),
+			"attack": int((6 + 2.2 * level) * mult),
+			"defense": int((2 + 1.4 * level) * mult * 0.9),
+			"speed": 6 + level + (2 if rank == "elite" else 0),
+		},
+		"xp_reward": int((18 + 9 * level) * mult),
+		"skills": [
+			{"name": "Flickering Claw", "kind": "strike", "power": 1.0, "telegraph": "It flickers closer, edges sharpening."},
+			{"name": "Static Howl", "kind": "hex", "power": 0.8, "telegraph": "A low hum builds inside it..."},
+			{"name": "Collapse", "kind": "heavy", "power": 1.8, "telegraph": "It folds inward, gathering itself for something terrible!"},
+		],
+		"weakness": {
+			"hint": "It repeats the same broken motion, like a moment it cannot leave.",
+			"probe_options": [
+				{"text": "\"Stop! You're hurting people!\"", "correct": false, "reveal": "It does not hear commands. It only repeats."},
+				{"text": "\"This moment already ended. You can rest.\"", "correct": true, "reveal": "The echo shudders. For one second, its face becomes a person's face — tired, relieved."},
+				{"text": "\"Who are you?\"", "correct": false, "reveal": "Static. It does not remember being anyone."},
+			],
+			"vulnerable_turns": 3,
+			"damage_multiplier": 2.0,
+		},
+		"phases": [
+			{"hp_ratio": 0.5, "story_beat": "The echo's loop is breaking apart...", "behavior": "desperate"},
+		],
+		"dialogue": {
+			"intro": ["A " + display_name + " flickers into your path, repeating a moment that no longer exists."],
+			"taunt": ["...it repeats..."],
+			"low_hp": ["The loop is almost broken."],
+			"player_victory": ["...thank... you..."],
+			"player_defeat": ["The echo swallows your light."],
+			"spare": ["The echo dims, folds its hands, and stops repeating."],
+			"finish": ["The echo scatters into harmless motes of light."],
+		},
+		"spawn": {
+			"position_tile": {"x": tile.x, "y": tile.y},
+			"patrol_radius": 3,
+			"aggro_radius": 4,
+		},
+	}
 
 func _clear_generated_content() -> void:
 	lighting_system.cleanup()
