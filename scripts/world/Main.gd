@@ -34,6 +34,11 @@ func _ready() -> void:
 func _build_imported_world() -> void:
 	_clear_generated_content()
 
+	# A freshly loaded world always starts movable; an intro cutscene (started
+	# deferred right after this) re-blocks input itself when needed. This also
+	# clears any blocking flag left over from a scene-to-scene exit transition.
+	GameManager.ui_blocking_input = false
+
 	var package_data: Dictionary = GameManager.get_scene_package()
 	var characters: Dictionary = package_data.get("characters", {}) as Dictionary
 	var npcs: Array = characters.get("npcs", []) as Array
@@ -95,7 +100,7 @@ func _build_imported_world() -> void:
 
 	_create_map_boundaries(GameManager.get_map_pixel_size(package_data, background.texture))
 
-	var spawn_tile: Vector2i = _find_player_spawn_tile(package_data)
+	var spawn_tile: Vector2i = _resolve_player_spawn_tile(package_data, tile_context)
 	_player_spawn_tile = spawn_tile
 	player.global_position = _tile_to_pixel_center(spawn_tile)
 	player.z_index = 0
@@ -103,6 +108,7 @@ func _build_imported_world() -> void:
 
 	_spawn_enemies(package_data, tile_context, false)
 	_spawn_item_pickups(tile_context)
+	_create_scene_exits(tile_context)
 
 	var map_pixel_size: Vector2 = GameManager.get_map_pixel_size(package_data, background.texture)
 	lighting_system.initialize($World, package_data, map_pixel_size, generated_props, solid_instances)
@@ -315,6 +321,198 @@ func _read_tile_position(data: Dictionary) -> Vector2i:
 
 	return Vector2i.ZERO
 
+# ── Scene-to-scene exits ────────────────────────────────────────────────────
+
+func _resolve_player_spawn_tile(package_data: Dictionary, tile_context: Dictionary) -> Vector2i:
+	# Arriving through an exit: spawn at the matching edge of the new scene.
+	if ChapterFlow.active:
+		var entry_edge: String = ChapterFlow.take_pending_entry_edge()
+		if entry_edge != "":
+			return _entry_spawn_tile(entry_edge, tile_context)
+	return _find_player_spawn_tile(package_data)
+
+func _create_scene_exits(tile_context: Dictionary) -> void:
+	if not ChapterFlow.active:
+		return
+	var zone: Dictionary = ChapterFlow.current_zone()
+	var exits: Array = zone.get("edge_exits", []) as Array
+	if exits.is_empty():
+		return
+	var map_tile_size: Vector2i = tile_context.get("map_tile_size", Vector2i.ZERO)
+	if map_tile_size == Vector2i.ZERO:
+		return
+	for exit_data in exits:
+		if not (exit_data is Dictionary):
+			continue
+		var data: Dictionary = exit_data as Dictionary
+		var edge: String = str(data.get("edge", ""))
+		var leads_to: String = str(data.get("leads_to", ""))
+		if edge.is_empty() or leads_to.is_empty():
+			continue
+		var normalized: float = float(data.get("normalized", 0.5))
+		var tile: Vector2i = _edge_exit_tile(edge, normalized, map_tile_size)
+		_spawn_scene_exit(tile, edge, leads_to, _zone_display_name(leads_to))
+
+func _spawn_scene_exit(tile: Vector2i, edge: String, leads_to: String, label_text: String) -> void:
+	var area := Area2D.new()
+	area.global_position = _tile_to_pixel_center(tile)
+
+	var shape := CollisionShape2D.new()
+	var rect := RectangleShape2D.new()
+	# A band spanning the carved 3-cell exit corridor so it is easy to step into.
+	if edge == "east" or edge == "west":
+		rect.size = Vector2(GameManager.TILE_SIZE * 1.2, GameManager.TILE_SIZE * 3.0)
+	else:
+		rect.size = Vector2(GameManager.TILE_SIZE * 3.0, GameManager.TILE_SIZE * 1.2)
+	shape.shape = rect
+	area.add_child(shape)
+
+	var glow := ColorRect.new()
+	glow.color = Color(0.55, 0.85, 1.0, 0.16)
+	glow.size = rect.size
+	glow.position = -rect.size * 0.5
+	var glow_mat := CanvasItemMaterial.new()
+	glow_mat.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	glow.material = glow_mat
+	area.add_child(glow)
+
+	if not label_text.is_empty():
+		var label := Label.new()
+		label.text = "→ %s" % label_text
+		label.add_theme_color_override("font_color", Color(0.85, 0.95, 1.0, 0.92))
+		label.add_theme_font_size_override("font_size", 16)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		label.position = Vector2(-90, -rect.size.y * 0.5 - 24)
+		label.size = Vector2(180, 18)
+		area.add_child(label)
+
+	var pulse := area.create_tween().set_loops()
+	pulse.tween_property(glow, "color:a", 0.32, 0.9).set_trans(Tween.TRANS_SINE)
+	pulse.tween_property(glow, "color:a", 0.10, 0.9).set_trans(Tween.TRANS_SINE)
+
+	var triggered: Array = [false]
+	area.body_entered.connect(func(body: Node2D) -> void:
+		if triggered[0] or _battle_active or _zone_advancing:
+			return
+		if body.get("camera") == null:
+			return  # only the player carries a camera
+		triggered[0] = true
+		_use_scene_exit(leads_to, _opposite_edge(edge))
+	)
+	$World.add_child(area)
+
+func _use_scene_exit(leads_to: String, arrival_edge: String) -> void:
+	# _zone_advancing + the per-area triggered guard stop double-entry. We do NOT
+	# raise ui_blocking_input here: it lives on the GameManager autoload and would
+	# persist into the freshly loaded scene, freezing the player there.
+	_zone_advancing = true
+	# Already-downloaded scenes load instantly; otherwise show a download page
+	# over the world while ChapterFlow fetches the package.
+	if not ChapterFlow.is_zone_cached_by_id(leads_to):
+		_show_scene_loading_overlay()
+	var err: Error = await ChapterFlow.goto_zone_by_id(leads_to, arrival_edge)
+	if err != OK:
+		_zone_advancing = false
+		print("[Main] scene exit to '%s' failed err=%d" % [leads_to, err])
+
+func _show_scene_loading_overlay() -> void:
+	var overlay := CanvasLayer.new()
+	overlay.layer = 95
+	overlay.transform = Transform2D.IDENTITY.scaled(Vector2(2, 2))  # UI authored in 480x270
+	add_child(overlay)
+
+	var dim := ColorRect.new()
+	dim.color = Color(0.03, 0.03, 0.06, 0.94)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(dim)
+
+	var title := Label.new()
+	title.text = "Đang tải cảnh..."
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 18)
+	title.add_theme_color_override("font_color", Color(0.92, 0.96, 1.0, 0.95))
+	title.position = Vector2(40, 120)
+	title.size = Vector2(400, 22)
+	overlay.add_child(title)
+
+	var status := Label.new()
+	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	status.add_theme_color_override("font_color", Color(0.72, 0.8, 0.92, 0.9))
+	status.position = Vector2(40, 146)
+	status.size = Vector2(400, 16)
+	overlay.add_child(status)
+
+	var updater := Callable(self, "_set_zone_overlay_status").bind(status)
+	ChapterFlow.loading_status.connect(updater)
+	overlay.tree_exiting.connect(func() -> void:
+		if ChapterFlow.loading_status.is_connected(updater):
+			ChapterFlow.loading_status.disconnect(updater)
+	)
+
+func _edge_exit_tile(edge: String, normalized: float, map_tile_size: Vector2i) -> Vector2i:
+	var nx: int = clampi(int(round(normalized * float(map_tile_size.x - 1))), 1, max(map_tile_size.x - 2, 1))
+	var ny: int = clampi(int(round(normalized * float(map_tile_size.y - 1))), 1, max(map_tile_size.y - 2, 1))
+	match edge:
+		"west":
+			return Vector2i(2, ny)
+		"east":
+			return Vector2i(max(map_tile_size.x - 3, 2), ny)
+		"north":
+			return Vector2i(nx, 2)
+		"south":
+			return Vector2i(nx, max(map_tile_size.y - 3, 2))
+	return Vector2i(nx, ny)
+
+func _entry_spawn_tile(edge: String, tile_context: Dictionary) -> Vector2i:
+	var map_tile_size: Vector2i = tile_context.get("map_tile_size", Vector2i(12, 12))
+	var blocked: Dictionary = tile_context.get("blocked_tiles", {})
+	var mid_x: int = map_tile_size.x / 2
+	var mid_y: int = map_tile_size.y / 2
+	# Spawn a few tiles inward from the edge so we do not overlap the return exit.
+	var base: Vector2i
+	match edge:
+		"west":
+			base = Vector2i(min(4, map_tile_size.x - 2), mid_y)
+		"east":
+			base = Vector2i(max(map_tile_size.x - 5, 1), mid_y)
+		"north":
+			base = Vector2i(mid_x, min(4, map_tile_size.y - 2))
+		"south":
+			base = Vector2i(mid_x, max(map_tile_size.y - 5, 1))
+		_:
+			base = Vector2i(mid_x, mid_y)
+	return _nearest_free_tile(base, map_tile_size, blocked)
+
+func _nearest_free_tile(start: Vector2i, map_tile_size: Vector2i, blocked: Dictionary) -> Vector2i:
+	var max_radius: int = max(map_tile_size.x, map_tile_size.y)
+	for radius in range(0, max_radius):
+		for dy in range(-radius, radius + 1):
+			for dx in range(-radius, radius + 1):
+				var tile := start + Vector2i(dx, dy)
+				if tile.x < 1 or tile.y < 1 or tile.x > map_tile_size.x - 2 or tile.y > map_tile_size.y - 2:
+					continue
+				if not blocked.has(_tile_key(tile)):
+					return tile
+	return start
+
+func _opposite_edge(edge: String) -> String:
+	match edge:
+		"east":
+			return "west"
+		"west":
+			return "east"
+		"north":
+			return "south"
+		"south":
+			return "north"
+	return ""
+
+func _zone_display_name(zone_id: String) -> String:
+	for zone in ChapterFlow.current_chapter_zones():
+		if zone is Dictionary and str((zone as Dictionary).get("zone_id", "")) == zone_id:
+			return str((zone as Dictionary).get("name", zone_id))
+	return zone_id
+
 func _tile_from_key(key: String) -> Vector2i:
 	var parts: PackedStringArray = key.split(":")
 	if parts.size() != 2:
@@ -383,6 +581,7 @@ func _on_battle_requested(enemy: Node) -> void:
 		return
 	_battle_active = true
 	print("[Main] battle start enemy='%s'" % str((enemy.enemy_data as Dictionary).get("id", "?")))
+	MusicManager.play_boss(GameManager.get_scene_context())
 	var battle: CanvasLayer = BattleSceneScript.new()
 	add_child(battle)
 	battle.battle_finished.connect(_on_battle_finished.bind(enemy))
@@ -391,6 +590,9 @@ func _on_battle_requested(enemy: Node) -> void:
 func _on_battle_finished(result: String, enemy_id: String, enemy: Node) -> void:
 	_battle_active = false
 	print("[Main] battle finished result=%s enemy=%s" % [result, enemy_id])
+	# Back to exploration music. If this victory clears the zone, the upcoming
+	# scene transition will swap to the next zone's track anyway.
+	MusicManager.load_and_play(GameManager.get_scene_context())
 	match result:
 		"victory":
 			GameManager.mark_enemy_defeated(enemy_id)

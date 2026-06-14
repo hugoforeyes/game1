@@ -46,12 +46,14 @@ const TEX_B2_PLAYER := "res://assets/ui/battle_v2/panel_player.png"
 const TEX_B2_ORNAMENT := "res://assets/ui/battle_v2/ornament_gem.png"
 const TEX_B2_TURN_ORDER_ENEMY := "res://assets/ui/battle_v2/turn_order_card_enemy.png"
 const TEX_B2_TURN_ORDER_ALLY := "res://assets/ui/battle_v2/turn_order_card_ally.png"
-const TEX_B2_TURN_MARKER := "res://assets/ui/battle_v2/turn_marker.png"
-const TEX_B2_STATUS_RED := "res://assets/ui/battle_v2/status_red.png"
-const TEX_B2_STATUS_BLUE := "res://assets/ui/battle_v2/status_blue.png"
-const TEX_B2_STATUS_GREEN := "res://assets/ui/battle_v2/status_green.png"
-const TEX_B2_STATUS_PURPLE := "res://assets/ui/battle_v2/status_purple.png"
-const TEX_B2_STATUS_GOLD := "res://assets/ui/battle_v2/status_gold.png"
+const TEX_B2_ICON_ATTACK := "res://assets/ui/battle_v2/icons/icon_attack.png"
+const TEX_B2_ICON_SKILL := "res://assets/ui/battle_v2/icons/icon_skill.png"
+const TEX_B2_ICON_PROBE := "res://assets/ui/battle_v2/icons/icon_probe.png"
+const TEX_B2_ICON_ITEM := "res://assets/ui/battle_v2/icons/icon_item.png"
+const TEX_B2_ICON_GUARD := "res://assets/ui/battle_v2/icons/icon_guard.png"
+const TEX_B2_ICON_FLEE := "res://assets/ui/battle_v2/icons/icon_flee.png"
+const TEX_B2_ICON_FINISHER := "res://assets/ui/battle_v2/icons/icon_finisher.png"
+const TEX_B2_ICON_SPARE := "res://assets/ui/battle_v2/icons/icon_spare.png"
 
 enum UiMode { NONE, TYPING, CONFIRM, MENU }
 
@@ -275,9 +277,10 @@ func _build_ui() -> void:
 	dim.color = Color(0.015, 0.016, 0.024, 0.90)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_root.add_child(dim)
-	if ResourceLoader.exists(TEX_BACKDROP):
+	var backdrop_texture := _load_battle_backdrop_texture()
+	if backdrop_texture != null:
 		var backdrop := TextureRect.new()
-		backdrop.texture = load(TEX_BACKDROP)
+		backdrop.texture = backdrop_texture
 		backdrop.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		backdrop.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 		backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -285,9 +288,9 @@ func _build_ui() -> void:
 		_root.add_child(backdrop)
 
 	# ── enemy panel (slides in from the top) ──
-	_enemy_panel = _make_panel_node(Rect2(24, 24, 260, 118))
+	_enemy_panel = _make_panel_node(Rect2(24, 24, 260, 104))
 	_root.add_child(_enemy_panel)
-	_add_texture(_enemy_panel, TEX_B2_ENEMY, Rect2(-6, -6, 272, 130), 0.58, true)
+	_add_texture(_enemy_panel, TEX_B2_ENEMY, Rect2(-6, -6, 272, 116), 0.58, true)
 
 	var enemy_kicker := _make_label("ENEMY", 13, COLOR_ACCENT)
 	enemy_kicker.position = Vector2(18, 12)
@@ -325,15 +328,10 @@ func _build_ui() -> void:
 	_enemy_panel.add_child(_enemy_hp_bar)
 
 	_enemy_status_label = _make_label("", 13, COLOR_EXPOSED)
-	_enemy_status_label.position = Vector2(174, 91)
+	_enemy_status_label.position = Vector2(18, 86)
 	_enemy_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_enemy_status_label.size = Vector2(62, 18)
+	_enemy_status_label.size = Vector2(206, 16)
 	_enemy_panel.add_child(_enemy_status_label)
-
-	var status_paths: Array[String] = [TEX_B2_STATUS_RED, TEX_B2_STATUS_PURPLE, TEX_B2_STATUS_GREEN, TEX_B2_STATUS_BLUE, TEX_B2_STATUS_GOLD]
-	for index in range(status_paths.size()):
-		var status_path: String = status_paths[index]
-		_add_texture(_enemy_panel, status_path, Rect2(18 + index * 31, 88, 24, 22), 0.76)
 
 	# ── intent panel ──
 	_intent_panel = _make_panel_node(Rect2(580, 36, 292, 126), true)
@@ -358,7 +356,6 @@ func _build_ui() -> void:
 	danger_mark.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_intent_panel.add_child(danger_mark)
 
-	_add_texture(_root, TEX_B2_TURN_MARKER, Rect2(648, 176, 230, 19), 0.86)
 	_build_turn_order_strip()
 
 	# ── portrait (entrance from the right, then breathes) ──
@@ -510,28 +507,8 @@ func _build_ui() -> void:
 
 
 func _build_turn_order_strip() -> void:
-	var turn_title := _make_label("TURN", 14, COLOR_TEXT)
-	turn_title.position = Vector2(870, 28)
-	turn_title.size = Vector2(58, 18)
-	turn_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_root.add_child(turn_title)
-
-	var turn_diamond := Panel.new()
-	turn_diamond.position = Vector2(886, 52)
-	turn_diamond.size = Vector2(28, 28)
-	turn_diamond.rotation_degrees = 45.0
-	turn_diamond.pivot_offset = Vector2(14, 14)
-	turn_diamond.add_theme_stylebox_override("panel", _make_panel_style(Color(0.02, 0.02, 0.03, 0.78), COLOR_PANEL_BORDER, 2))
-	_root.add_child(turn_diamond)
-
-	var turn_number := _make_label("1", 18, COLOR_TEXT)
-	turn_number.position = Vector2(879, 56)
-	turn_number.size = Vector2(42, 24)
-	turn_number.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_root.add_child(turn_number)
-
 	var title := _make_label("TURN ORDER", 12, COLOR_ACCENT)
-	title.position = Vector2(858, 202)
+	title.position = Vector2(858, 176)
 	title.size = Vector2(82, 18)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_root.add_child(title)
@@ -544,7 +521,7 @@ func _build_turn_order_strip() -> void:
 	]
 	for index in range(entries.size()):
 		var entry: Dictionary = entries[index]
-		var y := 226 + index * 46
+		var y := 200 + index * 46
 		_add_texture(_root, str(entry["path"]), Rect2(854, y, 86, 36), 0.88)
 		var entry_color: Color = entry["color"]
 		var label := _make_label(str(entry["label"]), 14, entry_color)
@@ -634,6 +611,21 @@ func _load_portrait() -> void:
 		_portrait.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	else:
 		_portrait.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+
+
+func _load_battle_backdrop_texture() -> Texture2D:
+	var backdrop_file: String = str(enemy.get("battle_background_file", ""))
+	if backdrop_file.is_empty():
+		var package: Dictionary = GameManager.get_scene_package()
+		var battle_background: Dictionary = package.get("battle_background", {}) as Dictionary
+		backdrop_file = str(battle_background.get("image", ""))
+	if not backdrop_file.is_empty():
+		var texture := GameManager.load_texture(GameManager.get_scene_asset_path(backdrop_file))
+		if texture != null:
+			return texture
+	if ResourceLoader.exists(TEX_BACKDROP):
+		return load(TEX_BACKDROP) as Texture2D
+	return null
 
 
 # ── battle FX helpers ─────────────────────────────────────────────────────────
@@ -1286,7 +1278,7 @@ func _menu(ids: Array[String], labels: Array[String]) -> String:
 	_menu_row.position.x = 18.0 + maxf((608.0 - total_w) * 0.5, 0.0)
 	_menu_row.size.x = minf(total_w, 608.0)
 	for index in range(labels.size()):
-		var item := _make_menu_card(labels[index], index, card_w)
+		var item := _make_menu_card(labels[index], _menu_icon_path(ids[index], labels[index]), index, card_w)
 		_menu_row.add_child(item)
 		_menu_items.append(item)
 	_menu_cursor.visible = true
@@ -1330,7 +1322,7 @@ func _highlight_menu() -> void:
 			(_menu_cursor.get_child(0) as ColorRect).size.x = maxf(target.size.x - 20.0, 30.0)
 
 
-func _make_menu_card(text: String, index: int, width: float) -> Panel:
+func _make_menu_card(text: String, icon_path: String, index: int, width: float) -> Panel:
 	var card := Panel.new()
 	card.custom_minimum_size = Vector2(width, 94)
 	card.size = Vector2(width, 94)
@@ -1340,22 +1332,29 @@ func _make_menu_card(text: String, index: int, width: float) -> Panel:
 
 	_add_texture(card, TEX_B2_COMMAND, Rect2(-2, -6, width + 4, 108), 0.42, true)
 
-	var icon := ColorRect.new()
-	icon.color = Color(0.95, 0.80, 0.48, 0.72)
-	icon.position = Vector2(width * 0.5 - 5, 17)
-	icon.size = Vector2(10, 10)
-	icon.rotation_degrees = 45
-	icon.pivot_offset = Vector2(5, 5)
-	card.add_child(icon)
-	card.set_meta("icon_node", icon)
+	var icon_node: CanvasItem
+	if not icon_path.is_empty():
+		var icon := _add_texture(card, icon_path, Rect2(width * 0.5 - 20.0, 11, 40, 40), 0.82)
+		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		icon_node = icon
+	else:
+		var icon := ColorRect.new()
+		icon.color = Color(0.95, 0.80, 0.48, 0.72)
+		icon.position = Vector2(width * 0.5 - 5, 21)
+		icon.size = Vector2(10, 10)
+		icon.rotation_degrees = 45
+		icon.pivot_offset = Vector2(5, 5)
+		card.add_child(icon)
+		icon_node = icon
+	card.set_meta("icon_node", icon_node)
 
 	var label := _make_label(text, 15 if text.length() <= 10 else 13, COLOR_TEXT_DIM)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	label.clip_text = true
-	label.position = Vector2(7, 42)
-	label.size = Vector2(width - 14, 38)
+	label.position = Vector2(7, 54)
+	label.size = Vector2(width - 14, 28)
 	card.add_child(label)
 	card.set_meta("label_node", label)
 	return card
@@ -1380,9 +1379,39 @@ func _set_menu_card_selected(card: Control, selected: bool) -> void:
 		if label != null:
 			label.add_theme_color_override("font_color", COLOR_ACCENT if selected else COLOR_TEXT_DIM)
 	if card.has_meta("icon_node"):
-		var icon := card.get_meta("icon_node") as ColorRect
-		if icon != null:
+		var icon := card.get_meta("icon_node") as CanvasItem
+		if icon is ColorRect:
 			icon.color = Color(1.0, 0.86, 0.40, 1.0) if selected else Color(0.95, 0.80, 0.48, 0.55)
+		elif icon != null:
+			icon.modulate = Color(1.18, 1.08, 0.82, 1.0) if selected else Color(0.82, 0.80, 0.74, 0.78)
+
+
+func _menu_icon_path(id: String, label: String) -> String:
+	match id:
+		"attack":
+			return TEX_B2_ICON_ATTACK
+		"skill":
+			return TEX_B2_ICON_SKILL
+		"probe":
+			return TEX_B2_ICON_PROBE
+		"item":
+			return TEX_B2_ICON_ITEM
+		"guard":
+			return TEX_B2_ICON_GUARD
+		"flee":
+			return TEX_B2_ICON_FLEE
+		"finisher":
+			return TEX_B2_ICON_FINISHER
+		"spare":
+			return TEX_B2_ICON_SPARE
+		"back":
+			return ""
+	var lower_label := label.to_lower()
+	if id.is_valid_int():
+		if lower_label.contains("potion") or lower_label.contains("tonic") or lower_label.contains("elixir") or lower_label.contains("×"):
+			return TEX_B2_ICON_ITEM
+		return TEX_B2_ICON_SKILL
+	return ""
 
 
 func _on_menu_card_gui_input(event: InputEvent, index: int) -> void:
@@ -1465,7 +1494,7 @@ func _unhandled_input(event: InputEvent) -> void:
 func _refresh_enemy_panel() -> void:
 	_enemy_name_label.text = _enemy_name()
 	_enemy_rank_label.text = "Lv %d" % int(enemy.get("level", 1))
-	_enemy_status_label.text = "EXP %d" % exposed_turns if exposed_turns > 0 else ""
+	_enemy_status_label.text = "EXPOSED %d" % exposed_turns if exposed_turns > 0 else ""
 
 
 func _refresh_player_panel() -> void:

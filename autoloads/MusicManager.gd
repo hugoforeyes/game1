@@ -4,19 +4,67 @@ const BASE_URL := "http://127.0.0.1:5001"
 const WEB_BASE_URL := ""
 
 var _player: AudioStreamPlayer = null
+# chapter cache_key -> generate_music dict, warmed by prefetch() during slides.
+var _music_cache: Dictionary = {}
 
 func _ready() -> void:
 	_player = AudioStreamPlayer.new()
 	_player.bus = "Master"
 	add_child(_player)
 
+func _cache_key(scene_ctx: Dictionary) -> String:
+	return "%s::chapter_%d" % [str(scene_ctx.get("run_id", "")), int(scene_ctx.get("chapter", 1))]
+
+## Cache-or-fetch a chapter's music dict. Keeps it cached so all zones of a
+## chapter — and normal/boss switches within a battle — reuse it without
+## re-downloading.
+func _get_music(scene_ctx: Dictionary) -> Dictionary:
+	var key := _cache_key(scene_ctx)
+	if _music_cache.has(key):
+		return _music_cache[key] as Dictionary
+	var music := await _fetch_music(scene_ctx)
+	if not music.is_empty():
+		_music_cache[key] = music
+	return music
+
+## Download + cache a chapter's music in the background (called while the intro
+## slides are showing) so load_and_play is instant afterwards.
+func prefetch(scene_ctx: Dictionary) -> void:
+	if _music_cache.has(_cache_key(scene_ctx)):
+		return
+	var music := await _get_music(scene_ctx)
+	if not music.is_empty():
+		print("[Music] prefetched %s" % _cache_key(scene_ctx))
+
+## Play a random Normal Scene (exploration) track for this chapter.
 func load_and_play(scene_ctx: Dictionary) -> void:
+	await _play_group(scene_ctx, "normal_scene")
+
+## Play a random Boss Scene (combat) track for this chapter.
+func play_boss(scene_ctx: Dictionary) -> void:
+	await _play_group(scene_ctx, "boss_scene")
+
+func _play_group(scene_ctx: Dictionary, group: String) -> void:
+	var music := await _get_music(scene_ctx)
+	if music.is_empty():
+		return
+	var tracks: Array = music.get(group, []) as Array
+	if tracks.is_empty() and group != "normal_scene":
+		tracks = music.get("normal_scene", []) as Array  # fall back to exploration
+	if tracks.is_empty():
+		print("[Music] No %s tracks found" % group)
+		return
+
+	var track: Dictionary = tracks[randi() % tracks.size()] as Dictionary
+	_play_track(track)
+
+func _fetch_music(scene_ctx: Dictionary) -> Dictionary:
 	var run_id      := str(scene_ctx.get("run_id", ""))
 	var chapter_num := int(scene_ctx.get("chapter", 1))
 	var chapter_key := "chapter_%d" % chapter_num
 
 	if run_id.is_empty():
-		return
+		return {}
 
 	var url := "%s/api/worlds/%s/chapters/%s/data" % [_get_base_url(), run_id, chapter_key]
 	print("[Music] GET %s" % url)
@@ -28,7 +76,7 @@ func load_and_play(scene_ctx: Dictionary) -> void:
 	if request_error != OK:
 		http.queue_free()
 		print("[Music] Request start failed: %s" % error_string(request_error))
-		return
+		return {}
 
 	var response: Array = await http.request_completed
 	http.queue_free()
@@ -40,22 +88,15 @@ func load_and_play(scene_ctx: Dictionary) -> void:
 
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
 		print("[Music] Failed to load chapter data: result=%d HTTP %d" % [result, code])
-		return
+		return {}
 
 	var parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
 	if not (parsed is Dictionary) or not (parsed as Dictionary).get("ok", false):
 		print("[Music] Chapter data response not ok")
-		return
+		return {}
 
 	var chapter_data: Dictionary = (parsed as Dictionary).get("chapter_data", {}) as Dictionary
-	var music: Dictionary        = chapter_data.get("generate_music", {}) as Dictionary
-	var normal_scene: Array      = music.get("normal_scene", []) as Array
-	if normal_scene.is_empty():
-		print("[Music] No normal_scene tracks found")
-		return
-
-	var track: Dictionary = normal_scene[randi() % normal_scene.size()] as Dictionary
-	_play_track(track)
+	return chapter_data.get("generate_music", {}) as Dictionary
 
 func _get_base_url() -> String:
 	if OS.get_name() == "Web":

@@ -41,6 +41,9 @@ var _text_pages: Array[String] = []
 var _text_page_index: int = 0
 var _awaiting_continue: bool = false
 var _finishing: bool = false
+# True once the player has read through the slides but the zone download is still
+# in flight; the slides loop and we auto-enter the world when it completes.
+var _waiting_for_download: bool = false
 var _ken_active: bool = false
 var _ken_elapsed: float = 0.0
 var _ken_start_pos: Vector2 = Vector2.ZERO
@@ -74,6 +77,9 @@ func _ready() -> void:
 		_finish()
 		return
 	ChapterFlow.loading_status.connect(_on_loading_status)
+	# Start downloading the first zone's scene package + music in the background
+	# while the player reads the slides, so entering the world is instant.
+	ChapterFlow.prefetch_current_zone()
 	_build_progress_pips()
 	_play_slide(0)
 
@@ -498,6 +504,31 @@ func _unhandled_input(event: InputEvent) -> void:
 func _finish() -> void:
 	if _finishing:
 		return
+	# If the scene package is still downloading, don't make the player wait on a
+	# blank loading screen: loop the slides from the start and enter the world
+	# automatically the moment the download finishes (no extra input needed).
+	if ChapterFlow.is_zone_prefetch_in_progress():
+		_waiting_for_download = true
+		if not ChapterFlow.zone_download_finished.is_connected(_on_zone_download_finished):
+			ChapterFlow.zone_download_finished.connect(_on_zone_download_finished)
+		# The download may have finished in the gap between the check and connect.
+		if not ChapterFlow.is_zone_prefetch_in_progress():
+			_enter_world()
+			return
+		_play_slide(0)  # replay from slide 1 while we wait
+		return
+	_enter_world()
+
+func _on_zone_download_finished() -> void:
+	if _finishing or not _waiting_for_download:
+		return
+	_enter_world()
+
+func _enter_world() -> void:
+	if _finishing:
+		return
+	if ChapterFlow.zone_download_finished.is_connected(_on_zone_download_finished):
+		ChapterFlow.zone_download_finished.disconnect(_on_zone_download_finished)
 	_finishing = true
 	_typing = false
 	_continue_marker.visible = false
