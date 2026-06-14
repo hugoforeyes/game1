@@ -101,7 +101,7 @@ func _build_imported_world() -> void:
 	player.z_index = 0
 	_apply_background_limits(background.texture)
 
-	_spawn_enemies(package_data, tile_context)
+	_spawn_enemies(package_data, tile_context, false)
 	_spawn_item_pickups(tile_context)
 
 	var map_pixel_size: Vector2 = GameManager.get_map_pixel_size(package_data, background.texture)
@@ -346,13 +346,16 @@ func _spawn_enemies_for_builtin_world() -> void:
 	_spawn_enemies({}, {
 		"map_tile_size": map_tile_size,
 		"blocked_tiles": {},
-	})
+	}, true)
 
-func _spawn_enemies(package_data: Dictionary, tile_context: Dictionary) -> void:
+func _spawn_enemies(package_data: Dictionary, tile_context: Dictionary, allow_fallback: bool = false) -> void:
 	var roster: Array = GameManager.get_enemy_roster()
 	if roster.is_empty():
-		roster = _fallback_enemy_roster(tile_context)
-		print("[Main] no enemies in package, using fallback roster size=%d" % roster.size())
+		if allow_fallback:
+			roster = _fallback_enemy_roster(tile_context)
+			print("[Main] no enemies in package, using fallback roster size=%d" % roster.size())
+		else:
+			print("[Main] no enemies in package, spawning none")
 
 	var spawned := 0
 	for enemy_data in roster:

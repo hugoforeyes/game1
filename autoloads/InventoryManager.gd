@@ -21,14 +21,40 @@ var _ui: CanvasLayer = null
 var _screen_root: Control
 var _screen_open: bool = false
 var _slot_nodes: Array[Control] = []
+var _tab_nodes: Array[Control] = []
+var _active_filter: String = "all"
 var _selected: int = 0
+var _top_stats: Label
+var _page_label: Label
+var _detail_icon: TextureRect
 var _detail_name: Label
 var _detail_kind: Label
+var _detail_owned: Label
 var _detail_body: Label
 var _action_hint: Label
+var _action_button_label: Label
 var _toast_host: Control
 var _toast_queue: Array = []
 var _toast_busy: bool = false
+var _inventory_texture_cache: Dictionary = {}
+
+const INV_SLOT_COLUMNS := 6
+const INV_SLOT_VISIBLE := 24
+const INV_FILTER_IDS := ["all", "use", "battle", "quest", "lore"]
+const INV_FILTER_LABELS := ["All", "Use", "Battle", "Quest", "Lore"]
+const INV_TEX_PANEL_MAIN := "res://assets/ui/inventory/panel_main.png"
+const INV_TEX_PANEL_DETAIL := "res://assets/ui/inventory/panel_detail.png"
+const INV_TEX_PANEL_SIDEBAR := "res://assets/ui/inventory/panel_sidebar.png"
+const INV_TEX_SLOT := "res://assets/ui/inventory/slot.png"
+const INV_TEX_SLOT_SELECTED := "res://assets/ui/inventory/slot_selected.png"
+const INV_TEX_TAB := "res://assets/ui/inventory/tab.png"
+const INV_TEX_TAB_SELECTED := "res://assets/ui/inventory/tab_selected.png"
+const INV_TEX_BUTTON := "res://assets/ui/inventory/button_action.png"
+const INV_TEX_FOOTER_BAR := "res://assets/ui/inventory/footer_bar.png"
+const INV_TEX_DIVIDER := "res://assets/ui/inventory/divider.png"
+const INV_TEX_GEM := "res://assets/ui/inventory/ornament_gem.png"
+const INV_TEX_SPARKLE_GOLD := "res://assets/ui/inventory/sparkle_gold.png"
+const INV_TEX_SPARKLE_BLUE := "res://assets/ui/inventory/sparkle_blue.png"
 
 
 func _ready() -> void:
@@ -164,16 +190,220 @@ func use_item_overworld(item_id: String) -> String:
 # ── inventory screen ──────────────────────────────────────────────────────────
 
 
+func _inventory_style(texture_path: String, margin: float = 12.0) -> StyleBox:
+	var texture := _inventory_texture(texture_path)
+	if texture != null:
+		var style := StyleBoxTexture.new()
+		style.texture = texture
+		style.draw_center = true
+		style.set_texture_margin_all(margin)
+		style.set_content_margin_all(4.0)
+		return style
+	var flat := StyleBoxFlat.new()
+	flat.bg_color = Color(0.04, 0.045, 0.06, 0.94)
+	flat.border_color = UiKit.COLOR_PANEL_BORDER
+	flat.set_border_width_all(1)
+	flat.set_corner_radius_all(4)
+	return flat
+
+
+func _inventory_texture(texture_path: String) -> Texture2D:
+	if _inventory_texture_cache.has(texture_path):
+		return _inventory_texture_cache[texture_path]
+	var texture: Texture2D = null
+	var image := Image.new()
+	var err := image.load(ProjectSettings.globalize_path(texture_path))
+	if err == OK:
+		texture = ImageTexture.create_from_image(image)
+	elif ResourceLoader.exists(texture_path):
+		texture = load(texture_path)
+	_inventory_texture_cache[texture_path] = texture
+	return texture
+
+
+func _make_texture_panel(rect: Rect2, texture_path: String, margin: float = 12.0) -> Panel:
+	var panel := Panel.new()
+	panel.position = rect.position
+	panel.size = rect.size
+	panel.add_theme_stylebox_override("panel", _inventory_style(texture_path, margin))
+	return panel
+
+
+func _glass_panel_style() -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.012, 0.022, 0.030, 0.88)
+	style.border_color = Color(0.76, 0.58, 0.27, 0.90)
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(10)
+	style.shadow_color = Color(0.0, 0.0, 0.0, 0.45)
+	style.shadow_size = 10
+	style.shadow_offset = Vector2(0, 2)
+	return style
+
+
+func _footer_panel_style() -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.018, 0.025, 0.032, 0.72)
+	style.border_color = Color(0.76, 0.58, 0.27, 0.55)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(8)
+	return style
+
+
+func _filter_bar_style() -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.015, 0.028, 0.037, 0.72)
+	style.border_color = Color(0.76, 0.58, 0.27, 0.64)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(8)
+	style.shadow_color = Color(0, 0, 0, 0.28)
+	style.shadow_size = 5
+	style.shadow_offset = Vector2(0, 1)
+	return style
+
+
+func _slot_style(selected: bool, empty: bool = false) -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.015, 0.020, 0.026, 0.88 if not empty else 0.46)
+	style.border_color = Color(1.0, 0.78, 0.28, 1.0) if selected else Color(0.55, 0.43, 0.24, 0.66)
+	style.set_border_width_all(3 if selected else 1)
+	style.set_corner_radius_all(5)
+	style.shadow_color = Color(1.0, 0.74, 0.18, 0.42) if selected else Color(0, 0, 0, 0.22)
+	style.shadow_size = 12 if selected else 3
+	style.shadow_offset = Vector2.ZERO
+	return style
+
+
+func _tab_style(active: bool) -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.13, 0.12, 0.09, 0.76) if active else Color(0.015, 0.025, 0.033, 0.36)
+	style.border_color = Color(1.0, 0.78, 0.32, 0.86) if active else Color(0.76, 0.58, 0.27, 0.24)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(6)
+	return style
+
+
+func _make_glass_panel(rect: Rect2) -> Panel:
+	var panel := Panel.new()
+	panel.position = rect.position
+	panel.size = rect.size
+	panel.add_theme_stylebox_override("panel", _glass_panel_style())
+	return panel
+
+
+func _make_texture_rect(texture_path: String, rect: Rect2) -> TextureRect:
+	var texture_rect := TextureRect.new()
+	texture_rect.texture = _inventory_texture(texture_path)
+	texture_rect.position = rect.position
+	texture_rect.size = rect.size
+	texture_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	texture_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	texture_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	return texture_rect
+
+
+func _catalog_pages() -> int:
+	return maxi(1, ceili(float(_filtered_catalog_indices().size()) / float(INV_SLOT_VISIBLE)))
+
+
+func _selected_page() -> int:
+	return int(_selected / INV_SLOT_VISIBLE)
+
+
+func _max_selectable_index() -> int:
+	return maxi(0, _filtered_catalog_indices().size() - 1)
+
+
+func _filtered_catalog_indices() -> Array[int]:
+	var result: Array[int] = []
+	for index in range(catalog.size()):
+		var definition: Dictionary = catalog[index] as Dictionary
+		if _item_matches_filter(definition):
+			result.append(index)
+	return result
+
+
+func _item_matches_filter(definition: Dictionary) -> bool:
+	var kind := str(definition.get("kind"))
+	match _active_filter:
+		"use":
+			return kind in ["heal", "energy", "buff"]
+		"battle":
+			return kind in ["energy", "buff"]
+		"quest":
+			return kind == "quest"
+		"lore":
+			return kind == "lore"
+		_:
+			return true
+
+
+func _definition_at_filtered_index(filtered_index: int) -> Dictionary:
+	var indices := _filtered_catalog_indices()
+	if filtered_index < 0 or filtered_index >= indices.size():
+		return {}
+	var catalog_index := indices[filtered_index]
+	if catalog_index < 0 or catalog_index >= catalog.size():
+		return {}
+	return catalog[catalog_index] as Dictionary
+
+
+func _set_filter(filter_id: String) -> void:
+	if filter_id == _active_filter:
+		return
+	_active_filter = filter_id
+	_selected = 0
+	_refresh_screen()
+
+
+func _set_selected_from_slot(visible_slot_index: int) -> void:
+	var item_index := _selected_page() * INV_SLOT_VISIBLE + visible_slot_index
+	if item_index >= _filtered_catalog_indices().size():
+		return
+	_selected = item_index
+	_refresh_screen()
+
+
+func _owned_total() -> int:
+	var total := 0
+	for item in catalog:
+		if item is Dictionary:
+			total += count_of(str((item as Dictionary).get("id")))
+	return total
+
+
+func _kind_text(definition: Dictionary) -> String:
+	var kind: String = str(definition.get("kind"))
+	return {
+		"heal": "CONSUMABLE · +%d HP" % int(definition.get("power", 0)),
+		"energy": "BATTLE · +%d SP" % int(definition.get("power", 2)),
+		"buff": "BATTLE · DAMAGE UP",
+		"quest": "QUEST ITEM",
+		"lore": "LORE · READABLE",
+	}.get(kind, kind.to_upper())
+
+
+func _detail_preview_text(text: String, limit: int = 64) -> String:
+	var clean := text.strip_edges()
+	if clean.length() <= limit:
+		return clean
+	var cut := clean.substr(0, limit)
+	var last_space := cut.rfind(" ")
+	if last_space > 42:
+		cut = cut.substr(0, last_space)
+	return cut.strip_edges() + "..."
+
+
 func _ensure_ui() -> void:
 	if _ui != null:
 		return
 	_ui = CanvasLayer.new()
 	_ui.layer = 46
-	_ui.transform = Transform2D.IDENTITY.scaled(Vector2(2, 2))  # UI authored in 480x270
+	_ui.transform = Transform2D.IDENTITY
 	add_child(_ui)
 
 	_toast_host = Control.new()
-	_toast_host.position = Vector2(240, 30)
+	_toast_host.position = Vector2(480, 60)
 	_ui.add_child(_toast_host)
 
 	_screen_root = Control.new()
@@ -182,59 +412,181 @@ func _ensure_ui() -> void:
 	_ui.add_child(_screen_root)
 
 	var dim := ColorRect.new()
-	dim.color = Color(0.01, 0.01, 0.04, 0.82)
+	dim.color = Color(0.005, 0.008, 0.014, 0.90)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_screen_root.add_child(dim)
 
-	var header := UiKit.make_label("HÀNH TRANG", 12, UiKit.COLOR_ACCENT)
-	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.position = Vector2(20, 10)
-	header.size = Vector2(440, 18)
+	var embers := UiKit.make_ember_particles(Vector2(960, 540))
+	embers.amount = 28
+	embers.color = Color(1.0, 0.78, 0.35, 0.32)
+	_screen_root.add_child(embers)
+
+	var header_line := ColorRect.new()
+	header_line.color = Color(0.76, 0.58, 0.27, 0.72)
+	header_line.position = Vector2(272, 61)
+	header_line.size = Vector2(594, 2)
+	_screen_root.add_child(header_line)
+	var header_gem := _make_texture_rect(INV_TEX_GEM, Rect2(454, 22, 72, 40))
+	header_gem.modulate = Color(1, 1, 1, 0.78)
+	_screen_root.add_child(header_gem)
+
+	var header := UiKit.make_label("HÀNH TRANG", 30, UiKit.COLOR_ACCENT)
+	header.position = Vector2(48, 34)
+	header.size = Vector2(280, 36)
 	_screen_root.add_child(header)
 
-	var banner: TextureRect = UiKit.make_banner_rect(120.0)
-	if banner != null:
-		banner.position = Vector2(180, 26)
-		_screen_root.add_child(banner)
+	_top_stats = UiKit.make_label("", 14, UiKit.COLOR_TEXT)
+	_top_stats.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_top_stats.position = Vector2(550, 36)
+	_top_stats.size = Vector2(340, 28)
+	_screen_root.add_child(_top_stats)
 
-	var grid_panel := UiKit.make_panel(Rect2(14, 58, 230, 196))
+	var close_badge := _make_texture_panel(Rect2(900, 30, 40, 40), INV_TEX_SLOT, 18.0)
+	close_badge.mouse_filter = Control.MOUSE_FILTER_STOP
+	close_badge.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	close_badge.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.is_pressed() and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+			_toggle_screen()
+			get_viewport().set_input_as_handled()
+	)
+	_screen_root.add_child(close_badge)
+	var close_label := UiKit.make_label("X", 18, UiKit.COLOR_ACCENT)
+	close_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	close_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	close_label.position = Vector2(0, 1)
+	close_label.size = close_badge.size
+	close_badge.add_child(close_label)
+
+	var tab_bar := Panel.new()
+	tab_bar.position = Vector2(48, 84)
+	tab_bar.size = Vector2(576, 48)
+	tab_bar.add_theme_stylebox_override("panel", _filter_bar_style())
+	_screen_root.add_child(tab_bar)
+	_tab_nodes.clear()
+	for i in range(INV_FILTER_IDS.size()):
+		var tab := Panel.new()
+		tab.position = Vector2(24 + i * 106, 9)
+		tab.size = Vector2(96, 30)
+		tab.mouse_filter = Control.MOUSE_FILTER_STOP
+		tab.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		tab.add_theme_stylebox_override("panel", _tab_style(i == 0))
+		var filter_id := str(INV_FILTER_IDS[i])
+		tab.gui_input.connect(func(event: InputEvent) -> void:
+			if event is InputEventMouseButton and event.is_pressed() and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+				_set_filter(filter_id)
+				get_viewport().set_input_as_handled()
+		)
+		tab_bar.add_child(tab)
+		_tab_nodes.append(tab)
+		var tab_label := UiKit.make_label(str(INV_FILTER_LABELS[i]), 12, UiKit.COLOR_TEXT if i == 0 else UiKit.COLOR_TEXT_DIM)
+		tab_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		tab_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		tab_label.position = Vector2(0, 1)
+		tab_label.size = tab.size
+		tab.add_child(tab_label)
+
+	var grid_panel := _make_glass_panel(Rect2(48, 136, 576, 332))
 	_screen_root.add_child(grid_panel)
-	for index in range(9):
+	_slot_nodes.clear()
+	for index in range(INV_SLOT_VISIBLE):
 		var slot := Panel.new()
-		slot.position = Vector2(14 + (index % 3) * 70, 12 + (index / 3) * 60)
-		slot.size = Vector2(58, 54)
-		var style := StyleBoxFlat.new()
-		style.bg_color = Color(0.08, 0.07, 0.16, 0.9)
-		style.border_color = UiKit.COLOR_PANEL_BORDER
-		style.set_border_width_all(1)
-		style.set_corner_radius_all(4)
-		slot.add_theme_stylebox_override("panel", style)
+		slot.position = Vector2(31 + (index % INV_SLOT_COLUMNS) * 86, 22 + (index / INV_SLOT_COLUMNS) * 72)
+		slot.size = Vector2(70, 68)
+		slot.mouse_filter = Control.MOUSE_FILTER_STOP
+		slot.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		slot.add_theme_stylebox_override("panel", _slot_style(false, true))
+		var slot_index := index
+		slot.gui_input.connect(func(event: InputEvent) -> void:
+			if event is InputEventMouseButton and event.is_pressed() and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+				_set_selected_from_slot(slot_index)
+				get_viewport().set_input_as_handled()
+		)
 		grid_panel.add_child(slot)
 		_slot_nodes.append(slot)
 
-	var detail_panel := UiKit.make_panel(Rect2(252, 58, 214, 196))
-	_screen_root.add_child(detail_panel)
-	_detail_name = UiKit.make_label("", 9, UiKit.COLOR_ACCENT)
-	_detail_name.position = Vector2(12, 10)
-	_detail_name.size = Vector2(190, 14)
-	detail_panel.add_child(_detail_name)
-	_detail_kind = UiKit.make_label("", 7, UiKit.COLOR_TEXT_DIM)
-	_detail_kind.position = Vector2(12, 26)
-	detail_panel.add_child(_detail_kind)
-	_detail_body = UiKit.make_label("", 7, UiKit.COLOR_TEXT)
-	_detail_body.position = Vector2(12, 42)
-	_detail_body.size = Vector2(190, 120)
-	_detail_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	detail_panel.add_child(_detail_body)
-	_action_hint = UiKit.make_label("", 7, UiKit.COLOR_TEXT_DIM)
-	_action_hint.position = Vector2(12, 170)
-	_action_hint.size = Vector2(190, 12)
-	detail_panel.add_child(_action_hint)
+	_page_label = UiKit.make_label("", 14, UiKit.COLOR_TEXT_DIM)
+	_page_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_page_label.position = Vector2(278, 478)
+	_page_label.size = Vector2(116, 20)
+	_screen_root.add_child(_page_label)
 
-	var footer := UiKit.make_label("Di chuyển: phím mũi tên   ·   ENTER dùng   ·   I / ESC đóng", 6, UiKit.COLOR_TEXT_DIM)
+	var detail_panel := _make_glass_panel(Rect2(644, 96, 288, 372))
+	_screen_root.add_child(detail_panel)
+	var detail_gem_top := _make_texture_rect(INV_TEX_GEM, Rect2(126, -18, 36, 21))
+	detail_gem_top.modulate = Color(1, 1, 1, 0.58)
+	detail_panel.add_child(detail_gem_top)
+
+	_detail_name = UiKit.make_label("", 16, UiKit.COLOR_ACCENT)
+	_detail_name.position = Vector2(30, 40)
+	_detail_name.size = Vector2(228, 26)
+	_detail_name.clip_text = true
+	detail_panel.add_child(_detail_name)
+	_detail_kind = UiKit.make_label("", 12, UiKit.COLOR_TEXT_DIM)
+	_detail_kind.position = Vector2(30, 68)
+	_detail_kind.size = Vector2(220, 20)
+	detail_panel.add_child(_detail_kind)
+
+	_detail_icon = TextureRect.new()
+	_detail_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_detail_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_detail_icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_detail_icon.position = Vector2(86, 94)
+	_detail_icon.size = Vector2(116, 116)
+	detail_panel.add_child(_detail_icon)
+
+	var icon_sparkle := _make_texture_rect(INV_TEX_SPARKLE_BLUE, Rect2(182, 104, 36, 48))
+	icon_sparkle.modulate = Color(1, 1, 1, 0.60)
+	detail_panel.add_child(icon_sparkle)
+
+	var detail_divider := ColorRect.new()
+	detail_divider.color = Color(0.76, 0.58, 0.27, 0.48)
+	detail_divider.position = Vector2(30, 224)
+	detail_divider.size = Vector2(228, 1)
+	detail_panel.add_child(detail_divider)
+
+	_detail_owned = UiKit.make_label("", 12, UiKit.COLOR_TEXT)
+	_detail_owned.position = Vector2(30, 236)
+	_detail_owned.size = Vector2(220, 20)
+	detail_panel.add_child(_detail_owned)
+
+	_detail_body = UiKit.make_label("", 12, UiKit.COLOR_TEXT)
+	_detail_body.position = Vector2(30, 262)
+	_detail_body.size = Vector2(228, 52)
+	_detail_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_detail_body.clip_text = true
+	detail_panel.add_child(_detail_body)
+
+	var action_button := _make_texture_panel(Rect2(52, 324, 184, 38), INV_TEX_BUTTON, 24.0)
+	action_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	action_button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	action_button.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.is_pressed() and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+			_use_selected()
+			get_viewport().set_input_as_handled()
+	)
+	detail_panel.add_child(action_button)
+	_action_button_label = UiKit.make_label("", 12, UiKit.COLOR_TEXT)
+	_action_button_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_action_button_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_action_button_label.position = Vector2(0, 1)
+	_action_button_label.size = action_button.size
+	action_button.add_child(_action_button_label)
+
+	_action_hint = UiKit.make_label("", 10, Color(0.93, 0.88, 0.75, 0.72))
+	_action_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_action_hint.position = Vector2(438, 480)
+	_action_hint.size = Vector2(250, 18)
+	_screen_root.add_child(_action_hint)
+
+	var footer_frame := Panel.new()
+	footer_frame.position = Vector2(280, 502)
+	footer_frame.size = Vector2(400, 26)
+	footer_frame.add_theme_stylebox_override("panel", _footer_panel_style())
+	_screen_root.add_child(footer_frame)
+	var footer := UiKit.make_label("Arrows Move     Enter Use     1-5 Filter     I / Esc Back", 10, Color(0.93, 0.88, 0.75, 0.72))
 	footer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	footer.position = Vector2(20, 258)
-	footer.size = Vector2(440, 10)
+	footer.position = Vector2(292, 508)
+	footer.size = Vector2(376, 16)
 	_screen_root.add_child(footer)
 
 
@@ -259,18 +611,39 @@ func _toggle_screen() -> void:
 
 
 func _refresh_screen() -> void:
+	_selected = mini(_selected, _max_selectable_index())
+	var page := _selected_page()
+	var page_start := page * INV_SLOT_VISIBLE
+	var filtered_indices := _filtered_catalog_indices()
+	_top_stats.text = "Items %d   Owned %d   Bag %d/120" % [catalog.size(), _owned_total(), _owned_total()]
+	_page_label.text = "%d / %d" % [page + 1, _catalog_pages()]
+	for tab_index in range(_tab_nodes.size()):
+		var tab := _tab_nodes[tab_index]
+		var active := str(INV_FILTER_IDS[tab_index]) == _active_filter
+		tab.add_theme_stylebox_override("panel", _tab_style(active))
+		if tab.get_child_count() > 0 and tab.get_child(0) is Label:
+			var tab_label := tab.get_child(0) as Label
+			tab_label.add_theme_color_override("font_color", UiKit.COLOR_TEXT if active else UiKit.COLOR_TEXT_DIM)
+
 	for index in range(_slot_nodes.size()):
 		var slot: Control = _slot_nodes[index]
 		for child in slot.get_children():
 			child.queue_free()
-		var style: StyleBoxFlat = (slot.get_theme_stylebox("panel") as StyleBoxFlat).duplicate()
-		style.border_color = UiKit.COLOR_ACCENT if index == _selected else UiKit.COLOR_PANEL_BORDER
-		style.set_border_width_all(2 if index == _selected else 1)
-		slot.add_theme_stylebox_override("panel", style)
-		if index >= catalog.size():
+		var item_index := page_start + index
+		var is_selected := item_index == _selected
+		slot.add_theme_stylebox_override("panel", _slot_style(is_selected, item_index >= filtered_indices.size()))
+		slot.modulate = Color.WHITE if item_index < filtered_indices.size() else Color(1, 1, 1, 0.42)
+		if item_index >= filtered_indices.size():
 			continue
-		var definition: Dictionary = catalog[index] as Dictionary
+		var definition: Dictionary = catalog[filtered_indices[item_index]] as Dictionary
 		var owned: int = count_of(str(definition.get("id")))
+		if is_selected:
+			var selected_fill := ColorRect.new()
+			selected_fill.color = Color(1.0, 0.74, 0.18, 0.10)
+			selected_fill.position = Vector2(5, 5)
+			selected_fill.size = Vector2(60, 58)
+			selected_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			slot.add_child(selected_fill)
 		var icon: Texture2D = icon_for(definition)
 		if icon != null:
 			var icon_rect := TextureRect.new()
@@ -279,49 +652,66 @@ func _refresh_screen() -> void:
 			# texture's minimum size and renders oversized.
 			icon_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 			icon_rect.stretch_mode = TextureRect.STRETCH_SCALE
-			icon_rect.position = Vector2(11, 4)
-			icon_rect.size = Vector2(36, 36)
+			icon_rect.position = Vector2(14, 8)
+			icon_rect.size = Vector2(42, 42)
 			icon_rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 			icon_rect.modulate = Color.WHITE if owned > 0 else Color(0.45, 0.45, 0.5, 0.7)
 			slot.add_child(icon_rect)
-		var count_label := UiKit.make_label("×%d" % owned, 7, UiKit.COLOR_TEXT if owned > 0 else UiKit.COLOR_TEXT_DIM)
-		count_label.position = Vector2(36, 40)
+		var count_label := UiKit.make_label(str(owned), 12, UiKit.COLOR_TEXT if owned > 0 else UiKit.COLOR_TEXT_DIM)
+		count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		count_label.position = Vector2(32, 46)
+		count_label.size = Vector2(30, 16)
 		slot.add_child(count_label)
+		if is_selected:
+			var focus_line := ColorRect.new()
+			focus_line.color = Color(1.0, 0.86, 0.34, 0.95)
+			focus_line.position = Vector2(10, 62)
+			focus_line.size = Vector2(50, 2)
+			focus_line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			slot.add_child(focus_line)
 
-	if _selected < catalog.size():
-		var definition: Dictionary = catalog[_selected] as Dictionary
+	if _selected < filtered_indices.size():
+		var definition: Dictionary = catalog[filtered_indices[_selected]] as Dictionary
 		var kind: String = str(definition.get("kind"))
 		_detail_name.text = str(definition.get("name", ""))
-		_detail_kind.text = {
-			"heal": "TIÊU HAO · HỒI %d HP" % int(definition.get("power", 0)),
-			"energy": "TIÊU HAO · HỒI %d SP (trong trận)" % int(definition.get("power", 2)),
-			"buff": "TIÊU HAO · TĂNG SÁT THƯƠNG (trong trận)",
-			"quest": "VẬT PHẨM NHIỆM VỤ",
-			"lore": "KÝ ỨC · ĐỌC ĐƯỢC",
-		}.get(kind, kind.to_upper())
-		_detail_body.text = str(definition.get("description", ""))
+		_detail_kind.text = _kind_text(definition)
+		_detail_icon.texture = icon_for(definition)
+		_detail_icon.modulate = Color.WHITE if count_of(str(definition.get("id"))) > 0 else Color(0.45, 0.45, 0.5, 0.75)
+		_detail_owned.text = "Owned: %d" % count_of(str(definition.get("id")))
+		_detail_body.text = _detail_preview_text(str(definition.get("description", "")))
 		var owned: int = count_of(str(definition.get("id")))
 		if owned <= 0:
-			_action_hint.text = "Chưa sở hữu."
+			_action_button_label.text = "Locked"
+			_action_hint.text = "Item not owned."
 		else:
+			_action_button_label.text = {
+				"heal": "Use",
+				"lore": "Read",
+				"energy": "Battle",
+				"buff": "Battle",
+				"quest": "Quest",
+			}.get(kind, "Inspect")
 			_action_hint.text = {
-				"heal": "ENTER  dùng ngay",
-				"lore": "ENTER  đọc",
-				"energy": "Dùng trong trận chiến (menu Item)",
-				"buff": "Dùng trong trận chiến (menu Item)",
-				"quest": "Dành cho nhiệm vụ — không thể vứt bỏ",
+				"heal": "Enter to use now.",
+				"lore": "Enter to read lore.",
+				"energy": "Usable from battle Item menu.",
+				"buff": "Usable from battle Item menu.",
+				"quest": "Quest item cannot be discarded.",
 			}.get(kind, "")
 	else:
 		_detail_name.text = ""
 		_detail_kind.text = ""
+		_detail_owned.text = ""
 		_detail_body.text = ""
+		_detail_icon.texture = null
 		_action_hint.text = ""
+		_action_button_label.text = ""
 
 
 func _use_selected() -> void:
-	if _selected >= catalog.size():
+	var definition := _definition_at_filtered_index(_selected)
+	if definition.is_empty():
 		return
-	var definition: Dictionary = catalog[_selected] as Dictionary
 	var item_id: String = str(definition.get("id"))
 	if count_of(item_id) <= 0:
 		return
@@ -381,6 +771,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 	if not _screen_open:
 		return
+	if event is InputEventKey and event.is_pressed() and not event.is_echo():
+		var keycode := (event as InputEventKey).physical_keycode
+		if keycode >= KEY_1 and keycode <= KEY_5:
+			var filter_index := int(keycode - KEY_1)
+			if filter_index >= 0 and filter_index < INV_FILTER_IDS.size():
+				_set_filter(str(INV_FILTER_IDS[filter_index]))
+				get_viewport().set_input_as_handled()
+				return
 	if event.is_action_pressed("ui_cancel"):
 		_toggle_screen()
 		get_viewport().set_input_as_handled()
@@ -388,7 +786,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		_use_selected()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("ui_right"):
-		_selected = mini(_selected + 1, 8)
+		_selected = mini(_selected + 1, _max_selectable_index())
 		_refresh_screen()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("ui_left"):
@@ -396,10 +794,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		_refresh_screen()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("ui_down"):
-		_selected = mini(_selected + 3, 8)
+		_selected = mini(_selected + INV_SLOT_COLUMNS, _max_selectable_index())
 		_refresh_screen()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("ui_up"):
-		_selected = maxi(_selected - 3, 0)
+		_selected = maxi(_selected - INV_SLOT_COLUMNS, 0)
 		_refresh_screen()
 		get_viewport().set_input_as_handled()

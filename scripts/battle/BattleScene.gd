@@ -14,7 +14,7 @@ extends CanvasLayer
 
 signal battle_finished(result: String, enemy_id: String)
 
-const FONT_SIZE := 8
+const FONT_SIZE := 16
 const TYPE_SPEED := 46.0
 
 const COLOR_TEXT := Color(0.93, 0.88, 0.75, 1.00)
@@ -37,6 +37,21 @@ const TEX_CURSOR := "res://assets/ui/battle/cursor.png"
 const TEX_SLASH := "res://assets/ui/battle/slash_sheet.png"
 const TEX_BACKDROP := "res://assets/ui/battle/backdrop.png"
 const TEX_BANNER := "res://assets/ui/battle/banner.png"
+const TEX_B2_COMMAND := "res://assets/ui/battle_v2/command_card.png"
+const TEX_B2_COMMAND_SELECTED := "res://assets/ui/battle_v2/command_card_selected.png"
+const TEX_B2_ENEMY := "res://assets/ui/battle_v2/panel_enemy.png"
+const TEX_B2_INTENT := "res://assets/ui/battle_v2/panel_intent.png"
+const TEX_B2_LOG := "res://assets/ui/battle_v2/panel_log.png"
+const TEX_B2_PLAYER := "res://assets/ui/battle_v2/panel_player.png"
+const TEX_B2_ORNAMENT := "res://assets/ui/battle_v2/ornament_gem.png"
+const TEX_B2_TURN_ORDER_ENEMY := "res://assets/ui/battle_v2/turn_order_card_enemy.png"
+const TEX_B2_TURN_ORDER_ALLY := "res://assets/ui/battle_v2/turn_order_card_ally.png"
+const TEX_B2_TURN_MARKER := "res://assets/ui/battle_v2/turn_marker.png"
+const TEX_B2_STATUS_RED := "res://assets/ui/battle_v2/status_red.png"
+const TEX_B2_STATUS_BLUE := "res://assets/ui/battle_v2/status_blue.png"
+const TEX_B2_STATUS_GREEN := "res://assets/ui/battle_v2/status_green.png"
+const TEX_B2_STATUS_PURPLE := "res://assets/ui/battle_v2/status_purple.png"
+const TEX_B2_STATUS_GOLD := "res://assets/ui/battle_v2/status_gold.png"
 
 enum UiMode { NONE, TYPING, CONFIRM, MENU }
 
@@ -82,6 +97,7 @@ var _panel_style: StyleBox = null
 var _cursor_texture: Texture2D = null
 var _slash_frames: SpriteFrames = null
 var _banner_texture: Texture2D = null
+var _texture_cache: Dictionary = {}
 
 var _shake_time: float = 0.0
 var _shake_strength: float = 0.0
@@ -90,10 +106,13 @@ var _root: Control
 var _fx_layer: Control
 var _enemy_panel: Panel
 var _enemy_name_label: Label
+var _enemy_rank_label: Label
 var _enemy_hp_bar: ColorRect
 var _enemy_hp_ghost: ColorRect
 var _enemy_status_label: Label
 var _intent_label: Label
+var _intent_panel: Panel
+var _intent_name_label: Label
 var _portrait_holder: Control
 var _portrait: TextureRect
 var _portrait_flash: TextureRect
@@ -104,6 +123,7 @@ var _continue_marker: Label
 var _menu_panel: Panel
 var _menu_row: HBoxContainer
 var _menu_cursor: Control
+var _hint_label: Label
 var _player_panel: Panel
 var _player_panel_label: Label
 var _player_hp_bar: ColorRect
@@ -112,9 +132,12 @@ var _xp_bar: ColorRect
 var _sp_pips: Array[ColorRect] = []
 var _sp_pip_row: Control
 
-const ENEMY_HP_BAR_W := 150.0
-const PLAYER_HP_BAR_W := 110.0
-const PORTRAIT_HOME := Vector2(312, 14)
+const ENEMY_HP_BAR_W := 206.0
+const PLAYER_HP_BAR_W := 154.0
+const PORTRAIT_HOME := Vector2(350, 48)
+const PORTRAIT_SIZE := Vector2(280, 290)
+const PLAYER_FX_CENTER := Vector2(146, 430)
+const SCREEN_CENTER := Vector2(480, 270)
 
 
 func open(enemy_data: Dictionary) -> void:
@@ -133,7 +156,7 @@ func open(enemy_data: Dictionary) -> void:
 
 	GameManager.ui_blocking_input = true
 	layer = 80
-	transform = Transform2D.IDENTITY.scaled(Vector2(2, 2))  # UI authored in 480x270
+	transform = Transform2D.IDENTITY
 	_load_ui_kit()
 	_build_ui()
 	_run_battle()
@@ -168,20 +191,64 @@ func _load_ui_kit() -> void:
 			_slash_frames.add_frame("slash", atlas)
 
 
-func _make_panel_node(rect: Rect2) -> Panel:
+func _load_png_texture(path: String) -> Texture2D:
+	if _texture_cache.has(path):
+		return _texture_cache[path]
+	var texture: Texture2D = null
+	if ResourceLoader.exists(path):
+		texture = load(path)
+	else:
+		var image := Image.new()
+		if image.load(ProjectSettings.globalize_path(path)) == OK:
+			texture = ImageTexture.create_from_image(image)
+	_texture_cache[path] = texture
+	return texture
+
+
+func _make_panel_style(bg: Color = COLOR_PANEL_BG, border: Color = COLOR_PANEL_BORDER, radius: int = 5) -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = bg
+	style.border_color = border
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(radius)
+	style.shadow_color = Color(0, 0, 0, 0.42)
+	style.shadow_size = 10
+	style.shadow_offset = Vector2(0, 2)
+	style.content_margin_left = 12
+	style.content_margin_right = 12
+	style.content_margin_top = 10
+	style.content_margin_bottom = 10
+	return style
+
+
+func _make_panel_node(rect: Rect2, danger: bool = false) -> Panel:
 	var panel := Panel.new()
 	panel.position = rect.position
 	panel.size = rect.size
-	if _panel_style != null:
-		panel.add_theme_stylebox_override("panel", _panel_style)
-	else:
-		var style := StyleBoxFlat.new()
-		style.bg_color = COLOR_PANEL_BG
-		style.border_color = COLOR_PANEL_BORDER
-		style.set_border_width_all(1)
-		style.set_corner_radius_all(4)
-		panel.add_theme_stylebox_override("panel", style)
+	var bg := Color(0.08, 0.02, 0.03, 0.86) if danger else Color(0.015, 0.02, 0.035, 0.84)
+	var border := Color(0.88, 0.20, 0.18, 0.72) if danger else COLOR_PANEL_BORDER
+	panel.add_theme_stylebox_override("panel", _make_panel_style(bg, border))
 	return panel
+
+
+func _add_texture(parent: Control, path: String, rect: Rect2, alpha: float = 1.0, behind: bool = false) -> TextureRect:
+	var texture := _load_png_texture(path)
+	var node := TextureRect.new()
+	node.position = rect.position
+	node.size = rect.size
+	node.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	node.stretch_mode = TextureRect.STRETCH_SCALE
+	node.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	node.modulate.a = alpha
+	if texture != null:
+		node.texture = texture
+	if behind:
+		parent.add_child(node)
+		parent.move_child(node, 0)
+	else:
+		parent.add_child(node)
+	return node
 
 
 func _make_label(text: String, font_size: int, color: Color) -> Label:
@@ -205,7 +272,7 @@ func _build_ui() -> void:
 
 	# Backdrop: generated art if present, plus dim so the world fades out.
 	var dim := ColorRect.new()
-	dim.color = Color(0.02, 0.02, 0.06, 0.88)
+	dim.color = Color(0.015, 0.016, 0.024, 0.90)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_root.add_child(dim)
 	if ResourceLoader.exists(TEX_BACKDROP):
@@ -218,54 +285,95 @@ func _build_ui() -> void:
 		_root.add_child(backdrop)
 
 	# ── enemy panel (slides in from the top) ──
-	_enemy_panel = _make_panel_node(Rect2(8, 8, 290, 64))
+	_enemy_panel = _make_panel_node(Rect2(24, 24, 260, 118))
 	_root.add_child(_enemy_panel)
+	_add_texture(_enemy_panel, TEX_B2_ENEMY, Rect2(-6, -6, 272, 130), 0.58, true)
 
-	_enemy_name_label = _make_label("", 10, COLOR_ACCENT)
-	_enemy_name_label.position = Vector2(10, 6)
+	var enemy_kicker := _make_label("ENEMY", 13, COLOR_ACCENT)
+	enemy_kicker.position = Vector2(18, 12)
+	enemy_kicker.size = Vector2(100, 18)
+	_enemy_panel.add_child(enemy_kicker)
+
+	_enemy_name_label = _make_label("", 24, COLOR_TEXT)
+	_enemy_name_label.position = Vector2(18, 34)
+	_enemy_name_label.size = Vector2(156, 32)
+	_enemy_name_label.clip_text = true
 	_enemy_panel.add_child(_enemy_name_label)
+
+	_enemy_rank_label = _make_label("", 14, COLOR_TEXT)
+	_enemy_rank_label.position = Vector2(174, 36)
+	_enemy_rank_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_enemy_rank_label.size = Vector2(62, 22)
+	_enemy_panel.add_child(_enemy_rank_label)
 
 	var hp_bg := ColorRect.new()
 	hp_bg.color = COLOR_HP_BG
-	hp_bg.position = Vector2(10, 23)
-	hp_bg.size = Vector2(ENEMY_HP_BAR_W, 7)
+	hp_bg.position = Vector2(18, 74)
+	hp_bg.size = Vector2(ENEMY_HP_BAR_W, 9)
 	_enemy_panel.add_child(hp_bg)
 
 	_enemy_hp_ghost = ColorRect.new()
 	_enemy_hp_ghost.color = COLOR_HP_GHOST
-	_enemy_hp_ghost.position = Vector2(10, 23)
-	_enemy_hp_ghost.size = Vector2(ENEMY_HP_BAR_W, 7)
+	_enemy_hp_ghost.position = hp_bg.position
+	_enemy_hp_ghost.size = hp_bg.size
 	_enemy_panel.add_child(_enemy_hp_ghost)
 
 	_enemy_hp_bar = ColorRect.new()
 	_enemy_hp_bar.color = COLOR_HP
-	_enemy_hp_bar.position = Vector2(10, 23)
-	_enemy_hp_bar.size = Vector2(ENEMY_HP_BAR_W, 7)
+	_enemy_hp_bar.position = hp_bg.position
+	_enemy_hp_bar.size = hp_bg.size
 	_enemy_panel.add_child(_enemy_hp_bar)
 
-	_enemy_status_label = _make_label("", 7, COLOR_EXPOSED)
-	_enemy_status_label.position = Vector2(166, 22)
+	_enemy_status_label = _make_label("", 13, COLOR_EXPOSED)
+	_enemy_status_label.position = Vector2(174, 91)
+	_enemy_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_enemy_status_label.size = Vector2(62, 18)
 	_enemy_panel.add_child(_enemy_status_label)
 
-	_intent_label = _make_label("", 7, COLOR_TEXT_DIM)
-	_intent_label.position = Vector2(10, 35)
-	_intent_label.size = Vector2(270, 26)
+	var status_paths: Array[String] = [TEX_B2_STATUS_RED, TEX_B2_STATUS_PURPLE, TEX_B2_STATUS_GREEN, TEX_B2_STATUS_BLUE, TEX_B2_STATUS_GOLD]
+	for index in range(status_paths.size()):
+		var status_path: String = status_paths[index]
+		_add_texture(_enemy_panel, status_path, Rect2(18 + index * 31, 88, 24, 22), 0.76)
+
+	# ── intent panel ──
+	_intent_panel = _make_panel_node(Rect2(580, 36, 292, 126), true)
+	_root.add_child(_intent_panel)
+	_add_texture(_intent_panel, TEX_B2_INTENT, Rect2(-8, -7, 308, 138), 0.58, true)
+
+	_intent_name_label = _make_label("INTENT (NEXT TURN)", 13, COLOR_ACCENT)
+	_intent_name_label.position = Vector2(18, 13)
+	_intent_name_label.size = Vector2(220, 18)
+	_intent_panel.add_child(_intent_name_label)
+
+	_intent_label = _make_label("", 14, COLOR_TEXT_DIM)
+	_intent_label.position = Vector2(48, 42)
+	_intent_label.size = Vector2(220, 66)
 	_intent_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_enemy_panel.add_child(_intent_label)
+	_intent_label.clip_text = true
+	_intent_panel.add_child(_intent_label)
+
+	var danger_mark := _make_label("!", 34, Color(1.0, 0.25, 0.20, 0.95))
+	danger_mark.position = Vector2(18, 39)
+	danger_mark.size = Vector2(24, 38)
+	danger_mark.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_intent_panel.add_child(danger_mark)
+
+	_add_texture(_root, TEX_B2_TURN_MARKER, Rect2(648, 176, 230, 19), 0.86)
+	_build_turn_order_strip()
 
 	# ── portrait (entrance from the right, then breathes) ──
 	_portrait_holder = Control.new()
 	_portrait_holder.position = PORTRAIT_HOME + Vector2(120, 0)
-	_portrait_holder.size = Vector2(156, 150)
+	_portrait_holder.size = PORTRAIT_SIZE
 	_portrait_holder.modulate.a = 0.0
 	_root.add_child(_portrait_holder)
 
 	_portrait = TextureRect.new()
-	_portrait.size = Vector2(156, 150)
+	_portrait.size = PORTRAIT_SIZE
 	_portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	_portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	_portrait.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	_portrait.pivot_offset = Vector2(78, 150)
+	_portrait.pivot_offset = Vector2(PORTRAIT_SIZE.x * 0.5, PORTRAIT_SIZE.y)
 	_portrait_holder.add_child(_portrait)
 	_load_portrait()
 
@@ -283,91 +391,112 @@ func _build_ui() -> void:
 	_portrait_holder.add_child(_portrait_flash)
 
 	# ── log panel ──
-	_log_panel = _make_panel_node(Rect2(8, 166, 300, 62))
+	_log_panel = _make_panel_node(Rect2(24, 198, 282, 126))
 	_root.add_child(_log_panel)
+	_add_texture(_log_panel, TEX_B2_LOG, Rect2(-8, -7, 298, 140), 0.48, true)
+
+	var log_kicker := _make_label("BATTLE LOG", 13, COLOR_ACCENT)
+	log_kicker.position = Vector2(18, 12)
+	log_kicker.size = Vector2(180, 18)
+	_log_panel.add_child(log_kicker)
 
 	_log_label = _make_label("", FONT_SIZE, COLOR_TEXT)
-	_log_label.position = Vector2(10, 7)
-	_log_label.size = Vector2(280, 50)
+	_log_label.position = Vector2(20, 42)
+	_log_label.size = Vector2(242, 64)
 	_log_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_log_panel.add_child(_log_label)
 
 	_continue_marker = _make_label("v", FONT_SIZE, COLOR_ACCENT)
-	_continue_marker.position = Vector2(286, 46)
+	_continue_marker.position = Vector2(252, 94)
 	_continue_marker.visible = false
 	_log_panel.add_child(_continue_marker)
 
 	# ── menu strip ──
-	_menu_panel = _make_panel_node(Rect2(8, 232, 300, 30))
+	_menu_panel = _make_panel_node(Rect2(292, 372, 644, 128))
+	_menu_panel.visible = false
 	_root.add_child(_menu_panel)
 
 	_menu_row = HBoxContainer.new()
-	_menu_row.position = Vector2(16, 7)
-	_menu_row.size = Vector2(276, 16)
-	_menu_row.add_theme_constant_override("separation", 12)
+	_menu_row.position = Vector2(18, 16)
+	_menu_row.size = Vector2(608, 94)
+	_menu_row.add_theme_constant_override("separation", 6)
 	_menu_panel.add_child(_menu_row)
 
 	_menu_cursor = Control.new()
-	if _cursor_texture != null:
-		var cursor_rect := TextureRect.new()
-		cursor_rect.texture = _cursor_texture
-		cursor_rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-		cursor_rect.size = Vector2(_cursor_texture.get_width(), _cursor_texture.get_height()) * 0.7
-		cursor_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-		_menu_cursor.add_child(cursor_rect)
-	else:
-		var arrow := _make_label(">", FONT_SIZE, COLOR_ACCENT)
-		_menu_cursor.add_child(arrow)
+	var cursor_line := ColorRect.new()
+	cursor_line.color = Color(1.0, 0.79, 0.35, 0.95)
+	cursor_line.size = Vector2(64, 2)
+	_menu_cursor.add_child(cursor_line)
 	_menu_cursor.visible = false
 	_menu_panel.add_child(_menu_cursor)
 
 	# ── player panel ──
-	_player_panel = _make_panel_node(Rect2(312, 170, 160, 92))
+	_player_panel = _make_panel_node(Rect2(24, 364, 260, 136))
 	_root.add_child(_player_panel)
+	_add_texture(_player_panel, TEX_B2_ORNAMENT, Rect2(6, -4, 82, 25), 0.88)
 
-	_player_panel_label = _make_label("", 7, COLOR_TEXT)
-	_player_panel_label.position = Vector2(10, 6)
-	_player_panel_label.size = Vector2(140, 24)
+	_player_panel_label = _make_label("", 16, COLOR_TEXT)
+	_player_panel_label.position = Vector2(92, 20)
+	_player_panel_label.size = Vector2(138, 34)
 	_player_panel.add_child(_player_panel_label)
+
+	var portrait_frame := Panel.new()
+	portrait_frame.position = Vector2(18, 24)
+	portrait_frame.size = Vector2(56, 72)
+	portrait_frame.add_theme_stylebox_override("panel", _make_panel_style(Color(0.02, 0.025, 0.035, 0.92), Color(0.90, 0.66, 0.30, 0.80), 3))
+	_player_panel.add_child(portrait_frame)
+
+	var portrait_initial := _make_label("YOU", 18, COLOR_ACCENT)
+	portrait_initial.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	portrait_initial.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	portrait_initial.size = portrait_frame.size
+	portrait_frame.add_child(portrait_initial)
 
 	var player_hp_bg := ColorRect.new()
 	player_hp_bg.color = COLOR_HP_BG
-	player_hp_bg.position = Vector2(10, 34)
-	player_hp_bg.size = Vector2(PLAYER_HP_BAR_W, 7)
+	player_hp_bg.position = Vector2(92, 64)
+	player_hp_bg.size = Vector2(PLAYER_HP_BAR_W, 8)
 	_player_panel.add_child(player_hp_bg)
 
 	_player_hp_ghost = ColorRect.new()
 	_player_hp_ghost.color = COLOR_HP_GHOST
-	_player_hp_ghost.position = Vector2(10, 34)
-	_player_hp_ghost.size = Vector2(PLAYER_HP_BAR_W, 7)
+	_player_hp_ghost.position = player_hp_bg.position
+	_player_hp_ghost.size = player_hp_bg.size
 	_player_panel.add_child(_player_hp_ghost)
 
 	_player_hp_bar = ColorRect.new()
 	_player_hp_bar.color = COLOR_PLAYER_HP
-	_player_hp_bar.position = Vector2(10, 34)
-	_player_hp_bar.size = Vector2(PLAYER_HP_BAR_W, 7)
+	_player_hp_bar.position = player_hp_bg.position
+	_player_hp_bar.size = player_hp_bg.size
 	_player_panel.add_child(_player_hp_bar)
 
 	_sp_pip_row = Control.new()
-	_sp_pip_row.position = Vector2(10, 48)
+	_sp_pip_row.position = Vector2(92, 80)
 	_player_panel.add_child(_sp_pip_row)
 	_build_sp_pips()
 
-	var xp_label := _make_label("XP", 6, COLOR_TEXT_DIM)
-	xp_label.position = Vector2(10, 60)
+	var xp_label := _make_label("XP", 12, COLOR_TEXT_DIM)
+	xp_label.position = Vector2(92, 104)
 	_player_panel.add_child(xp_label)
 
 	var xp_bg := ColorRect.new()
 	xp_bg.color = Color(0.10, 0.10, 0.22, 0.95)
-	xp_bg.position = Vector2(26, 63)
-	xp_bg.size = Vector2(PLAYER_HP_BAR_W - 16, 4)
+	xp_bg.position = Vector2(122, 110)
+	xp_bg.size = Vector2(PLAYER_HP_BAR_W - 30, 5)
 	_player_panel.add_child(xp_bg)
 
 	_xp_bar = ColorRect.new()
 	_xp_bar.color = COLOR_XP
-	_xp_bar.position = Vector2(26, 63)
-	_xp_bar.size = Vector2(PLAYER_HP_BAR_W - 16, 4)
+	_xp_bar.position = xp_bg.position
+	_xp_bar.size = xp_bg.size
 	_player_panel.add_child(_xp_bar)
+
+	_hint_label = _make_label("Arrows Move    Enter Select    / Esc Back", 13, COLOR_TEXT_DIM)
+	_hint_label.position = Vector2(476, 510)
+	_hint_label.size = Vector2(420, 20)
+	_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_hint_label.visible = false
+	_root.add_child(_hint_label)
 
 	# ── FX layer on top of everything ──
 	_fx_layer = Control.new()
@@ -380,6 +509,51 @@ func _build_ui() -> void:
 	_play_intro_animation()
 
 
+func _build_turn_order_strip() -> void:
+	var turn_title := _make_label("TURN", 14, COLOR_TEXT)
+	turn_title.position = Vector2(870, 28)
+	turn_title.size = Vector2(58, 18)
+	turn_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_root.add_child(turn_title)
+
+	var turn_diamond := Panel.new()
+	turn_diamond.position = Vector2(886, 52)
+	turn_diamond.size = Vector2(28, 28)
+	turn_diamond.rotation_degrees = 45.0
+	turn_diamond.pivot_offset = Vector2(14, 14)
+	turn_diamond.add_theme_stylebox_override("panel", _make_panel_style(Color(0.02, 0.02, 0.03, 0.78), COLOR_PANEL_BORDER, 2))
+	_root.add_child(turn_diamond)
+
+	var turn_number := _make_label("1", 18, COLOR_TEXT)
+	turn_number.position = Vector2(879, 56)
+	turn_number.size = Vector2(42, 24)
+	turn_number.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_root.add_child(turn_number)
+
+	var title := _make_label("TURN ORDER", 12, COLOR_ACCENT)
+	title.position = Vector2(858, 202)
+	title.size = Vector2(82, 18)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_root.add_child(title)
+
+	var entries := [
+		{"path": TEX_B2_TURN_ORDER_ENEMY, "label": "EN", "color": Color(1.0, 0.38, 0.34, 1.0)},
+		{"path": TEX_B2_TURN_ORDER_ALLY, "label": "YOU", "color": Color(0.55, 0.86, 1.0, 1.0)},
+		{"path": TEX_B2_TURN_ORDER_ALLY, "label": "SK", "color": Color(0.55, 0.86, 1.0, 0.78)},
+		{"path": TEX_B2_TURN_ORDER_ALLY, "label": "IT", "color": Color(0.55, 0.86, 1.0, 0.62)},
+	]
+	for index in range(entries.size()):
+		var entry: Dictionary = entries[index]
+		var y := 226 + index * 46
+		_add_texture(_root, str(entry["path"]), Rect2(854, y, 86, 36), 0.88)
+		var entry_color: Color = entry["color"]
+		var label := _make_label(str(entry["label"]), 14, entry_color)
+		label.position = Vector2(874, y + 7)
+		label.size = Vector2(48, 20)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_root.add_child(label)
+
+
 func _build_sp_pips() -> void:
 	for pip in _sp_pips:
 		pip.queue_free()
@@ -387,10 +561,10 @@ func _build_sp_pips() -> void:
 	var sp_max: int = int(player_stats.get("sp_max", 3))
 	for index in range(sp_max):
 		var pip := ColorRect.new()
-		pip.size = Vector2(7, 7)
-		pip.position = Vector2(index * 13 + 3, 1)
+		pip.size = Vector2(10, 10)
+		pip.position = Vector2(index * 18 + 5, 2)
 		pip.rotation_degrees = 45.0
-		pip.pivot_offset = Vector2(3.5, 3.5)
+		pip.pivot_offset = Vector2(5, 5)
 		_sp_pip_row.add_child(pip)
 		_sp_pips.append(pip)
 	_refresh_sp_pips()
@@ -411,16 +585,18 @@ func _play_intro_animation() -> void:
 	flash_tween.tween_property(flash, "color:a", 0.0, 0.45)
 	flash_tween.tween_callback(flash.queue_free)
 
-	_enemy_panel.position.y = -72
-	_log_panel.position.y = 290
-	_menu_panel.position.y = 300
-	_player_panel.position.x = 490
+	_enemy_panel.position.y = -150
+	_intent_panel.position.y = -150
+	_log_panel.position.x = -320
+	_menu_panel.position.y = 560
+	_player_panel.position.x = -320
 
 	var slide := create_tween().set_parallel(true)
-	slide.tween_property(_enemy_panel, "position:y", 8.0, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	slide.tween_property(_log_panel, "position:y", 166.0, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	slide.tween_property(_menu_panel, "position:y", 232.0, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	slide.tween_property(_player_panel, "position:x", 312.0, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	slide.tween_property(_enemy_panel, "position:y", 24.0, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	slide.tween_property(_intent_panel, "position:y", 36.0, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	slide.tween_property(_log_panel, "position:x", 24.0, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	slide.tween_property(_menu_panel, "position:y", 372.0, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	slide.tween_property(_player_panel, "position:x", 24.0, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	slide.tween_property(_portrait_holder, "position", PORTRAIT_HOME, 0.55).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	slide.tween_property(_portrait_holder, "modulate:a", 1.0, 0.4)
 
@@ -469,7 +645,7 @@ func _shake(strength: float, duration: float) -> void:
 
 
 func _portrait_center() -> Vector2:
-	return _portrait_holder.position + Vector2(78, 72)
+	return _portrait_holder.position + Vector2(PORTRAIT_SIZE.x * 0.5, PORTRAIT_SIZE.y * 0.46)
 
 
 func _flash_portrait(color: Color = Color(1, 1, 1, 1), strength: float = 0.85) -> void:
@@ -648,7 +824,7 @@ func _player_turn() -> void:
 			guarding = true
 			player_sp = mini(player_sp + 1, int(player_stats.get("sp_max", 3)))
 			_refresh_player_panel()
-			_spawn_particles(Vector2(392, 200), Color(0.6, 0.75, 1.0), 10)
+			_spawn_particles(PLAYER_FX_CENTER, Color(0.6, 0.75, 1.0), 10)
 			await _say("You brace yourself and watch carefully. (+1 SP)")
 		"flee":
 			await _try_flee()
@@ -681,7 +857,7 @@ func _skill_menu() -> void:
 	match str(skill.get("id", "")):
 		"focus":
 			focus_active = true
-			_spawn_particles(Vector2(392, 200), Color(0.45, 0.65, 1.0), 18)
+			_spawn_particles(PLAYER_FX_CENTER, Color(0.45, 0.65, 1.0), 18)
 			var aura := create_tween()
 			aura.tween_property(_player_panel, "modulate", Color(0.7, 0.85, 1.3), 0.2)
 			aura.tween_property(_player_panel, "modulate", Color.WHITE, 0.5)
@@ -728,18 +904,18 @@ func _item_menu() -> void:
 			GameManager.set_player_hp(GameManager.get_player_hp() + amount)
 			_animate_player_hp()
 			_refresh_player_panel()
-			_spawn_particles(Vector2(392, 200), COLOR_HEAL, 16)
-			_spawn_damage_number(Vector2(392, 186), "+%d" % amount, COLOR_HEAL)
+			_spawn_particles(PLAYER_FX_CENTER, COLOR_HEAL, 16)
+			_spawn_damage_number(PLAYER_FX_CENTER + Vector2(0, -18), "+%d" % amount, COLOR_HEAL)
 			await _say("You use %s. Restored %d HP." % [item.get("name"), amount])
 		"energy":
 			var sp_gain: int = int(item.get("power", 2))
 			player_sp = mini(player_sp + sp_gain, int(player_stats.get("sp_max", 3)))
 			_refresh_player_panel()
-			_spawn_particles(Vector2(392, 200), Color(0.55, 0.6, 1.0), 14)
+			_spawn_particles(PLAYER_FX_CENTER, Color(0.55, 0.6, 1.0), 14)
 			await _say("You use %s. Restored %d SP." % [item.get("name"), sp_gain])
 		"buff":
 			focus_active = true
-			_spawn_particles(Vector2(392, 200), Color(1.0, 0.6, 0.3), 18)
+			_spawn_particles(PLAYER_FX_CENTER, Color(1.0, 0.6, 0.3), 18)
 			var aura := create_tween()
 			aura.tween_property(_player_panel, "modulate", Color(1.3, 1.0, 0.7), 0.2)
 			aura.tween_property(_player_panel, "modulate", Color.WHITE, 0.5)
@@ -882,7 +1058,7 @@ func _enemy_use_skill(skill: Dictionary) -> void:
 	match kind:
 		"hex":
 			hexed = true
-			_spawn_particles(Vector2(392, 200), Color(0.7, 0.35, 0.9), 16, false)
+			_spawn_particles(PLAYER_FX_CENTER, Color(0.7, 0.35, 0.9), 16, false)
 			await _enemy_strike(power * 0.5, "%s uses %s! A weakening curse clings to you." % [_enemy_name(), skill_name])
 		"guard_break":
 			if guarding:
@@ -904,7 +1080,7 @@ func _enemy_strike(power: float, flavor: String) -> void:
 	_enemy_lunge()
 	await get_tree().create_timer(0.14).timeout
 	_shake(5.0 if power >= 1.5 else 3.0, 0.3)
-	_spawn_damage_number(Vector2(392, 186), str(final_damage), COLOR_PLAYER_DMG, power >= 1.5)
+	_spawn_damage_number(PLAYER_FX_CENTER + Vector2(10, -92), str(final_damage), COLOR_PLAYER_DMG, power >= 1.5)
 	GameManager.set_player_hp(GameManager.get_player_hp() - final_damage)
 	_animate_player_hp()
 	_refresh_player_panel()
@@ -994,31 +1170,31 @@ func _victory() -> void:
 		await _grant_xp(xp, "Victory! +%d XP." % xp)
 	var dropped: String = InventoryManager.roll_battle_drop(str(enemy.get("rank", "minion")))
 	if not dropped.is_empty():
-		_spawn_particles(Vector2(240, 140), COLOR_ACCENT, 12)
+		_spawn_particles(SCREEN_CENTER, COLOR_ACCENT, 12)
 		await _say("It left something behind: %s." % InventoryManager.item_def(dropped).get("name", dropped))
 	_finish("victory")
 
 
 func _show_victory_banner() -> void:
 	var banner_root := Control.new()
-	banner_root.position = Vector2(240, 86)
+	banner_root.position = Vector2(480, 180)
 	_fx_layer.add_child(banner_root)
 
 	if _banner_texture != null:
 		var ornament := TextureRect.new()
 		ornament.texture = _banner_texture
 		ornament.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-		var w: float = 200.0
+		var w: float = 360.0
 		var h: float = w * float(_banner_texture.get_height()) / float(_banner_texture.get_width())
 		ornament.size = Vector2(w, h)
 		ornament.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		ornament.position = Vector2(-w / 2.0, -h / 2.0)
 		banner_root.add_child(ornament)
 
-	var text := _make_label("VICTORY", 16, COLOR_ACCENT)
+	var text := _make_label("VICTORY", 34, COLOR_ACCENT)
 	text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	text.position = Vector2(-60, -10)
-	text.size = Vector2(120, 22)
+	text.position = Vector2(-140, -22)
+	text.size = Vector2(280, 44)
 	banner_root.add_child(text)
 
 	banner_root.scale = Vector2(0.2, 0.2)
@@ -1028,7 +1204,7 @@ func _show_victory_banner() -> void:
 	pop.tween_property(banner_root, "scale", Vector2.ONE, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	pop.parallel().tween_property(banner_root, "modulate:a", 1.0, 0.3)
 	for index in range(5):
-		_spawn_particles(Vector2(randf_range(120, 360), randf_range(60, 130)), COLOR_ACCENT, 12)
+		_spawn_particles(Vector2(randf_range(300, 660), randf_range(110, 230)), COLOR_ACCENT, 12)
 
 
 func _grant_xp(xp: int, message: String) -> void:
@@ -1038,15 +1214,15 @@ func _grant_xp(xp: int, message: String) -> void:
 	var xp_tween := create_tween()
 	xp_tween.tween_property(
 		_xp_bar, "size:x",
-		(PLAYER_HP_BAR_W - 16) * clampf(float(GameManager.player_xp) / float(GameManager.xp_to_next_level()), 0.0, 1.0),
+		(PLAYER_HP_BAR_W - 30) * clampf(float(GameManager.player_xp) / float(GameManager.xp_to_next_level()), 0.0, 1.0),
 		0.7,
 	).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	_refresh_player_panel()
 	await _say(message)
 	if levels > 0:
 		_build_sp_pips()
-		_spawn_particles(Vector2(392, 200), COLOR_ACCENT, 28)
-		_spawn_damage_number(Vector2(380, 160), "LEVEL UP!", COLOR_ACCENT, true)
+		_spawn_particles(PLAYER_FX_CENTER, COLOR_ACCENT, 28)
+		_spawn_damage_number(PLAYER_FX_CENTER + Vector2(80, -80), "LEVEL UP!", COLOR_ACCENT, true)
 		var glow := create_tween()
 		glow.tween_property(_player_panel, "modulate", Color(1.4, 1.3, 0.9), 0.25)
 		glow.tween_property(_player_panel, "modulate", Color.WHITE, 0.6)
@@ -1086,8 +1262,8 @@ func _say(text: String) -> void:
 		await get_tree().process_frame
 	_continue_marker.visible = true
 	var bounce := create_tween().set_loops(3)
-	bounce.tween_property(_continue_marker, "position:y", 48.0, 0.25)
-	bounce.tween_property(_continue_marker, "position:y", 46.0, 0.25)
+	bounce.tween_property(_continue_marker, "position:y", 98.0, 0.25)
+	bounce.tween_property(_continue_marker, "position:y", 94.0, 0.25)
 	_ui_mode = UiMode.CONFIRM
 	await _confirmed
 	_continue_marker.visible = false
@@ -1098,13 +1274,24 @@ func _menu(ids: Array[String], labels: Array[String]) -> String:
 	_clear_menu()
 	_menu_ids = ids
 	_menu_index = 0
+	_menu_panel.visible = true
+	_menu_panel.modulate.a = 0.0
+	if _hint_label != null:
+		_hint_label.visible = true
+	var panel_in := create_tween()
+	panel_in.tween_property(_menu_panel, "modulate:a", 1.0, 0.16)
+	var count: int = maxi(labels.size(), 1)
+	var card_w: float = clampf((_menu_row.size.x - float(maxi(count - 1, 0) * 6)) / float(count), 68.0, 196.0)
+	var total_w: float = card_w * float(count) + float(maxi(count - 1, 0) * 6)
+	_menu_row.position.x = 18.0 + maxf((608.0 - total_w) * 0.5, 0.0)
+	_menu_row.size.x = minf(total_w, 608.0)
 	for index in range(labels.size()):
-		var item := _make_label(labels[index], FONT_SIZE, COLOR_TEXT_DIM)
+		var item := _make_menu_card(labels[index], index, card_w)
 		_menu_row.add_child(item)
 		_menu_items.append(item)
 	_menu_cursor.visible = true
-	_highlight_menu()
 	_ui_mode = UiMode.MENU
+	_highlight_menu()
 	var picked: String = await _menu_picked
 	_menu_cursor.visible = false
 	_clear_menu()
@@ -1117,25 +1304,107 @@ func _clear_menu() -> void:
 		item.queue_free()
 	_menu_items.clear()
 	_menu_ids.clear()
-	_menu_cursor.visible = false
+	if _menu_cursor != null:
+		_menu_cursor.visible = false
+	if _menu_panel != null:
+		_menu_panel.visible = false
+	if _hint_label != null:
+		_hint_label.visible = false
 
 
 func _highlight_menu() -> void:
 	for index in range(_menu_items.size()):
 		var selected: bool = index == _menu_index
-		var item: Control = _menu_items[index]
-		item.add_theme_color_override("font_color", COLOR_ACCENT if selected else COLOR_TEXT_DIM)
+		var item := _menu_items[index]
+		_set_menu_card_selected(item, selected)
 		if selected:
 			var bump := create_tween()
-			bump.tween_property(item, "position:y", -2.0, 0.08)
+			bump.tween_property(item, "position:y", -5.0, 0.08)
 			bump.tween_property(item, "position:y", 0.0, 0.12)
 	await get_tree().process_frame
 	if _menu_index < _menu_items.size():
 		var target: Control = _menu_items[_menu_index]
-		_menu_cursor.position = Vector2(_menu_row.position.x + target.position.x - 14.0, 11.0)
+		_menu_cursor.visible = true
+		_menu_cursor.position = Vector2(_menu_row.position.x + target.position.x + 10.0, _menu_row.position.y + target.size.y + 4.0)
+		if _menu_cursor.get_child_count() > 0 and _menu_cursor.get_child(0) is ColorRect:
+			(_menu_cursor.get_child(0) as ColorRect).size.x = maxf(target.size.x - 20.0, 30.0)
+
+
+func _make_menu_card(text: String, index: int, width: float) -> Panel:
+	var card := Panel.new()
+	card.custom_minimum_size = Vector2(width, 94)
+	card.size = Vector2(width, 94)
+	card.mouse_filter = Control.MOUSE_FILTER_STOP
+	card.add_theme_stylebox_override("panel", _make_menu_card_style(false))
+	card.gui_input.connect(_on_menu_card_gui_input.bind(index))
+
+	_add_texture(card, TEX_B2_COMMAND, Rect2(-2, -6, width + 4, 108), 0.42, true)
+
+	var icon := ColorRect.new()
+	icon.color = Color(0.95, 0.80, 0.48, 0.72)
+	icon.position = Vector2(width * 0.5 - 5, 17)
+	icon.size = Vector2(10, 10)
+	icon.rotation_degrees = 45
+	icon.pivot_offset = Vector2(5, 5)
+	card.add_child(icon)
+	card.set_meta("icon_node", icon)
+
+	var label := _make_label(text, 15 if text.length() <= 10 else 13, COLOR_TEXT_DIM)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.clip_text = true
+	label.position = Vector2(7, 42)
+	label.size = Vector2(width - 14, 38)
+	card.add_child(label)
+	card.set_meta("label_node", label)
+	return card
+
+
+func _make_menu_card_style(selected: bool) -> StyleBoxFlat:
+	var style := _make_panel_style(
+		Color(0.03, 0.035, 0.045, 0.88) if not selected else Color(0.14, 0.10, 0.035, 0.95),
+		Color(0.60, 0.50, 0.34, 0.58) if not selected else Color(1.0, 0.78, 0.32, 0.96),
+		3
+	)
+	style.shadow_size = 6 if not selected else 16
+	style.shadow_color = Color(0, 0, 0, 0.35) if not selected else Color(1.0, 0.63, 0.18, 0.34)
+	return style
+
+
+func _set_menu_card_selected(card: Control, selected: bool) -> void:
+	if card is Panel:
+		(card as Panel).add_theme_stylebox_override("panel", _make_menu_card_style(selected))
+	if card.has_meta("label_node"):
+		var label := card.get_meta("label_node") as Label
+		if label != null:
+			label.add_theme_color_override("font_color", COLOR_ACCENT if selected else COLOR_TEXT_DIM)
+	if card.has_meta("icon_node"):
+		var icon := card.get_meta("icon_node") as ColorRect
+		if icon != null:
+			icon.color = Color(1.0, 0.86, 0.40, 1.0) if selected else Color(0.95, 0.80, 0.48, 0.55)
+
+
+func _on_menu_card_gui_input(event: InputEvent, index: int) -> void:
+	if _ui_mode != UiMode.MENU or index < 0 or index >= _menu_ids.size():
+		return
+	if event is InputEventMouseMotion and _menu_index != index:
+		_menu_index = index
+		_highlight_menu()
+	elif event is InputEventMouseButton:
+		var mouse_event := event as InputEventMouseButton
+		if mouse_event.button_index == MOUSE_BUTTON_LEFT and mouse_event.pressed:
+			_menu_index = index
+			_highlight_menu()
+			_menu_picked.emit(_menu_ids[_menu_index])
 
 
 func _process(delta: float) -> void:
+	if _hint_label != null:
+		_hint_label.visible = _ui_mode == UiMode.MENU
+	if _menu_panel != null and _ui_mode != UiMode.MENU and _menu_items.is_empty():
+		_menu_panel.visible = false
+
 	if _ui_mode == UiMode.TYPING:
 		_type_progress += TYPE_SPEED * delta
 		var visible_chars: int = mini(int(_type_progress), _type_target.length())
@@ -1194,23 +1463,22 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _refresh_enemy_panel() -> void:
-	_enemy_name_label.text = "%s  [%s · lv%d]" % [
-		_enemy_name(), str(enemy.get("rank", "minion")), int(enemy.get("level", 1)),
-	]
-	_enemy_status_label.text = "EXPOSED (%d)" % exposed_turns if exposed_turns > 0 else ""
+	_enemy_name_label.text = _enemy_name()
+	_enemy_rank_label.text = "Lv %d" % int(enemy.get("level", 1))
+	_enemy_status_label.text = "EXP %d" % exposed_turns if exposed_turns > 0 else ""
 
 
 func _refresh_player_panel() -> void:
 	var max_hp: int = int(player_stats.get("max_hp", 80))
-	_player_panel_label.text = "YOU  ·  LV %d\nHP %d/%d%s%s" % [
+	_player_panel_label.text = "YOU  Lv.%d\nHP %d/%d%s%s" % [
 		GameManager.player_level,
 		GameManager.get_player_hp(), max_hp,
-		"   FOCUSED" if focus_active else "",
-		"   HEXED" if hexed else "",
+		"  FOCUS" if focus_active else "",
+		"  HEX" if hexed else "",
 	]
 	_refresh_sp_pips()
 	_player_hp_bar.size.x = PLAYER_HP_BAR_W * clampf(float(GameManager.get_player_hp()) / float(max_hp), 0.0, 1.0)
-	_xp_bar.size.x = (PLAYER_HP_BAR_W - 16) * clampf(float(GameManager.player_xp) / float(GameManager.xp_to_next_level()), 0.0, 1.0)
+	_xp_bar.size.x = (PLAYER_HP_BAR_W - 30) * clampf(float(GameManager.player_xp) / float(GameManager.xp_to_next_level()), 0.0, 1.0)
 
 
 func _enemy_name() -> String:
