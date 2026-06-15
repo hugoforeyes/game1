@@ -297,6 +297,29 @@ func choose_option(option_id: String) -> void:
 	_refresh_tracker()
 
 
+## Resolve a quest's moral choice from inside a conversation tree (an option's
+## "quest_choice" effect). No-op unless that quest's CURRENT objective is the
+## choice — otherwise the separate choice dialog handles it as a fallback.
+func resolve_quest_choice(quest_id: String, option_id: String) -> bool:
+	for quest in quests:
+		if str(quest.get("id")) != quest_id:
+			continue
+		var objective: Dictionary = _current_objective(quest)
+		if objective.is_empty() or str(objective.get("kind")) != "choice":
+			return false
+		var state: Dictionary = _state_of(quest)
+		var choices: Dictionary = state.get("choices", {}) as Dictionary
+		if choices.has(str(objective.get("id"))):
+			return false  # already decided
+		choices[str(objective.get("id"))] = option_id
+		_complete_current_objective(quest)
+		quests_changed.emit()
+		_refresh_tracker()
+		print("[Quest] %s choice resolved in dialogue -> %s" % [quest_id, option_id])
+		return true
+	return false
+
+
 # ── UI construction ───────────────────────────────────────────────────────────
 
 

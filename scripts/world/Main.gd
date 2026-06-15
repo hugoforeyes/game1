@@ -454,13 +454,13 @@ func _edge_exit_tile(edge: String, normalized: float, map_tile_size: Vector2i) -
 	var ny: int = clampi(int(round(normalized * float(map_tile_size.y - 1))), 1, max(map_tile_size.y - 2, 1))
 	match edge:
 		"west":
-			return Vector2i(2, ny)
+			return Vector2i(0, ny)
 		"east":
-			return Vector2i(max(map_tile_size.x - 3, 2), ny)
+			return Vector2i(max(map_tile_size.x - 1, 0), ny)
 		"north":
-			return Vector2i(nx, 2)
+			return Vector2i(nx, 0)
 		"south":
-			return Vector2i(nx, max(map_tile_size.y - 3, 2))
+			return Vector2i(nx, max(map_tile_size.y - 1, 0))
 	return Vector2i(nx, ny)
 
 func _entry_spawn_tile(edge: String, tile_context: Dictionary) -> Vector2i:

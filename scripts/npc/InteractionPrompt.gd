@@ -32,6 +32,9 @@ const SRC_BOT := Rect2(0, 120, 1389, 100)   # bottom border cap
 
 const INNER_PAD  := Vector2(4.0, 2.0)
 const LINE_GAP   := 1.5
+const PANEL_PAD  := Vector2(9.0, 7.0)
+const MIN_PANEL_W := 76.0
+const MIN_PANEL_H := 34.0
 
 const TITLE_COLOR    := Color(1.00, 0.85, 0.45, 1.00)
 const TEXT_COLOR     := Color(0.93, 0.88, 0.75, 1.00)
@@ -53,6 +56,8 @@ var _selected     := 0
 var _panel_w      := 0.0   # width of panel body (without ARROW_W)
 var _panel_h      := 0.0   # total panel height
 var _texture      : Texture2D = null
+var _single_texture: Texture2D = null
+var _cursor_texture: Texture2D = null
 var _item_rects   : Array[Rect2] = []
 var _world_node   : Node2D = null
 var _world_offset : Vector2 = Vector2.ZERO
@@ -63,6 +68,8 @@ func _ready() -> void:
 	_font      = ThemeDB.fallback_font
 	modulate.a = 0.0
 	_texture   = load("res://assets/ui/interaction_menu_panel.png") as Texture2D
+	_single_texture = load("res://assets/ui/dialogue_v2/choice_highlight.png") as Texture2D
+	_cursor_texture = load("res://assets/ui/dialogue_v2/choice_cursor.png") as Texture2D
 	_build()
 
 # ── public API ─────────────────────────────────────────────────────────────────
@@ -85,13 +92,20 @@ func show_prompt() -> void:
 func hide_prompt() -> void:
 	_target_alpha = 0.0
 
+func panel_size() -> Vector2:
+	return Vector2(_panel_w + ARROW_W, _panel_h)
+
 # ── input ──────────────────────────────────────────────────────────────────────
 func _unhandled_input(event: InputEvent) -> void:
 	if _target_alpha < 0.5 or _items.is_empty():
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
-			KEY_SPACE:
+			KEY_UP:
+				_selected = (_selected - 1 + _items.size()) % _items.size()
+				queue_redraw()
+				get_viewport().set_input_as_handled()
+			KEY_DOWN, KEY_SPACE:
 				_selected = (_selected + 1) % _items.size()
 				queue_redraw()
 				get_viewport().set_input_as_handled()
@@ -135,7 +149,7 @@ func _build() -> void:
 		max_tw = maxf(max_tw, tw)
 
 	var need_int_w := max_tw + INNER_PAD.x * 2.0
-	var body_w := maxf(need_int_w / (INT_R_FRAC - INT_L_FRAC), 60.0)
+	var body_w := maxf(need_int_w / (INT_R_FRAC - INT_L_FRAC), MIN_PANEL_W)
 
 	# Interior y-space needed:
 	#   optional title row, optional divider+gap, N item rows, top+bottom inner padding
@@ -147,14 +161,11 @@ func _build() -> void:
 			div_h = 3.0   # divider + 1 px gap each side
 
 	var need_int_h := rows * line_h + div_h + INNER_PAD.y * 2.0
-
-	# Interior available = mid_h + interior portions of both caps
-	# cap interior fraction: CAP_TOP_INT_FRAC of CAP_H at top + CAP_BOT_INT_FRAC at bottom
 	var cap_interior := (1.0 - CAP_TOP_INT_FRAC) * CAP_H + CAP_BOT_INT_FRAC * CAP_H
 	var mid_h := maxf(need_int_h - cap_interior, 2.0)
 
 	_panel_w = body_w
-	_panel_h = CAP_H + mid_h + CAP_H
+	_panel_h = maxf(CAP_H + mid_h + CAP_H, MIN_PANEL_H)
 
 	# Compute item hit rects (same y logic as _draw)
 	_item_rects.clear()
@@ -164,7 +175,7 @@ func _build() -> void:
 		var iy   := base + (lh + 3.0 if not _title.is_empty() else 0.0)
 		var rx   := ARROW_W
 		for _i in range(_items.size()):
-			_item_rects.append(Rect2(rx, iy - 1.0, ARROW_W + body_w - rx, lh + 1.0))
+			_item_rects.append(Rect2(rx, iy - 2.0, body_w, lh + 3.0))
 			iy += lh
 
 	queue_redraw()
@@ -176,11 +187,11 @@ func _draw() -> void:
 	var ph := _panel_h
 	var mid_h := ph - CAP_H * 2.0
 
-	# --- 3-slice panel texture ---
+	# --- 3-slice panel texture, same component as the Talk-to-NPC prompt ---
 	if _texture != null:
-		draw_texture_rect_region(_texture, Rect2(px, 0,              pw, CAP_H),  SRC_TOP)
-		draw_texture_rect_region(_texture, Rect2(px, CAP_H,          pw, mid_h), SRC_MID)
-		draw_texture_rect_region(_texture, Rect2(px, CAP_H + mid_h,  pw, CAP_H),  SRC_BOT)
+		draw_texture_rect_region(_texture, Rect2(px, 0, pw, CAP_H), SRC_TOP)
+		draw_texture_rect_region(_texture, Rect2(px, CAP_H, pw, mid_h), SRC_MID)
+		draw_texture_rect_region(_texture, Rect2(px, CAP_H + mid_h, pw, CAP_H), SRC_BOT)
 
 	# --- left-pointing arrow ---
 	var cy    := ph * 0.5
@@ -221,13 +232,32 @@ func _draw() -> void:
 	# Items
 	for i in range(_items.size()):
 		if i == _selected:
-			draw_rect(Rect2(ix - 2.0, iy - 1.0, irx - ix + 4.0, line_h + 1.0), SELECT_BG)
+			draw_rect(Rect2(ix - 3.0, iy - 2.0, irx - ix + 6.0, line_h + 3.0), SELECT_BG)
 			_draw_item_indicator(Vector2(ix + 1.0, iy + line_h * 0.5))
 		draw_string(_font, Vector2(ix + ind_w, iy + ascent), _items[i],
 				HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE, TEXT_COLOR)
 		iy += line_h
 
+func _draw_nine_patch(texture: Texture2D, rect: Rect2, margin: float) -> void:
+	var tex_size := texture.get_size()
+	var mx := minf(minf(margin, tex_size.x * 0.45), rect.size.x * 0.45)
+	var my := minf(minf(margin, tex_size.y * 0.45), rect.size.y * 0.45)
+	var src_x := [0.0, mx, tex_size.x - mx, tex_size.x]
+	var src_y := [0.0, my, tex_size.y - my, tex_size.y]
+	var dst_x := [rect.position.x, rect.position.x + mx, rect.position.x + rect.size.x - mx, rect.position.x + rect.size.x]
+	var dst_y := [rect.position.y, rect.position.y + my, rect.position.y + rect.size.y - my, rect.position.y + rect.size.y]
+	for y in range(3):
+		for x in range(3):
+			var src := Rect2(src_x[x], src_y[y], src_x[x + 1] - src_x[x], src_y[y + 1] - src_y[y])
+			var dst := Rect2(dst_x[x], dst_y[y], dst_x[x + 1] - dst_x[x], dst_y[y + 1] - dst_y[y])
+			if dst.size.x > 0.0 and dst.size.y > 0.0 and src.size.x > 0.0 and src.size.y > 0.0:
+				draw_texture_rect_region(texture, dst, src)
+
 func _draw_item_indicator(center: Vector2) -> void:
+	if _cursor_texture != null:
+		var rect := Rect2(center.x - 2.0, center.y - IND_H * 0.85, IND_W + 3.0, IND_H * 1.7)
+		draw_texture_rect(_cursor_texture, rect, false)
+		return
 	var points := PackedVector2Array([
 		Vector2(center.x, center.y - IND_H * 0.5),
 		Vector2(center.x + IND_W - 2.0, center.y),

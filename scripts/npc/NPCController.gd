@@ -155,9 +155,11 @@ func _physics_process(delta: float) -> void:
 
 func _setup_interaction() -> void:
 	var inter: Dictionary = interaction
-	# Quest participants must always be approachable, whatever the package says.
+	# Quest participants — and any NPC that has a generated conversation tree —
+	# must always be approachable, whatever the package interaction flag says.
 	_interaction_enabled = bool(inter.get("enabled", false)) \
-		or QuestManager.is_quest_npc(str(npc_data.get("id", "")))
+		or QuestManager.is_quest_npc(str(npc_data.get("id", ""))) \
+		or _has_conversation_tree()
 	if not _interaction_enabled:
 		return
 	_interaction_radius = float(inter.get("proximity_radius_tiles", 1.5))
@@ -165,7 +167,7 @@ func _setup_interaction() -> void:
 	_prompt_layer.layer = 128
 	add_child(_prompt_layer)
 	_prompt = InteractionPrompt.new()
-	_prompt.scale = Vector2(2, 2)  # prompt art authored for the 480x270 UI space
+	_prompt.scale = Vector2(1.78, 1.78)  # prompt art authored for the 480x270 UI space
 	_prompt_layer.add_child(_prompt)
 	var npc_name := str(npc_data.get("name", "NPC"))
 	var raw_opts: Variant = inter.get("options", [])
@@ -180,6 +182,10 @@ func _setup_interaction() -> void:
 	_prompt.track(_player, Vector2(0.0, 0.0))
 	_prompt.item_confirmed.connect(_on_interaction_item_confirmed)
 
+func _has_conversation_tree() -> bool:
+	var tree: Variant = npc_data.get("conversation_tree")
+	return tree is Dictionary and not ((tree as Dictionary).get("nodes", []) as Array).is_empty()
+
 func _on_interaction_item_confirmed(item: String, _index: int) -> void:
 	if item.begins_with("Talk"):
 		_prompt.hide_prompt()
@@ -191,8 +197,18 @@ func _on_interaction_item_confirmed(item: String, _index: int) -> void:
 			bubble_line = str(_bubble_lines.pick_random())
 		var chatbox: Node = ChatBoxScene.instantiate()
 		get_tree().root.add_child(chatbox)
-		chatbox.open(str(npc_data.get("name", "")), npc_data, str(npc_data.get("id", "")), bubble_line)
-		QuestManager.notify_npc_talked(str(npc_data.get("id", "")))
+		if chatbox.has_method("stage_camera_for_conversation"):
+			chatbox.stage_camera_for_conversation(_player, self)
+		# Story-first select flow: drive the pre-authored conversation tree.
+		# (Legacy free-chat is only used for old packages without a tree.)
+		if _has_conversation_tree():
+			# Phase 1: the tree completes the "talk" objective when the player
+			# finishes the conversation (ChatBox fires notify_npc_talked at __end__),
+			# so the player must actually converse — not just bump the NPC.
+			chatbox.open_tree(str(npc_data.get("name", "")), npc_data, npc_data.get("conversation_tree") as Dictionary)
+		else:
+			chatbox.open(str(npc_data.get("name", "")), npc_data, str(npc_data.get("id", "")), bubble_line)
+			QuestManager.notify_npc_talked(str(npc_data.get("id", "")))
 
 func _update_interaction() -> void:
 	if not _interaction_enabled or _player == null or not is_instance_valid(_player):
