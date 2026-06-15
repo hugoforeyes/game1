@@ -104,6 +104,16 @@ func quest_item_for(quest_id: String) -> Dictionary:
 	return {}
 
 
+# The story keepsake granted on completing this quest (distinct from the
+# collect/deliver item above). role == "reward" set by chapter_items.
+func reward_item_for(quest_id: String) -> Dictionary:
+	for item in catalog:
+		if item is Dictionary and str((item as Dictionary).get("role")) == "reward" \
+				and str((item as Dictionary).get("quest_id")) == quest_id:
+			return item as Dictionary
+	return {}
+
+
 func count_of(item_id: String) -> int:
 	return int(counts.get(item_id, 0))
 
@@ -116,7 +126,7 @@ func icon_for(item_def_dict: Dictionary) -> Texture2D:
 	atlas.atlas = _icon_sheet
 	atlas.region = Rect2(
 		(index % _icon_grid) * _icon_cell_px,
-		(index / _icon_grid) * _icon_cell_px,
+		int(index / _icon_grid) * _icon_cell_px,
 		_icon_cell_px, _icon_cell_px,
 	)
 	return atlas

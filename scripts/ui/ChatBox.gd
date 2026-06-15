@@ -47,6 +47,7 @@ const COLOR_OPT_BORDER_DIM := Color(0, 0, 0, 0)
 const COLOR_OPT_BORDER_LIT := Color(1.00, 0.77, 0.30, 0.80)
 const COLOR_OPT_TEXT_DIM   := Color(0.84, 0.78, 0.64, 0.88)
 const COLOR_OPT_TEXT_LIT   := Color(0.93, 0.88, 0.75, 1.00)
+const COLOR_OPT_TEXT_SEEN  := Color(0.55, 0.51, 0.44, 0.70)  # an option already explored
 const COLOR_OPT_ARROW      := Color(1.00, 0.85, 0.45, 1.00)
 
 const OPT_ROW_H := 18.0   # height of each option row (px)
@@ -76,6 +77,7 @@ var _tree_mode      : bool       = false
 var _tree_nodes     : Dictionary = {}    # node id -> node dict
 var _tree_options   : Array      = []    # current node's option dicts (parallel to _options)
 var _talk_notified  : bool       = false # fired notify_npc_talked once this conversation
+var _visited_nodes  : Dictionary = {}    # node ids the player has already reached
 var _opt_rows     : Array[Node]        = []
 var _opt_styles   : Array[StyleBoxFlat]= []
 var _opt_cursors  : Array[CanvasItem]  = []
@@ -797,21 +799,35 @@ func _clear_options() -> void:
 func _update_option_highlight() -> void:
 	for i in range(_opt_labels.size()):
 		var lit := (i == _selected_opt)
+		var seen := _option_leads_to_seen(i)
 		_opt_styles[i].bg_color = Color(0, 0, 0, 0)
 		_opt_styles[i].border_color = Color(0, 0, 0, 0) if lit else Color(0.72, 0.64, 0.50, 0.20)
 		_opt_cursors[i].visible = true
 		_opt_cursors[i].modulate.a = 1.0 if lit else 0.0
 		_opt_highlights[i].visible = lit
 		_opt_labels[i].text = _format_option_label(i)
-		_opt_labels[i].add_theme_color_override("font_color",
-			COLOR_OPT_TEXT_LIT if lit else COLOR_OPT_TEXT_DIM)
+		var col := COLOR_OPT_TEXT_LIT
+		if not lit:
+			col = COLOR_OPT_TEXT_SEEN if seen else COLOR_OPT_TEXT_DIM
+		_opt_labels[i].add_theme_color_override("font_color", col)
 		_opt_labels[i].add_theme_color_override("font_shadow_color",
 			Color(0, 0, 0, 0.55) if lit else Color(0, 0, 0, 0))
+
+# True if this option leads to a content node the player already explored — used
+# to grey it out + tick it so the player can see which topics they've covered.
+func _option_leads_to_seen(index: int) -> bool:
+	if not _tree_mode or index >= _tree_options.size():
+		return false
+	var goto := str((_tree_options[index] as Dictionary).get("goto", ""))
+	if goto.is_empty() or goto == "root" or goto == "__end__":
+		return false
+	return _visited_nodes.has(goto)
 
 func _format_option_label(index: int) -> String:
 	if index < 0 or index >= _options.size():
 		return ""
-	return "%d.  %s" % [index + 1, _options[index]]
+	var mark := "* " if _option_leads_to_seen(index) else ""
+	return "%d.  %s%s" % [index + 1, mark, _options[index]]
 
 func _play_open_effect() -> void:
 	var animated: Array[CanvasItem] = [
@@ -949,6 +965,7 @@ func open_tree(npc_name: String, npc_data: Dictionary, tree: Dictionary) -> void
 	_tree_mode = true
 	_leaf_waiting = false
 	_talk_notified = false
+	_visited_nodes = {}
 	_npc_name  = npc_name
 	_npc_data  = npc_data
 	_npc_id    = str(npc_data.get("id", ""))
@@ -982,17 +999,25 @@ func open_tree(npc_name: String, npc_data: Dictionary, tree: Dictionary) -> void
 	_play_open_effect()
 	_enter_tree_node(str(tree.get("start_node", "root")))
 
-func _set_dialogue_text(text: String, queued_labels: Array = [], queued_leaf: bool = false) -> void:
+func _set_dialogue_text(text: String, queued_labels: Array = [], queued_leaf: bool = false, instant: bool = false) -> void:
 	if _dialogue_label == null:
 		return
 	_dialogue_label.text = text
 	_fit_dialogue_label(text)
-	_dialogue_label.visible_characters = 0
-	_dialogue_visible_chars = 0.0
-	_dialogue_revealing = not text.is_empty()
 	_pending_tree_labels = queued_labels.duplicate()
 	_pending_tree_leaf = queued_leaf
 	_leaf_waiting = false
+	if instant:
+		# Going back to a node already seen: no typewriter, no waiting — show the
+		# line fully and the options/menu immediately.
+		_dialogue_label.visible_characters = -1
+		_dialogue_visible_chars = 0.0
+		_dialogue_revealing = false
+		_finish_dialogue_reveal()
+		return
+	_dialogue_label.visible_characters = 0
+	_dialogue_visible_chars = 0.0
+	_dialogue_revealing = not text.is_empty()
 	if not _dialogue_revealing:
 		_finish_dialogue_reveal()
 
@@ -1014,6 +1039,8 @@ func _enter_tree_node(node_id: String) -> void:
 	if node.is_empty():
 		close()
 		return
+	var revisit: bool = _visited_nodes.has(node_id)  # been here before → instant, no re-speak
+	_visited_nodes[node_id] = true
 	_apply_dialogue_effects(node.get("effects"))  # node effects fire on arrival
 	# Phase 3: a "talk" objective completes the moment the player reaches a node
 	# that reveals quest information (the quest beat) — not only at conversation end.
@@ -1030,7 +1057,7 @@ func _enter_tree_node(node_id: String) -> void:
 			_tree_options.append(opt)
 			labels.append(str((opt as Dictionary).get("player_text", "...")))
 	_clear_options()
-	_set_dialogue_text(line, labels, labels.is_empty())
+	_set_dialogue_text(line, labels, labels.is_empty(), revisit)
 
 func _tree_select(index: int) -> void:
 	if index < 0 or index >= _tree_options.size():
@@ -1045,8 +1072,7 @@ func _tree_select(index: int) -> void:
 		if not _talk_notified:
 			_talk_notified = true
 			QuestManager.notify_npc_talked(_npc_id)
-		await get_tree().create_timer(0.18).timeout
-		close()
+		close()  # "Tạm biệt" leaves immediately
 		return
 	_enter_tree_node(goto)
 
@@ -1070,12 +1096,17 @@ func _apply_dialogue_effects(effects: Variant) -> void:
 
 func _apply_item_effect(eff: Dictionary, give: bool) -> void:
 	var quest_id := str(eff.get("quest_id", ""))
-	var item_ref := str(eff.get("item_ref", "quest_item"))
+	# Default to the keepsake REWARD item — giving the collect item via dialogue
+	# would hand the player the thing they were sent to gather. "quest_item"
+	# (the collect/deliver item) is still honoured if an effect asks for it.
+	var item_ref := str(eff.get("item_ref", "reward_item"))
 	var count := int(eff.get("count", 1))
 	var item_id := item_ref
-	if item_ref == "quest_item" and not quest_id.is_empty():
-		var item: Dictionary = InventoryManager.quest_item_for(quest_id)
-		item_id = str(item.get("id", ""))
+	if not quest_id.is_empty():
+		if item_ref == "reward_item":
+			item_id = str(InventoryManager.reward_item_for(quest_id).get("id", ""))
+		elif item_ref == "quest_item":
+			item_id = str(InventoryManager.quest_item_for(quest_id).get("id", ""))
 	if item_id.is_empty():
 		return
 	if give:

@@ -280,6 +280,10 @@ func _complete_current_objective(quest: Dictionary) -> void:
 		state["state"] = "completed"
 		var xp: int = int((quest.get("reward", {}) as Dictionary).get("xp", 50))
 		GameManager.gain_xp(xp)
+		# Grant the story keepsake reward item, if this quest has one.
+		var reward_item: Dictionary = InventoryManager.reward_item_for(str(quest.get("id")))
+		if not reward_item.is_empty():
+			InventoryManager.add_item(str(reward_item.get("id")))
 		_push_toast("quest_complete", quest)
 		print("[Quest] completed %s (+%d XP)" % [quest.get("id"), xp])
 	else:

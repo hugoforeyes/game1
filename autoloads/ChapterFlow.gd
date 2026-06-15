@@ -3,8 +3,7 @@ extends Node
 ##
 ## The flow comes from GET /api/godot/runs/latest — nothing is hardcoded.
 ## Each chapter begins with its generated intro (slides and/or in-scene
-## cutscene), then its zones are played in order; clearing a zone's hostiles
-## advances to the next zone, finishing a chapter advances to the next chapter.
+## cutscene), then its zones are played through explicit scene exits/transitions.
 
 signal loading_status(message: String)
 ## Emitted when a background prefetch_current_zone() finishes (success or fail).

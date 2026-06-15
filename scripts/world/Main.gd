@@ -17,6 +17,7 @@ const ItemPickupScript := preload("res://scripts/world/ItemPickup.gd")
 var _player_spawn_tile := Vector2i.ZERO
 var _battle_active: bool = false
 var _zone_advancing: bool = false
+var _zone_hostiles_cleared_notified: bool = false
 
 func _ready() -> void:
 	NPCConversationManager._start_prewarm()
@@ -685,68 +686,11 @@ func _check_zone_cleared() -> void:
 	if _remaining_hostile_count() > 0:
 		return
 	var zone_id: String = str(GameManager.get_scene_context().get("zone_id", ""))
-	QuestManager.notify_zone_hostiles_cleared(zone_id)
-	# Quest objectives staged in this zone (talks, choices) hold the door open.
-	if QuestManager.has_blocking_objectives_in_zone(zone_id):
-		return
-	_zone_advancing = true
-	_show_zone_cleared_and_advance()
-
-func _show_zone_cleared_and_advance() -> void:
-	GameManager.ui_blocking_input = true
-	var overlay := CanvasLayer.new()
-	overlay.layer = 90
-	overlay.transform = Transform2D.IDENTITY.scaled(Vector2(2, 2))  # UI authored in 480x270
-	add_child(overlay)
-
-	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.0)
-	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	overlay.add_child(dim)
-
-	var label := Label.new()
-	label.text = "AREA CLEARED"
-	label.add_theme_font_size_override("font_size", 16)
-	label.add_theme_color_override("font_color", Color(0.96, 0.88, 0.50, 1.0))
-	label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
-	label.add_theme_constant_override("shadow_offset_y", 2)
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.position = Vector2(20, 110)
-	label.size = Vector2(440, 30)
-	label.modulate.a = 0.0
-	overlay.add_child(label)
-
-	var status := Label.new()
-	status.text = "Loading the next part of the story..."
-	status.add_theme_font_size_override("font_size", 8)
-	status.add_theme_color_override("font_color", Color(0.93, 0.88, 0.75, 0.85))
-	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	status.position = Vector2(20, 146)
-	status.size = Vector2(440, 16)
-	overlay.add_child(status)
-	var status_updater := Callable(self, "_set_zone_overlay_status").bind(status)
-	ChapterFlow.loading_status.connect(status_updater)
-	overlay.tree_exiting.connect(func() -> void:
-		if ChapterFlow.loading_status.is_connected(status_updater):
-			ChapterFlow.loading_status.disconnect(status_updater)
-	)
-
-	var tween := create_tween()
-	tween.tween_property(label, "modulate:a", 1.0, 0.7)
-	tween.parallel().tween_property(dim, "color:a", 0.55, 0.9)
-	await tween.finished
-	await get_tree().create_timer(1.4).timeout
-
-	var fade := create_tween()
-	fade.tween_property(dim, "color:a", 1.0, 0.6)
-	await fade.finished
-
-	GameManager.ui_blocking_input = false
-	await ChapterFlow.advance_after_zone_cleared()
-
-func _set_zone_overlay_status(message: String, status: Label) -> void:
-	if is_instance_valid(status):
-		status.text = message
+	if not _zone_hostiles_cleared_notified:
+		_zone_hostiles_cleared_notified = true
+		QuestManager.notify_zone_hostiles_cleared(zone_id)
+	# Clearing hostiles updates quests, but it no longer auto-advances the zone.
+	# The player moves to another scene only through explicit exits/transitions.
 
 func _fallback_enemy_roster(tile_context: Dictionary) -> Array:
 	var blocked: Dictionary = tile_context.get("blocked_tiles", {}) as Dictionary
