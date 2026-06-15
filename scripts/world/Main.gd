@@ -18,6 +18,7 @@ var _player_spawn_tile := Vector2i.ZERO
 var _battle_active: bool = false
 var _zone_advancing: bool = false
 var _zone_hostiles_cleared_notified: bool = false
+var _active_interior_exit: Dictionary = {}
 
 func _ready() -> void:
 	NPCConversationManager._start_prewarm()
@@ -32,6 +33,17 @@ func _ready() -> void:
 		_apply_background_limits(background.texture)
 		_spawn_enemies_for_builtin_world()
 
+func _unhandled_input(event: InputEvent) -> void:
+	if not event.is_action_pressed("ui_accept"):
+		return
+	if _active_interior_exit.is_empty() or _battle_active or _zone_advancing:
+		return
+	var leads_to: String = str(_active_interior_exit.get("leads_to", ""))
+	if leads_to.is_empty():
+		return
+	get_viewport().set_input_as_handled()
+	_use_scene_exit(leads_to, "")
+
 func _build_imported_world() -> void:
 	_clear_generated_content()
 
@@ -39,6 +51,7 @@ func _build_imported_world() -> void:
 	# deferred right after this) re-blocks input itself when needed. This also
 	# clears any blocking flag left over from a scene-to-scene exit transition.
 	GameManager.ui_blocking_input = false
+	_active_interior_exit = {}
 
 	var package_data: Dictionary = GameManager.get_scene_package()
 	var characters: Dictionary = package_data.get("characters", {}) as Dictionary
@@ -336,13 +349,14 @@ func _create_scene_exits(tile_context: Dictionary) -> void:
 	if not ChapterFlow.active:
 		return
 	var zone: Dictionary = ChapterFlow.current_zone()
-	var exits: Array = zone.get("edge_exits", []) as Array
-	if exits.is_empty():
+	var edge_exits: Array = zone.get("edge_exits", []) as Array
+	var interior_exits: Array = zone.get("interior_exits", []) as Array
+	if edge_exits.is_empty() and interior_exits.is_empty():
 		return
 	var map_tile_size: Vector2i = tile_context.get("map_tile_size", Vector2i.ZERO)
 	if map_tile_size == Vector2i.ZERO:
 		return
-	for exit_data in exits:
+	for exit_data in edge_exits:
 		if not (exit_data is Dictionary):
 			continue
 		var data: Dictionary = exit_data as Dictionary
@@ -353,6 +367,20 @@ func _create_scene_exits(tile_context: Dictionary) -> void:
 		var normalized: float = float(data.get("normalized", 0.5))
 		var tile: Vector2i = _edge_exit_tile(edge, normalized, map_tile_size)
 		_spawn_scene_exit(tile, edge, leads_to, _zone_display_name(leads_to))
+	for exit_data in interior_exits:
+		if not (exit_data is Dictionary):
+			continue
+		var data: Dictionary = exit_data as Dictionary
+		var leads_to: String = str(data.get("leads_to", ""))
+		if leads_to.is_empty():
+			continue
+		var tile: Vector2i = _interior_exit_tile(
+			float(data.get("x_normalized", 0.5)),
+			float(data.get("y_normalized", 0.5)),
+			map_tile_size
+		)
+		tile = _nearest_free_tile(tile, map_tile_size, tile_context.get("blocked_tiles", {}) as Dictionary)
+		_spawn_interior_exit(tile, data, _zone_display_name(leads_to))
 
 func _spawn_scene_exit(tile: Vector2i, edge: String, leads_to: String, label_text: String) -> void:
 	var area := Area2D.new()
@@ -399,6 +427,65 @@ func _spawn_scene_exit(tile: Vector2i, edge: String, leads_to: String, label_tex
 			return  # only the player carries a camera
 		triggered[0] = true
 		_use_scene_exit(leads_to, _opposite_edge(edge))
+	)
+	$World.add_child(area)
+
+func _spawn_interior_exit(tile: Vector2i, exit_data: Dictionary, label_text: String) -> void:
+	var leads_to: String = str(exit_data.get("leads_to", ""))
+	if leads_to.is_empty():
+		return
+	var trigger: String = str(exit_data.get("trigger", "interact"))
+	var area := Area2D.new()
+	area.global_position = _tile_to_pixel_center(tile)
+
+	var shape := CollisionShape2D.new()
+	var rect := RectangleShape2D.new()
+	rect.size = Vector2(GameManager.TILE_SIZE * 2.2, GameManager.TILE_SIZE * 2.2)
+	shape.shape = rect
+	area.add_child(shape)
+
+	var glow := ColorRect.new()
+	glow.color = Color(1.0, 0.88, 0.45, 0.18)
+	glow.size = rect.size
+	glow.position = -rect.size * 0.5
+	var glow_mat := CanvasItemMaterial.new()
+	glow_mat.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	glow.material = glow_mat
+	area.add_child(glow)
+
+	var label := Label.new()
+	if trigger == "interact":
+		label.text = "Press Enter: %s" % label_text
+	else:
+		label.text = "Enter %s" % label_text
+	label.add_theme_color_override("font_color", Color(1.0, 0.94, 0.72, 0.94))
+	label.add_theme_font_size_override("font_size", 15)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.position = Vector2(-100, -rect.size.y * 0.5 - 22)
+	label.size = Vector2(200, 18)
+	area.add_child(label)
+
+	var pulse := area.create_tween().set_loops()
+	pulse.tween_property(glow, "color:a", 0.34, 0.9).set_trans(Tween.TRANS_SINE)
+	pulse.tween_property(glow, "color:a", 0.12, 0.9).set_trans(Tween.TRANS_SINE)
+
+	var triggered: Array = [false]
+	area.body_entered.connect(func(body: Node2D) -> void:
+		if body.get("camera") == null:
+			return
+		if trigger == "interact":
+			_active_interior_exit = exit_data.duplicate(true)
+			return
+		if triggered[0] or _battle_active or _zone_advancing:
+			return
+		triggered[0] = true
+		_use_scene_exit(leads_to, "")
+	)
+	area.body_exited.connect(func(body: Node2D) -> void:
+		if body.get("camera") == null:
+			return
+		if str(_active_interior_exit.get("leads_to", "")) == leads_to:
+			_active_interior_exit = {}
 	)
 	$World.add_child(area)
 
@@ -450,6 +537,10 @@ func _show_scene_loading_overlay() -> void:
 			ChapterFlow.loading_status.disconnect(updater)
 	)
 
+func _set_zone_overlay_status(message: String, status: Label) -> void:
+	if status != null and is_instance_valid(status):
+		status.text = message
+
 func _edge_exit_tile(edge: String, normalized: float, map_tile_size: Vector2i) -> Vector2i:
 	var nx: int = clampi(int(round(normalized * float(map_tile_size.x - 1))), 1, max(map_tile_size.x - 2, 1))
 	var ny: int = clampi(int(round(normalized * float(map_tile_size.y - 1))), 1, max(map_tile_size.y - 2, 1))
@@ -462,6 +553,11 @@ func _edge_exit_tile(edge: String, normalized: float, map_tile_size: Vector2i) -
 			return Vector2i(nx, 0)
 		"south":
 			return Vector2i(nx, max(map_tile_size.y - 1, 0))
+	return Vector2i(nx, ny)
+
+func _interior_exit_tile(x_normalized: float, y_normalized: float, map_tile_size: Vector2i) -> Vector2i:
+	var nx: int = clampi(int(round(x_normalized * float(map_tile_size.x - 1))), 1, max(map_tile_size.x - 2, 1))
+	var ny: int = clampi(int(round(y_normalized * float(map_tile_size.y - 1))), 1, max(map_tile_size.y - 2, 1))
 	return Vector2i(nx, ny)
 
 func _entry_spawn_tile(edge: String, tile_context: Dictionary) -> Vector2i:
