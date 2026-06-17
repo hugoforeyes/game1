@@ -20,6 +20,10 @@ var zone_index: int = 0
 var active: bool = false
 var pending_intro: Dictionary = {}
 var pending_cutscene_actions: Array = []
+# One-shot: true only on the initial entry to the chapter's first zone (not on
+# walk-back transitions). Gates the new scene-package opening cutscene so it plays
+# exactly once. Consumed by Main via take_pending_opening().
+var pending_play_opening: bool = false
 # When the player walks through an exit, the edge they should arrive at in the
 # next scene (opposite of the exit edge). Consumed by Main on spawn.
 var pending_entry_edge: String = ""
@@ -84,6 +88,7 @@ func begin_current_chapter() -> Error:
 	zone_index = 0
 	pending_intro = {}
 	pending_cutscene_actions = []
+	pending_play_opening = false
 	QuestManager.load_chapter_quests(chapter.get("quests", []) as Array)
 
 	var items_payload: Dictionary = chapter.get("items", {}) as Dictionary
@@ -148,22 +153,42 @@ func enter_current_zone() -> Error:
 	# In-scene cutscene plays in the chapter's first zone only, and never when
 	# the player merely walked back into a zone through an exit.
 	pending_cutscene_actions = []
+	# The opening plays on the initial entry to the first zone only, never on a
+	# walk-back transition. This gates BOTH the new scene-package opening cutscene
+	# (preferred) and the legacy chapter-intro cutscene (old packages).
+	pending_play_opening = (zone_index == 0 and not _suppress_cutscene)
 	var mode: String = str(pending_intro.get("recommended_mode", ""))
 	var cutscene: Dictionary = pending_intro.get("cutscene", {}) as Dictionary
-	if zone_index == 0 and mode in ["cutscene", "both"] and not _suppress_cutscene:
+	if pending_play_opening and mode in ["cutscene", "both"]:
 		if str(cutscene.get("zone_id", "")) == str(zone.get("zone_id", "")):
 			pending_cutscene_actions = (cutscene.get("actions", []) as Array).duplicate(true)
 	_suppress_cutscene = false
 
-	loading_status.emit("Loading music...")
+	# Only show the music loader if it isn't already warmed (the intro slides wait
+	# for it via is_world_ready_for_current_zone, so normally it's instant here).
+	if not MusicManager.is_ready(GameManager.get_scene_context()):
+		loading_status.emit("Loading music...")
 	await MusicManager.load_and_play(GameManager.get_scene_context())
 	get_tree().change_scene_to_file(GameManager.WORLD_SCENE_PATH)
 	return OK
+
+
+## True when the current zone is ready to enter without a loading screen: its
+## package is downloaded AND its chapter music is cached. The intro slides loop
+## until this holds.
+func is_world_ready_for_current_zone() -> bool:
+	var cached: bool = FileAccess.file_exists(_zone_cache_path(_current_zone_key()))
+	return cached and MusicManager.is_ready(scene_music_context())
 
 func take_pending_cutscene() -> Array:
 	var actions: Array = pending_cutscene_actions
 	pending_cutscene_actions = []
 	return actions
+
+func take_pending_opening() -> bool:
+	var should: bool = pending_play_opening
+	pending_play_opening = false
+	return should
 
 func take_pending_entry_edge() -> String:
 	var edge: String = pending_entry_edge

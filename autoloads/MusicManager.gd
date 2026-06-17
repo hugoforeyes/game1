@@ -3,9 +3,18 @@ extends Node
 const BASE_URL := "http://127.0.0.1:5001"
 const WEB_BASE_URL := ""
 
+## Emitted when a chapter's music finishes caching (so the intro slides can wait
+## for music to be ready before entering the world).
+signal music_ready(key: String)
+
 var _player: AudioStreamPlayer = null
 # chapter cache_key -> generate_music dict, warmed by prefetch() during slides.
 var _music_cache: Dictionary = {}
+
+
+## True once this chapter's music is cached (prefetch finished).
+func is_ready(scene_ctx: Dictionary) -> bool:
+	return _music_cache.has(_cache_key(scene_ctx))
 
 func _ready() -> void:
 	_player = AudioStreamPlayer.new()
@@ -25,6 +34,7 @@ func _get_music(scene_ctx: Dictionary) -> Dictionary:
 	var music := await _fetch_music(scene_ctx)
 	if not music.is_empty():
 		_music_cache[key] = music
+		music_ready.emit(key)
 	return music
 
 ## Download + cache a chapter's music in the background (called while the intro

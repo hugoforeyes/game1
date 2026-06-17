@@ -751,14 +751,31 @@ func _find_pickup_tile(rng: RandomNumberGenerator, map_size: Vector2i, blocked: 
 	return Vector2i(-1, -1)
 
 func _maybe_start_cutscene() -> void:
-	var actions: Array = ChapterFlow.take_pending_cutscene()
+	# Always clear any legacy pending intro cutscene so it can't double-play.
+	var legacy_actions: Array = ChapterFlow.take_pending_cutscene()
+	# Plays only on the initial entry to the chapter's first zone (one-shot).
+	var play_opening: bool = ChapterFlow.take_pending_opening()
+
+	var actions: Array = []
+	var start_tiles: Dictionary = {}
+	if play_opening:
+		# Prefer the new opening cutscene packaged into this scene (entry zone).
+		# It carries backend pre-placed start tiles so actors barely move.
+		var opening: Dictionary = GameManager.get_scene_package().get("opening_cutscene", {}) as Dictionary
+		actions = (opening.get("actions", []) as Array)
+		start_tiles = (opening.get("start_tiles", {}) as Dictionary)
+	if actions.is_empty():
+		# Old packages: fall back to the chapter-intro cutscene (already gated).
+		actions = legacy_actions
+		start_tiles = {}
 	if actions.is_empty():
 		return
-	print("[Main] starting chapter cutscene actions=%d" % actions.size())
+
+	print("[Main] starting opening cutscene actions=%d start_tiles=%d" % [actions.size(), start_tiles.size()])
 	var cutscene: CanvasLayer = CutscenePlayerScript.new()
 	add_child(cutscene)
 	cutscene.cutscene_finished.connect(_check_zone_cleared)
-	cutscene.play(actions, self, player, generated_characters)
+	cutscene.play(actions, self, player, generated_characters, start_tiles)
 
 func _remaining_hostile_count() -> int:
 	var count := 0

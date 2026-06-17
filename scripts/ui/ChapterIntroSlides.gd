@@ -504,31 +504,45 @@ func _unhandled_input(event: InputEvent) -> void:
 func _finish() -> void:
 	if _finishing:
 		return
-	# If the scene package is still downloading, don't make the player wait on a
-	# blank loading screen: loop the slides from the start and enter the world
-	# automatically the moment the download finishes (no extra input needed).
-	if ChapterFlow.is_zone_prefetch_in_progress():
+	# Don't drop the player onto a blank "Loading music..." screen: loop the slides
+	# until the world is fully ready (scene package downloaded AND chapter music
+	# cached), then enter automatically — no extra input needed.
+	if not ChapterFlow.is_world_ready_for_current_zone():
 		_waiting_for_download = true
-		if not ChapterFlow.zone_download_finished.is_connected(_on_zone_download_finished):
-			ChapterFlow.zone_download_finished.connect(_on_zone_download_finished)
-		# The download may have finished in the gap between the check and connect.
-		if not ChapterFlow.is_zone_prefetch_in_progress():
+		if not ChapterFlow.zone_download_finished.is_connected(_on_world_ready_check):
+			ChapterFlow.zone_download_finished.connect(_on_world_ready_check)
+		if not MusicManager.music_ready.is_connected(_on_world_ready_check):
+			MusicManager.music_ready.connect(_on_world_ready_check)
+		# It may have become ready in the gap between the check and the connects.
+		if ChapterFlow.is_world_ready_for_current_zone():
 			_enter_world()
 			return
+		# Safety net: never loop forever if a download/music fetch silently fails.
+		get_tree().create_timer(20.0).timeout.connect(_on_ready_timeout)
 		_play_slide(0)  # replay from slide 1 while we wait
 		return
 	_enter_world()
 
-func _on_zone_download_finished() -> void:
+func _on_ready_timeout() -> void:
 	if _finishing or not _waiting_for_download:
 		return
 	_enter_world()
 
+func _on_world_ready_check(_arg = null) -> void:
+	# Fired by zone_download_finished() or music_ready(key); enter only once BOTH
+	# the package and the music are ready.
+	if _finishing or not _waiting_for_download:
+		return
+	if ChapterFlow.is_world_ready_for_current_zone():
+		_enter_world()
+
 func _enter_world() -> void:
 	if _finishing:
 		return
-	if ChapterFlow.zone_download_finished.is_connected(_on_zone_download_finished):
-		ChapterFlow.zone_download_finished.disconnect(_on_zone_download_finished)
+	if ChapterFlow.zone_download_finished.is_connected(_on_world_ready_check):
+		ChapterFlow.zone_download_finished.disconnect(_on_world_ready_check)
+	if MusicManager.music_ready.is_connected(_on_world_ready_check):
+		MusicManager.music_ready.disconnect(_on_world_ready_check)
 	_finishing = true
 	_typing = false
 	_continue_marker.visible = false

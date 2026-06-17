@@ -36,7 +36,10 @@ var _last_speaker: String = ""
 var _portrait_cache: Dictionary = {}
 var _portrait_tint_cache: Dictionary = {}  # actor_id -> Color tint for body-fallback portraits
 var _origin_positions: Dictionary = {}  # actor_id -> Vector2 (pre-cutscene)
+var _start_tiles: Dictionary = {}  # actor_id -> {x,y}: backend pre-placement (arranged by origin)
 var _blocked_tiles: Dictionary = {}
+var _astar: AStarGrid2D = null  # walkable-grid pathfinding for cutscene moves
+var _collision_state: Dictionary = {}  # actor -> {layer, mask}: restored on finish
 
 var _top_bar: ColorRect
 var _bottom_bar: ColorRect
@@ -54,20 +57,72 @@ var _title_banner: TextureRect
 var _skip_hint: Label
 
 
-func play(actions: Array, world: Node2D, player: Node2D, characters_root: Node2D) -> void:
+func play(actions: Array, world: Node2D, player: Node2D, characters_root: Node2D, start_tiles: Dictionary = {}) -> void:
 	_actions = actions
 	_world = world
 	_player = player
 	_characters_root = characters_root
+	_start_tiles = start_tiles
 	layer = 70
 	transform = Transform2D.IDENTITY.scaled(Vector2(2, 2))  # UI authored in 480x270
 	GameManager.ui_blocking_input = true
 	_blocked_tiles = GameManager.get_blocked_tiles(GameManager.get_scene_package())
 	_record_origins()
+	_disable_actor_collisions()
 	_prestage_actors()
+	_idle_all_actors()
 	_build_ui()
 	_setup_camera()
 	_run()
+
+
+func _disable_actor_collisions() -> void:
+	# Cutscene movement is driven by tweens, not physics. Turn off every actor's
+	# collision so a moving character can't push the player (or others) around and
+	# can't snag on walls while it walks its path. Restored in _finish().
+	var nodes: Array[Node] = []
+	if _player != null:
+		nodes.append(_player)
+	if _characters_root != null:
+		for child in _characters_root.get_children():
+			nodes.append(child)
+	for node in nodes:
+		if node is CollisionObject2D:
+			var body := node as CollisionObject2D
+			# The player appears in both lists — record its ORIGINAL layer/mask only
+			# once, or the second pass would store the already-zeroed values and
+			# "restore" the player to no-collision (walking through walls).
+			if _collision_state.has(body):
+				continue
+			_collision_state[body] = {"layer": body.collision_layer, "mask": body.collision_mask}
+			body.collision_layer = 0
+			body.collision_mask = 0
+
+
+func _restore_actor_collisions() -> void:
+	for body in _collision_state:
+		if is_instance_valid(body) and body is CollisionObject2D:
+			(body as CollisionObject2D).collision_layer = int(_collision_state[body]["layer"])
+			(body as CollisionObject2D).collision_mask = int(_collision_state[body]["mask"])
+	_collision_state.clear()
+
+
+func _idle_actor(actor: Node2D) -> void:
+	# Freeze an actor on a standing frame. The player's walk animation loops from
+	# its setup and is never paused while input is blocked, so without this it
+	# "walks in place" for the whole cutscene.
+	if actor == null:
+		return
+	var sprite: AnimatedSprite2D = _actor_anim_sprite(actor)
+	if sprite != null:
+		sprite.frame = 0
+		sprite.pause()
+
+
+func _idle_all_actors() -> void:
+	_idle_actor(_player)
+	for actor_id in _cutscene_participants():
+		_idle_actor(_find_actor(actor_id))
 
 
 func _record_origins() -> void:
@@ -93,11 +148,43 @@ const PRESTAGE_RING := [
 ]
 
 
+func _tile_to_world(tile: Vector2i) -> Vector2:
+	return Vector2(tile) * GameManager.TILE_SIZE + Vector2.ONE * (GameManager.TILE_SIZE * 0.5)
+
+
+func _prestage_from_start_tiles() -> bool:
+	# Preferred path: the backend pre-placed everyone near the action and arranged
+	# them by where they naturally come from (origin direction), spread out. Just
+	# apply those tiles — minimal movement, no clumping. Returns false if no data.
+	if _start_tiles.is_empty():
+		return false
+	var player_tile := _tile_of(_player.global_position)
+	if _start_tiles.has("player"):
+		var pt: Dictionary = _start_tiles["player"] as Dictionary
+		player_tile = Vector2i(int(pt.get("x", player_tile.x)), int(pt.get("y", player_tile.y)))
+		_player.global_position = _tile_to_world(player_tile)
+	for actor_id in _cutscene_participants():
+		if not _start_tiles.has(actor_id):
+			continue
+		var actor: Node2D = _find_actor(actor_id)
+		if actor == null:
+			continue
+		var st: Dictionary = _start_tiles[actor_id] as Dictionary
+		var tile := Vector2i(int(st.get("x", 0)), int(st.get("y", 0)))
+		actor.global_position = _tile_to_world(tile)
+		_face_actor_toward(actor, player_tile)
+		print("[Cutscene] pre-placed %s at %s (backend start_tile)" % [actor_id, tile])
+	return true
+
+
 func _prestage_actors() -> void:
 	# Every actor the script references should already be on screen near the
 	# player when the cutscene starts — no waiting for someone to walk in from
-	# off-screen. Off-screen participants are teleported to free tiles in a ring
-	# around the player; they keep their script and walk home afterwards.
+	# off-screen. Prefer backend-arranged start tiles; otherwise teleport
+	# participants to free tiles in a ring around the player. Either way they keep
+	# their script and walk home afterwards.
+	if _prestage_from_start_tiles():
+		return
 	var player_tile := _tile_of(_player.global_position)
 	var used: Dictionary = {_tile_key(player_tile): true}
 	var ring_index: int = 0
@@ -179,6 +266,76 @@ func _tile_key(tile: Vector2i) -> String:
 
 func _is_open(tile: Vector2i) -> bool:
 	return tile.x >= 0 and tile.y >= 0 and not _blocked_tiles.has(_tile_key(tile))
+
+
+func _map_tile_size() -> Vector2i:
+	var bg: Texture2D = null
+	if _world != null and _world.has_node("World/Background"):
+		var node: Node = _world.get_node("World/Background")
+		if node is Sprite2D:
+			bg = (node as Sprite2D).texture
+	return GameManager.get_map_tile_size(GameManager.get_scene_package(), bg)
+
+
+func _max_blocked_extent() -> Vector2i:
+	# Fallback map bounds derived from the blocked-tile keys ("x:y").
+	var mx := 0
+	var my := 0
+	for key in _blocked_tiles:
+		var parts: PackedStringArray = str(key).split(":")
+		if parts.size() >= 2:
+			mx = maxi(mx, int(parts[0]))
+			my = maxi(my, int(parts[1]))
+	return Vector2i(mx + 2, my + 2)
+
+
+func _ensure_astar() -> void:
+	# Walkable-grid A* so cutscene actors path around obstacles instead of sliding
+	# straight through walls. Built lazily from the scene's blocked tiles.
+	if _astar != null:
+		return
+	var size: Vector2i = _map_tile_size()
+	if size.x <= 0 or size.y <= 0:
+		size = _max_blocked_extent()  # fallback so A* still builds
+	if size.x <= 0 or size.y <= 0:
+		return
+	_astar = AStarGrid2D.new()
+	_astar.region = Rect2i(Vector2i.ZERO, size)
+	_astar.cell_size = Vector2(1, 1)
+	_astar.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_ONLY_IF_NO_OBSTACLES
+	_astar.update()
+	for y in range(size.y):
+		for x in range(size.x):
+			var tile := Vector2i(x, y)
+			if not _is_open(tile):
+				_astar.set_point_solid(tile, true)
+
+
+func _nearest_open_tile(tile: Vector2i) -> Vector2i:
+	if _astar == null or not _astar.is_in_boundsv(tile) or not _astar.is_point_solid(tile):
+		return tile
+	for radius in range(1, 8):
+		for dx in range(-radius, radius + 1):
+			for dy in range(-radius, radius + 1):
+				var candidate := tile + Vector2i(dx, dy)
+				if _astar.is_in_boundsv(candidate) and not _astar.is_point_solid(candidate):
+					return candidate
+	return tile
+
+
+func _path_tiles(from_tile: Vector2i, to_tile: Vector2i) -> Array:
+	# A* tile path from -> to (excludes the start tile). Falls back to a direct
+	# step when no grid/path is available.
+	_ensure_astar()
+	if _astar == null or not _astar.is_in_boundsv(from_tile) or not _astar.is_in_boundsv(to_tile):
+		return [to_tile]
+	var goal: Vector2i = _nearest_open_tile(to_tile)
+	if _astar.is_point_solid(from_tile) or _astar.is_point_solid(goal):
+		return [goal]
+	var path: Array[Vector2i] = _astar.get_id_path(from_tile, goal)
+	if path.size() <= 1:
+		return [goal]
+	return path.slice(1)  # drop the start tile
 
 
 func _clamp_tile_near_player(target_tile: Vector2i, max_tiles: int) -> Vector2i:
@@ -497,39 +654,51 @@ func _do_camera(actor_id: String, seconds: float) -> void:
 	await tween.finished
 
 
+func _dir_name(delta: Vector2) -> String:
+	if abs(delta.x) >= abs(delta.y):
+		return "right" if delta.x > 0 else "left"
+	return "down" if delta.y > 0 else "up"
+
+
+func _play_walk(sprite: AnimatedSprite2D, direction: String) -> void:
+	if sprite != null and sprite.sprite_frames != null and sprite.sprite_frames.has_animation("walk_%s" % direction):
+		sprite.play("walk_%s" % direction)
+
+
 func _do_move(actor_id: String, to_tile: Dictionary) -> void:
 	var actor: Node2D = _find_actor(actor_id)
 	if actor == null or to_tile.is_empty():
 		return
 	var target_tile := Vector2i(int(to_tile.get("x", 0)), int(to_tile.get("y", 0)))
-	# Keep cutscene movement on screen: pull any destination that would wander
-	# far from the player back toward the player (the camera anchor). Without
-	# this, the LLM's authored far-flung move targets make actors walk off the
-	# screen even after they were pre-staged nearby.
-	if actor_id != "player":
-		target_tile = _clamp_tile_near_player(target_tile, MOVE_CLAMP_TILES)
-	var target: Vector2 = Vector2(target_tile) * GameManager.TILE_SIZE + Vector2.ONE * (GameManager.TILE_SIZE * 0.5)
-	var distance: float = actor.global_position.distance_to(target)
-	if distance < 2.0:
+	var start_tile := _tile_of(actor.global_position)
+	if target_tile == start_tile:
 		return
-	var direction: Vector2 = (target - actor.global_position).normalized()
-	var anim_direction: String
-	if abs(direction.x) >= abs(direction.y):
-		anim_direction = "right" if direction.x > 0 else "left"
-	else:
-		anim_direction = "down" if direction.y > 0 else "up"
+	# Walk the A* path tile-by-tile so the actor goes around walls/objects rather
+	# than sliding straight through them. The backend already keeps targets sane.
+	var path: Array = _path_tiles(start_tile, target_tile)
 	var sprite: AnimatedSprite2D = _actor_anim_sprite(actor)
-	if sprite != null and sprite.sprite_frames != null and sprite.sprite_frames.has_animation("walk_%s" % anim_direction):
-		sprite.play("walk_%s" % anim_direction)
-	var duration: float = distance / MOVE_SPEED_PX
-	var tween := create_tween()
-	tween.tween_property(actor, "global_position", target, duration)
-	# The camera glides with the walking character so moves stay on screen.
-	if _camera != null:
-		var follow := create_tween()
-		follow.tween_property(_camera, "global_position", target, duration)\
-			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-	await tween.finished
+	for step_tile in path:
+		var target: Vector2 = Vector2(step_tile) * GameManager.TILE_SIZE + Vector2.ONE * (GameManager.TILE_SIZE * 0.5)
+		var distance: float = actor.global_position.distance_to(target)
+		if distance < 1.0:
+			continue
+		var direction: Vector2 = (target - actor.global_position).normalized()
+		var anim_direction: String
+		if abs(direction.x) >= abs(direction.y):
+			anim_direction = "right" if direction.x > 0 else "left"
+		else:
+			anim_direction = "down" if direction.y > 0 else "up"
+		if sprite != null and sprite.sprite_frames != null and sprite.sprite_frames.has_animation("walk_%s" % anim_direction):
+			sprite.play("walk_%s" % anim_direction)
+		var duration: float = distance / MOVE_SPEED_PX
+		var tween := create_tween()
+		tween.tween_property(actor, "global_position", target, duration)
+		# The camera glides with the walking character so moves stay on screen.
+		if _camera != null:
+			var follow := create_tween()
+			follow.tween_property(_camera, "global_position", target, duration)\
+				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		await tween.finished
 	if sprite != null:
 		sprite.pause()
 
@@ -665,11 +834,13 @@ func _finish() -> void:
 	if _title_banner != null:
 		_title_banner.modulate.a = 0.0
 
-	await _walk_actors_home()
+	# The NPCs START walking home now — and that's the moment the cutscene ends.
+	# We hand control back right away; they finish the walk in the background.
+	var walk_duration: float = _begin_walk_home()
 
 	if _player_camera != null:
 		var tween := create_tween()
-		tween.tween_property(_camera, "global_position", _player_camera.get_screen_center_position(), 0.7)\
+		tween.tween_property(_camera, "global_position", _player_camera.get_screen_center_position(), 0.6)\
 			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 		await tween.finished
 		_player_camera.make_current()
@@ -681,18 +852,48 @@ func _finish() -> void:
 
 	if _camera != null:
 		_camera.queue_free()
+	# Hand control to the player; NPCs keep walking home behind them.
+	_restore_collision_for(_player)
 	GameManager.ui_blocking_input = false
 	cutscene_finished.emit()
+
+	# Keep this node (and its walk-home tweens) alive until the NPCs arrive, then
+	# restore anything still pending and free.
+	if walk_duration > 0.0:
+		await get_tree().create_timer(walk_duration + 0.3).timeout
+	_restore_actor_collisions()
 	queue_free()
 
 
-func _walk_actors_home() -> void:
-	# NPCs (and enemies) the script displaced walk back to their pre-cutscene
-	# spots while the letterbox is still up, then their wander AI is re-synced
-	# so it does not resume from stale pre-cutscene state. The player keeps
-	# their scripted position.
+func _restore_collision_for(node: Node) -> void:
+	if node != null and _collision_state.has(node):
+		if is_instance_valid(node) and node is CollisionObject2D:
+			var st: Dictionary = _collision_state[node]
+			(node as CollisionObject2D).collision_layer = int(st["layer"])
+			(node as CollisionObject2D).collision_mask = int(st["mask"])
+		_collision_state.erase(node)
+
+
+func _finalize_walked_actor(actor: Node2D, sprite: AnimatedSprite2D) -> void:
+	# Called when an NPC reaches home: stop walking, restore collision + AI.
+	if not is_instance_valid(actor):
+		return
+	if sprite != null:
+		sprite.pause()
+	_restore_collision_for(actor)
+	if actor.has_method("set_physics_process"):
+		actor.set_physics_process(true)
+	_resync_actor_ai(actor)
+
+
+func _begin_walk_home() -> float:
+	# Start every displaced NPC walking back to its pre-cutscene spot AROUND
+	# obstacles (A*), in parallel, WITHOUT awaiting — so the cutscene can end the
+	# instant they start moving. Each NPC's own AI is paused (so it doesn't fight
+	# the tween once player control returns) and collision stays off until it
+	# arrives; a per-tween callback restores everything on arrival. Returns the
+	# longest walk duration so the caller knows when all are home.
 	var max_duration: float = 0.0
-	var displaced: Array[Array] = []  # [actor, origin, duration]
 	for actor_id in _origin_positions:
 		if actor_id == "player":
 			continue
@@ -700,45 +901,31 @@ func _walk_actors_home() -> void:
 		if actor == null or not actor.visible:
 			continue
 		var origin: Vector2 = _origin_positions[actor_id]
-		var distance: float = actor.global_position.distance_to(origin)
-		if distance < GameManager.TILE_SIZE * 0.75:
-			_resync_actor_ai(actor)
-			continue
-		var duration: float = minf(distance / MOVE_SPEED_PX, WALK_BACK_MAX_SECONDS)
-		displaced.append([actor, origin, duration])
-		max_duration = maxf(max_duration, duration)
-
-	if displaced.is_empty():
-		return
-
-	for entry in displaced:
-		var actor: Node2D = entry[0]
-		var origin: Vector2 = entry[1]
-		var duration: float = entry[2]
-		if _skip:
-			actor.global_position = origin
-			_resync_actor_ai(actor)
-			continue
-		var delta: Vector2 = origin - actor.global_position
-		var direction: String
-		if abs(delta.x) >= abs(delta.y):
-			direction = "right" if delta.x > 0 else "left"
-		else:
-			direction = "down" if delta.y > 0 else "up"
 		var sprite: AnimatedSprite2D = _actor_anim_sprite(actor)
-		if sprite != null and sprite.sprite_frames != null and sprite.sprite_frames.has_animation("walk_%s" % direction):
-			sprite.play("walk_%s" % direction)
+		if _skip or actor.global_position.distance_to(origin) < GameManager.TILE_SIZE * 0.75:
+			if _skip:
+				actor.global_position = origin
+			_finalize_walked_actor(actor, sprite)
+			continue
+		# Freeze the NPC's own AI for the duration of the scripted walk home.
+		if actor.has_method("set_physics_process"):
+			actor.set_physics_process(false)
+		var path: Array = _path_tiles(_tile_of(actor.global_position), _tile_of(origin))
 		var tween := create_tween()
-		tween.tween_property(actor, "global_position", origin, duration)
-
-	if not _skip:
-		await get_tree().create_timer(max_duration + 0.1).timeout
-	for entry in displaced:
-		var actor: Node2D = entry[0]
-		var sprite: AnimatedSprite2D = _actor_anim_sprite(actor)
-		if sprite != null:
-			sprite.pause()
-		_resync_actor_ai(actor)
+		var prev: Vector2 = actor.global_position
+		var dur: float = 0.0
+		for step_tile in path:
+			var tgt: Vector2 = _tile_to_world(step_tile)
+			var seg_dist: float = prev.distance_to(tgt)
+			if seg_dist < 1.0:
+				continue
+			tween.tween_callback(_play_walk.bind(sprite, _dir_name(tgt - prev)))
+			tween.tween_property(actor, "global_position", tgt, seg_dist / MOVE_SPEED_PX)
+			dur += seg_dist / MOVE_SPEED_PX
+			prev = tgt
+		tween.tween_callback(_finalize_walked_actor.bind(actor, sprite))
+		max_duration = maxf(max_duration, dur)
+	return max_duration
 
 
 func _resync_actor_ai(actor: Node2D) -> void:
