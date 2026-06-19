@@ -9,6 +9,9 @@ extends Node
 ## XP. The design follows the classic journal + tracked-objective model.
 
 signal quests_changed
+## Emitted whenever the player talks to an NPC (the quest "talk" beat). Used by the
+## CutsceneDirector to fire npc_talked-triggered cutscenes.
+signal npc_talked(npc_id: String)
 
 const TOAST_SECONDS := 2.4
 
@@ -90,12 +93,15 @@ func notify_zone_entered(zone_id: String) -> void:
 		if start_zone == zone_id or _zone_play_index(start_zone) <= zone_index:
 			state["state"] = "active"
 			_push_toast("new_quest", quest)
+			_skip_unavailable_objectives(quest)
+			_finish_quest_if_exhausted(quest)
 	_progress_reach_objectives()
 	quests_changed.emit()
 	_refresh_tracker()
 
 
 func notify_npc_talked(npc_id: String) -> void:
+	npc_talked.emit(npc_id)
 	for quest in quests:
 		var objective: Dictionary = _current_objective(quest)
 		if objective.is_empty():
@@ -107,6 +113,10 @@ func notify_npc_talked(npc_id: String) -> void:
 		match str(objective.get("kind")):
 			"talk":
 				_complete_current_objective(quest)
+				InventoryManager.grant_linked_items(
+					"npc_grant", npc_id, current_zone_id,
+					str(quest.get("id", "")), str(objective.get("id", "")),
+				)
 			"choice":
 				var state: Dictionary = _state_of(quest)
 				if not (state.get("choices", {}) as Dictionary).has(str(objective.get("id"))):
@@ -118,7 +128,9 @@ func notify_npc_talked(npc_id: String) -> void:
 
 
 func _try_deliver(quest: Dictionary, objective: Dictionary) -> void:
-	var item: Dictionary = InventoryManager.quest_item_for(str(quest.get("id")))
+	var item: Dictionary = InventoryManager.quest_item_by_id(
+		str(objective.get("item_id", objective.get("item_ref", ""))), str(quest.get("id"))
+	)
 	if item.is_empty():
 		_complete_current_objective(quest)  # no item exists — never block the story
 		return
@@ -137,7 +149,9 @@ func _on_item_obtained(item_id: String) -> void:
 		var objective: Dictionary = _current_objective(quest)
 		if objective.is_empty() or str(objective.get("kind")) != "collect":
 			continue
-		var quest_item: Dictionary = InventoryManager.quest_item_for(str(quest.get("id")))
+		var quest_item: Dictionary = InventoryManager.quest_item_by_id(
+			str(objective.get("item_id", objective.get("item_ref", ""))), str(quest.get("id"))
+		)
 		var wanted: String = str(quest_item.get("id", ""))
 		if wanted.is_empty() or wanted != item_id:
 			continue
@@ -214,10 +228,53 @@ func has_blocking_objectives_in_zone(zone_id: String) -> bool:
 	# Zone advancement waits for talk/choice objectives staged in this zone.
 	for quest in quests:
 		var objective: Dictionary = _current_objective(quest)
-		if not objective.is_empty() and str(objective.get("zone_id")) == zone_id \
-				and str(objective.get("kind")) in ["talk", "choice", "collect", "deliver"]:
+		if not objective.is_empty() and str(objective.get("kind")) in ["talk", "choice", "collect", "deliver"] \
+				and str(objective.get("zone_id")) == zone_id:
 			return true
 	return false
+
+
+# ── story-dialogue progress gates ───────────────────────────────────────────────
+# Drives the scene_npc_story_dialogue layer: which staged conversation an NPC shows
+# depends on how far the player has progressed through the chapter's quests.
+
+
+func completed_objective_count(quest_id: String) -> int:
+	## How many objectives of this quest the player has finished. A completed quest
+	## counts all of them; an active quest counts its objective_index; otherwise 0.
+	var state: Dictionary = quest_states.get(quest_id, {}) as Dictionary
+	if state.is_empty():
+		return 0
+	match str(state.get("state")):
+		"completed":
+			for quest in quests:
+				if str(quest.get("id")) == quest_id:
+					return (quest.get("objectives", []) as Array).size()
+			return int(state.get("objective_index", 0))
+		"active":
+			return int(state.get("objective_index", 0))
+		_:
+			return 0
+
+
+func stage_unlocked(unlock: Dictionary) -> bool:
+	## True if a story-dialogue stage's unlock condition is satisfied right now.
+	## Mirrors utils/npc_dialogue_common + scene_npc_story_dialogue unlock kinds.
+	match str(unlock.get("type", "chapter_start")):
+		"chapter_start":
+			return true
+		"quest_complete":
+			var st: Dictionary = quest_states.get(str(unlock.get("quest_id", "")), {}) as Dictionary
+			return str(st.get("state")) == "completed"
+		"quest_objective":
+			var need: int = int(unlock.get("objective_index", 1))
+			return completed_objective_count(str(unlock.get("quest_id", ""))) >= need
+		"quest_choice":
+			return NarrativeState.choice_matches(unlock)
+		"flag", "relationship":
+			return NarrativeState.condition_met(unlock)
+		_:
+			return false
 
 
 # ── internals ─────────────────────────────────────────────────────────────────
@@ -276,16 +333,9 @@ func _complete_current_objective(quest: Dictionary) -> void:
 	var index: int = int(state.get("objective_index", 0))
 	state["objective_index"] = index + 1
 	state["progress"] = 0
+	_skip_unavailable_objectives(quest)
 	if state["objective_index"] >= objectives.size():
-		state["state"] = "completed"
-		var xp: int = int((quest.get("reward", {}) as Dictionary).get("xp", 50))
-		GameManager.gain_xp(xp)
-		# Grant the story keepsake reward item, if this quest has one.
-		var reward_item: Dictionary = InventoryManager.reward_item_for(str(quest.get("id")))
-		if not reward_item.is_empty():
-			InventoryManager.add_item(str(reward_item.get("id")))
-		_push_toast("quest_complete", quest)
-		print("[Quest] completed %s (+%d XP)" % [quest.get("id"), xp])
+		_finish_quest(quest)
 	else:
 		_push_toast("objective", quest)
 		print("[Quest] %s objective %d/%d" % [quest.get("id"), state["objective_index"], objectives.size()])
@@ -293,12 +343,7 @@ func _complete_current_objective(quest: Dictionary) -> void:
 
 func choose_option(option_id: String) -> void:
 	var quest: Dictionary = _choice_payload.get("quest", {}) as Dictionary
-	var objective: Dictionary = _choice_payload.get("objective", {}) as Dictionary
-	var state: Dictionary = _state_of(quest)
-	(state.get("choices", {}) as Dictionary)[str(objective.get("id"))] = option_id
-	_complete_current_objective(quest)
-	quests_changed.emit()
-	_refresh_tracker()
+	resolve_quest_choice(str(quest.get("id", "")), option_id)
 
 
 ## Resolve a quest's moral choice from inside a conversation tree (an option's
@@ -315,13 +360,85 @@ func resolve_quest_choice(quest_id: String, option_id: String) -> bool:
 		var choices: Dictionary = state.get("choices", {}) as Dictionary
 		if choices.has(str(objective.get("id"))):
 			return false  # already decided
+		var selected: Dictionary = {}
+		for option in objective.get("options", []) as Array:
+			if option is Dictionary and str((option as Dictionary).get("id", "")) == option_id:
+				selected = option as Dictionary
+				break
+		if selected.is_empty():
+			return false
+		var outcome: Dictionary = selected.get("outcome", {}) as Dictionary if selected.get("outcome") is Dictionary else {}
+		var choice_key := str(objective.get("choice_key", "%s:%s" % [quest_id, objective.get("id", "")]))
+		if not NarrativeState.record_choice(
+			choice_key,
+			quest_id,
+			str(objective.get("id", "")),
+			option_id,
+			outcome,
+		):
+			return false
+		_pending_choices = _pending_choices.filter(func(payload: Dictionary) -> bool:
+			var queued_quest: Dictionary = payload.get("quest", {}) as Dictionary
+			var queued_objective: Dictionary = payload.get("objective", {}) as Dictionary
+			return str(queued_quest.get("id", "")) != quest_id \
+				or str(queued_objective.get("id", "")) != str(objective.get("id", ""))
+		)
 		choices[str(objective.get("id"))] = option_id
+		_apply_choice_outcome(outcome)
 		_complete_current_objective(quest)
 		quests_changed.emit()
 		_refresh_tracker()
 		print("[Quest] %s choice resolved in dialogue -> %s" % [quest_id, option_id])
 		return true
 	return false
+
+
+func _apply_choice_outcome(outcome: Dictionary) -> void:
+	for grant in outcome.get("give_items", []) as Array:
+		if not (grant is Dictionary):
+			continue
+		var item_id := str((grant as Dictionary).get("item_id", ""))
+		if not item_id.is_empty():
+			InventoryManager.add_item(item_id, maxi(1, int((grant as Dictionary).get("count", 1))))
+	var xp := maxi(0, int(outcome.get("xp", 0)))
+	if xp > 0:
+		GameManager.gain_xp(xp)
+
+
+func _skip_unavailable_objectives(quest: Dictionary) -> void:
+	var state: Dictionary = _state_of(quest)
+	var objectives: Array = quest.get("objectives", []) as Array
+	while int(state.get("objective_index", 0)) < objectives.size():
+		var objective: Dictionary = objectives[int(state.get("objective_index", 0))] as Dictionary
+		var requirement: Variant = objective.get("requires")
+		if not (requirement is Dictionary) or NarrativeState.condition_met(requirement as Dictionary):
+			break
+		state["objective_index"] = int(state.get("objective_index", 0)) + 1
+		state["progress"] = 0
+
+
+func _finish_quest_if_exhausted(quest: Dictionary) -> void:
+	var state: Dictionary = _state_of(quest)
+	if str(state.get("state")) == "active" \
+			and int(state.get("objective_index", 0)) >= (quest.get("objectives", []) as Array).size():
+		_finish_quest(quest)
+
+
+func _finish_quest(quest: Dictionary) -> void:
+	var state: Dictionary = _state_of(quest)
+	if str(state.get("state")) == "completed":
+		return
+	state["state"] = "completed"
+	var xp: int = int((quest.get("reward", {}) as Dictionary).get("xp", 50))
+	GameManager.gain_xp(xp)
+	var reward_item: Dictionary = InventoryManager.reward_item_for(str(quest.get("id")))
+	if not reward_item.is_empty():
+		InventoryManager.add_item(str(reward_item.get("id")))
+	InventoryManager.grant_linked_items(
+		"quest_reward", "", current_zone_id, str(quest.get("id", "")),
+	)
+	_push_toast("quest_complete", quest)
+	print("[Quest] completed %s (+%d XP)" % [quest.get("id"), xp])
 
 
 # ── UI construction ───────────────────────────────────────────────────────────

@@ -78,6 +78,8 @@ func start_new_game() -> Error:
 	_clear_zone_cache()
 	QuestManager.reset()
 	InventoryManager.reset()
+	NarrativeState.reset()
+	CutsceneDirector.reset()
 	print("[ChapterFlow] flow loaded run=%s chapters=%d" % [str(flow.get("run_id", "")), chapters().size()])
 	return await begin_current_chapter()
 

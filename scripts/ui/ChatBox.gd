@@ -72,11 +72,13 @@ var _options      : Array[String]      = []
 var _selected_opt : int                = 0
 
 # Conversation-tree (select-flow) state — when set, there is no free typing and
-# every line comes from the pre-authored tree (scene_npc_conversation_tree).
+# every line comes from the pre-authored tree assembled by DialogueAssembler
+# (world dialogue ⊕ the unlocked story stage).
 var _tree_mode      : bool       = false
 var _tree_nodes     : Dictionary = {}    # node id -> node dict
 var _tree_options   : Array      = []    # current node's option dicts (parallel to _options)
 var _talk_notified  : bool       = false # fired notify_npc_talked once this conversation
+var _tree_has_quest_reveal: bool = false # quest trees must reach their reveal node
 var _visited_nodes  : Dictionary = {}    # node ids the player has already reached
 var _opt_rows     : Array[Node]        = []
 var _opt_styles   : Array[StyleBoxFlat]= []
@@ -965,6 +967,7 @@ func open_tree(npc_name: String, npc_data: Dictionary, tree: Dictionary) -> void
 	_tree_mode = true
 	_leaf_waiting = false
 	_talk_notified = false
+	_tree_has_quest_reveal = false
 	_visited_nodes = {}
 	_npc_name  = npc_name
 	_npc_data  = npc_data
@@ -993,6 +996,8 @@ func open_tree(npc_name: String, npc_data: Dictionary, tree: Dictionary) -> void
 			var nid := str((node as Dictionary).get("id", ""))
 			if not nid.is_empty():
 				_tree_nodes[nid] = node
+				if str((node as Dictionary).get("reveals", "")) == "quest":
+					_tree_has_quest_reveal = true
 
 	GameManager.ui_blocking_input = true
 	visible = true
@@ -1067,9 +1072,9 @@ func _tree_select(index: int) -> void:
 	var goto := str(opt.get("goto", "__end__"))
 	_clear_options()
 	if goto == "__end__":
-		# Phase 1 fallback: if no quest-beat node was reached this conversation,
-		# complete the "talk" objective when the player finishes talking.
-		if not _talk_notified:
+		# Trees with an authored quest beat must actually reach that node. The
+		# end-of-conversation fallback is only for ordinary trees with no quest beat.
+		if not _talk_notified and not _tree_has_quest_reveal:
 			_talk_notified = true
 			QuestManager.notify_npc_talked(_npc_id)
 		close()  # "Tạm biệt" leaves immediately

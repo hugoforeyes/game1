@@ -12,6 +12,7 @@ signal item_obtained(item_id: String)
 var catalog: Array = []                 # item definitions in icon order
 var counts: Dictionary = {}             # item_id -> int owned
 var drop_chance: Dictionary = {"minion": 0.45, "elite": 1.0, "boss": 1.0}
+var acquisition_claims: Dictionary = {}
 
 var _icon_sheet: Texture2D = null
 var _icon_grid: int = 3
@@ -64,6 +65,7 @@ func _ready() -> void:
 func reset() -> void:
 	catalog = []
 	counts = {}
+	acquisition_claims = {}
 	_icon_sheet = null
 	inventory_changed.emit()
 
@@ -112,6 +114,14 @@ func reward_item_for(quest_id: String) -> Dictionary:
 				and str((item as Dictionary).get("quest_id")) == quest_id:
 			return item as Dictionary
 	return {}
+
+
+func quest_item_by_id(item_id: String, quest_id: String = "") -> Dictionary:
+	if not item_id.is_empty():
+		var direct := item_def(item_id)
+		if not direct.is_empty():
+			return direct
+	return quest_item_for(quest_id)
 
 
 func count_of(item_id: String) -> int:
@@ -177,6 +187,54 @@ func roll_battle_drop(enemy_rank: String) -> String:
 	var item_id: String = pool[randi() % pool.size()]
 	add_item(item_id)
 	return item_id
+
+
+func grant_linked_items(
+		mode: String,
+		source_entity_id: String,
+		zone_id: String,
+		quest_id: String = "",
+		objective_id: String = "",
+	) -> Array[String]:
+	## Execute chapter-authored acquisition links. The concrete runtime instance ID
+	## may have a `__02` suffix while the rule targets its shared template ID.
+	var granted: Array[String] = []
+	for raw_item in catalog:
+		if not (raw_item is Dictionary):
+			continue
+		var item: Dictionary = raw_item as Dictionary
+		for raw_rule in item.get("acquisition", []) as Array:
+			if not (raw_rule is Dictionary):
+				continue
+			var rule: Dictionary = raw_rule as Dictionary
+			if str(rule.get("mode", "")) != mode:
+				continue
+			var source := str(rule.get("source_entity_id", ""))
+			if not source.is_empty() and source_entity_id != source \
+					and not source_entity_id.begins_with(source + "__"):
+				continue
+			var rule_zone := str(rule.get("zone_id", ""))
+			if not rule_zone.is_empty() and rule_zone != zone_id:
+				continue
+			var rule_objective := str(rule.get("objective_id", ""))
+			if not rule_objective.is_empty() and not objective_id.is_empty() \
+					and rule_objective != objective_id:
+				continue
+			var item_quests: Array = item.get("quest_ids", []) as Array
+			if not quest_id.is_empty() and not item_quests.is_empty() and not item_quests.has(quest_id):
+				continue
+			var claim_source := source_entity_id if mode == "enemy_drop" else source
+			var claim_key := "%s:%s:%s:%s" % [mode, claim_source, item.get("id", ""), rule_objective]
+			if acquisition_claims.has(claim_key):
+				continue
+			if randf() > float(rule.get("chance", 1.0)):
+				acquisition_claims[claim_key] = true
+				continue
+			acquisition_claims[claim_key] = true
+			var item_id := str(item.get("id", ""))
+			add_item(item_id, maxi(1, int(rule.get("count", 1))))
+			granted.append(item_id)
+	return granted
 
 
 ## Returns a result message, or "" if the item could not be used here.

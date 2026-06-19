@@ -183,8 +183,9 @@ func _setup_interaction() -> void:
 	_prompt.item_confirmed.connect(_on_interaction_item_confirmed)
 
 func _has_conversation_tree() -> bool:
-	var tree: Variant = npc_data.get("conversation_tree")
-	return tree is Dictionary and not ((tree as Dictionary).get("nodes", []) as Array).is_empty()
+	# True if this NPC has any authored dialogue: the two-layer world/story
+	# dialogue, or a legacy pre-merged conversation_tree.
+	return DialogueAssembler.has_dialogue(npc_data)
 
 func _on_interaction_item_confirmed(item: String, _index: int) -> void:
 	if item.begins_with("Talk"):
@@ -199,13 +200,15 @@ func _on_interaction_item_confirmed(item: String, _index: int) -> void:
 		get_tree().root.add_child(chatbox)
 		if chatbox.has_method("stage_camera_for_conversation"):
 			chatbox.stage_camera_for_conversation(_player, self)
-		# Story-first select flow: drive the pre-authored conversation tree.
+		# Story-first select flow: assemble the active tree from the two dialogue
+		# layers (evergreen world ⊕ the story stage the player has unlocked).
 		# (Legacy free-chat is only used for old packages without a tree.)
-		if _has_conversation_tree():
+		var active_tree: Dictionary = DialogueAssembler.build_active_tree(npc_data)
+		if not active_tree.is_empty():
 			# Phase 1: the tree completes the "talk" objective when the player
 			# finishes the conversation (ChatBox fires notify_npc_talked at __end__),
 			# so the player must actually converse — not just bump the NPC.
-			chatbox.open_tree(str(npc_data.get("name", "")), npc_data, npc_data.get("conversation_tree") as Dictionary)
+			chatbox.open_tree(str(npc_data.get("name", "")), npc_data, active_tree)
 		else:
 			chatbox.open(str(npc_data.get("name", "")), npc_data, str(npc_data.get("id", "")), bubble_line)
 			QuestManager.notify_npc_talked(str(npc_data.get("id", "")))

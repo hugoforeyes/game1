@@ -24,11 +24,10 @@ const IMAGE_LAYER_SIZE := DESIGN_SIZE / IMAGE_LAYER_SCALE
 const KEN_BURNS_DURATION := 34.0
 const KEN_BURNS_OVERSCAN := 1.06
 const KEN_BURNS_DRIFT_STRENGTH := 0.60
-const TEXT_PAGE_TARGET_CHARS := 170
-const TEXT_MAX_LINES := 3
-const TEXT_FONT_MAX := 9
-const TEXT_FONT_MIN := 7
+const TEXT_FONT_SIZE := 9
 const TEXT_LINE_SPACING := 2
+# How quickly the narration auto-scrolls to follow the typewriter (higher = snappier).
+const TEXT_AUTOSCROLL_LAG := 9.0
 
 const CHAPTER_WORDS := ["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"]
 
@@ -37,9 +36,12 @@ var slide_index: int = 0
 var _typing: bool = false
 var _type_target: String = ""
 var _type_progress: float = 0.0
-var _text_pages: Array[String] = []
-var _text_page_index: int = 0
 var _awaiting_continue: bool = false
+# Narration auto-scrolls with the typewriter, but pauses following the moment the
+# reader drags/wheels up to re-read; it resumes once they return to the bottom.
+var _auto_follow: bool = true
+var _dragging: bool = false
+var _drag_last_y: float = 0.0
 var _finishing: bool = false
 # True once the player has read through the slides but the zone download is still
 # in flight; the slides loop and we auto-enter the world when it completes.
@@ -61,7 +63,7 @@ var _title_line_right: ColorRect
 var _title_center_ornament: TextureRect
 var _text_panel: Control
 var _text_frame: TextureRect
-var _text_label: Label
+var _text_rtl: RichTextLabel
 var _continue_marker: Label
 var _hint_panel: Control
 var _progress_root: Control
@@ -163,14 +165,25 @@ func _build_ui() -> void:
 	_text_frame = _make_ui_texture(TEX_NARRATION_PANEL, Rect2(0, 0, 328, 72))
 	_text_panel.add_child(_text_frame)
 
-	_text_label = UiKit.make_label("", 9, COLOR_TEXT)
-	_text_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.92))
-	_text_label.add_theme_constant_override("line_spacing", TEXT_LINE_SPACING)
-	_text_label.position = Vector2(45, 15)
-	_text_label.size = Vector2(238, 45)
-	_text_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_text_label.clip_text = true
-	_text_panel.add_child(_text_label)
+	_text_rtl = RichTextLabel.new()
+	_text_rtl.bbcode_enabled = false
+	_text_rtl.scroll_active = true
+	_text_rtl.scroll_following = false
+	_text_rtl.fit_content = false
+	_text_rtl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_text_rtl.focus_mode = Control.FOCUS_NONE
+	_text_rtl.mouse_filter = Control.MOUSE_FILTER_STOP
+	_text_rtl.position = Vector2(45, 15)
+	_text_rtl.size = Vector2(238, 45)
+	_text_rtl.add_theme_font_size_override("normal_font_size", TEXT_FONT_SIZE)
+	_text_rtl.add_theme_color_override("default_color", COLOR_TEXT)
+	_text_rtl.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.92))
+	_text_rtl.add_theme_constant_override("shadow_offset_x", 1)
+	_text_rtl.add_theme_constant_override("shadow_offset_y", 1)
+	_text_rtl.add_theme_constant_override("line_separation", TEXT_LINE_SPACING)
+	_text_rtl.get_v_scroll_bar().modulate.a = 0.0
+	_text_rtl.gui_input.connect(_on_text_gui_input)
+	_text_panel.add_child(_text_rtl)
 
 	_continue_marker = UiKit.make_label("›", 12, COLOR_TITLE)
 	_continue_marker.position = Vector2(288, 46)
@@ -205,6 +218,8 @@ func _build_ui() -> void:
 	_fade = ColorRect.new()
 	_fade.color = Color(0, 0, 0, 1.0)
 	_fade.set_anchors_preset(Control.PRESET_FULL_RECT)
+	# Full-screen overlay must not swallow the narration's scroll/drag input.
+	_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_fade)
 
 func _make_ui_texture(path: String, rect: Rect2) -> TextureRect:
@@ -295,7 +310,7 @@ func _play_slide(index: int) -> void:
 	_title_line_left.visible = false
 	_title_line_right.visible = false
 	_title_center_ornament.visible = not _title_label.text.is_empty()
-	_text_label.text = ""
+	_text_rtl.text = ""
 
 	# Download next image into the back rect, then crossfade front<->back.
 	var image_url: Variant = slide.get("image_url")
@@ -331,8 +346,7 @@ func _play_slide(index: int) -> void:
 	panel_in.tween_property(_text_panel, "position:y", 176.0, 0.4).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	panel_in.parallel().tween_property(_text_panel, "modulate:a", 1.0, 0.4)
 
-	_text_pages = _paginate_text(str(slide.get("text", "")))
-	_begin_text_page(0)
+	_begin_text(str(slide.get("text", "")))
 
 func _fit_title_label() -> void:
 	var text := _title_label.text
@@ -345,77 +359,59 @@ func _fit_title_label() -> void:
 		size = 23
 	_title_label.add_theme_font_size_override("font_size", size)
 
-func _fit_text_label(text: String) -> void:
-	var width := maxf(1.0, _text_label.size.x)
-	var height := maxf(1.0, _text_label.size.y)
-	var font: Font = _text_label.get_theme_font("font")
-	for font_size in range(TEXT_FONT_MAX, TEXT_FONT_MIN - 1, -1):
-		var line_count := _estimate_wrapped_line_count(text, font, font_size, width)
-		var estimated_height := _estimate_text_height(line_count, font, font_size)
-		if line_count <= TEXT_MAX_LINES and estimated_height <= height:
-			_text_label.add_theme_font_size_override("font_size", font_size)
-			return
-	_text_label.add_theme_font_size_override("font_size", TEXT_FONT_MIN)
-
-func _estimate_wrapped_line_count(text: String, font: Font, font_size: int, width: float) -> int:
-	var cleaned := text.strip_edges()
-	if cleaned.is_empty():
-		return 1
-	if font == null:
-		var chars_per_line := maxf(8.0, width / (float(font_size) * 0.58))
-		return int(ceil(float(cleaned.length()) / chars_per_line))
-	var lines := 1
-	var current := ""
-	for word in cleaned.split(" ", false):
-		var candidate := word if current.is_empty() else "%s %s" % [current, word]
-		if font.get_string_size(candidate, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x <= width:
-			current = candidate
-		else:
-			if not current.is_empty():
-				lines += 1
-			current = word
-	return lines
-
-func _estimate_text_height(line_count: int, font: Font, font_size: int) -> float:
-	var line_height := float(font_size + 3)
-	if font != null:
-		line_height = font.get_height(font_size)
-	return float(maxi(line_count, 1)) * line_height + float(maxi(line_count - 1, 0)) * TEXT_LINE_SPACING
-
-func _text_fits_page(text: String) -> bool:
-	var font: Font = _text_label.get_theme_font("font")
-	var line_count := _estimate_wrapped_line_count(text, font, TEXT_FONT_MIN, maxf(1.0, _text_label.size.x))
-	var estimated_height := _estimate_text_height(line_count, font, TEXT_FONT_MIN)
-	return line_count <= TEXT_MAX_LINES and estimated_height <= maxf(1.0, _text_label.size.y)
-
-func _paginate_text(text: String) -> Array[String]:
-	var cleaned := text.strip_edges()
-	if cleaned.is_empty():
-		return [""]
-	var pages: Array[String] = []
-	var current := ""
-	var words := cleaned.split(" ", false)
-	for word in words:
-		var candidate := word if current.is_empty() else "%s %s" % [current, word]
-		if (candidate.length() > TEXT_PAGE_TARGET_CHARS or not _text_fits_page(candidate)) and not current.is_empty():
-			pages.append(current.strip_edges())
-			current = word
-		else:
-			current = candidate
-	if not current.strip_edges().is_empty():
-		pages.append(current.strip_edges())
-	return pages
-
-func _begin_text_page(page_index: int) -> void:
-	_text_page_index = clampi(page_index, 0, maxi(0, _text_pages.size() - 1))
-	_type_target = _text_pages[_text_page_index] if _text_pages.size() > 0 else ""
-	_fit_text_label(_type_target)
-	_text_label.text = _type_target
-	_text_label.visible_characters = 0
+func _begin_text(text: String) -> void:
+	# The whole slide passage is one scrolling block at a fixed font size — no
+	# pagination, no per-page Enter. The typewriter reveals it while the view
+	# auto-scrolls down to follow; the reader can drag/wheel to re-read.
+	_type_target = text
+	_text_rtl.text = text
+	_text_rtl.visible_characters = 0
+	_text_rtl.get_v_scroll_bar().value = 0.0
 	_type_progress = 0.0
-	_typing = true
-	_awaiting_continue = false
-	_continue_marker.visible = false
+	_typing = not text.strip_edges().is_empty()
+	_awaiting_continue = not _typing
+	_auto_follow = true
+	_dragging = false
+	_continue_marker.visible = _awaiting_continue
+
+func _on_text_gui_input(event: InputEvent) -> void:
+	# Wheel and drag both let the reader scroll back up to re-read; doing so pauses
+	# the typewriter auto-follow until they return to the bottom.
+	if event is InputEventMouseButton:
+		var button := event as InputEventMouseButton
+		if button.button_index == MOUSE_BUTTON_WHEEL_UP or button.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			_auto_follow = false
+		elif button.button_index == MOUSE_BUTTON_LEFT:
+			if button.pressed:
+				_dragging = true
+				_auto_follow = false
+				_drag_last_y = button.position.y
+			else:
+				_dragging = false
+	elif event is InputEventMouseMotion and _dragging:
+		var motion := event as InputEventMouseMotion
+		var vbar := _text_rtl.get_v_scroll_bar()
+		vbar.value -= motion.position.y - _drag_last_y
+		_drag_last_y = motion.position.y
+		get_viewport().set_input_as_handled()
+
+func _update_autoscroll(delta: float) -> void:
+	if not _typing or _type_target.is_empty():
+		return
+	var vbar := _text_rtl.get_v_scroll_bar()
+	# Re-arm following once the reader scrolls back to the bottom.
+	if not _auto_follow and vbar.value >= vbar.max_value - 1.0:
+		_auto_follow = true
+	if _dragging or not _auto_follow:
+		return
+	var cursor := maxi(0, _text_rtl.visible_characters - 1)
+	var line := _text_rtl.get_character_line(cursor)
+	var line_height := float(TEXT_FONT_SIZE + TEXT_LINE_SPACING)
+	var font: Font = _text_rtl.get_theme_font("normal_font")
+	if font != null:
+		line_height = font.get_height(TEXT_FONT_SIZE) + TEXT_LINE_SPACING
+	var target := clampf(_text_rtl.get_line_offset(line) + line_height - _text_rtl.size.y, 0.0, vbar.max_value)
+	vbar.value = lerpf(vbar.value, target, clampf(delta * TEXT_AUTOSCROLL_LAG, 0.0, 1.0))
 
 func _make_smooth_slide_texture(texture: Texture2D) -> Texture2D:
 	if texture == null:
@@ -468,12 +464,13 @@ func _process(delta: float) -> void:
 	if _typing:
 		_type_progress += TYPE_SPEED * delta
 		var visible_chars: int = mini(int(_type_progress), _type_target.length())
-		_text_label.visible_characters = visible_chars
+		_text_rtl.visible_characters = visible_chars
 		if visible_chars >= _type_target.length():
 			_typing = false
 			_awaiting_continue = true
-			_text_label.visible_characters = -1
+			_text_rtl.visible_characters = -1
 			_continue_marker.visible = true
+	_update_autoscroll(delta)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if _finishing:
@@ -487,15 +484,14 @@ func _unhandled_input(event: InputEvent) -> void:
 	get_viewport().set_input_as_handled()
 	if _typing:
 		_typing = false
-		_text_label.visible_characters = -1
+		_text_rtl.visible_characters = -1
 		_awaiting_continue = true
 		_continue_marker.visible = true
+		# Jump to the end so the reader sees the last lines; they can scroll back up.
+		_text_rtl.get_v_scroll_bar().value = _text_rtl.get_v_scroll_bar().max_value
 		return
 	if _awaiting_continue:
 		_awaiting_continue = false
-		if _text_page_index + 1 < _text_pages.size():
-			_begin_text_page(_text_page_index + 1)
-			return
 		if slide_index + 1 < slides.size():
 			_play_slide(slide_index + 1)
 		else:

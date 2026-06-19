@@ -28,6 +28,8 @@ MusicManager="*res://autoloads/MusicManager.gd"
 ChapterFlow="*res://autoloads/ChapterFlow.gd"
 QuestManager="*res://autoloads/QuestManager.gd"
 InventoryManager="*res://autoloads/InventoryManager.gd"
+NarrativeState="*res://autoloads/NarrativeState.gd"
+CutsceneDirector="*res://autoloads/CutsceneDirector.gd"
 
 [display]
 

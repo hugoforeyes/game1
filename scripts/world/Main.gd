@@ -19,16 +19,28 @@ var _battle_active: bool = false
 var _zone_advancing: bool = false
 var _zone_hostiles_cleared_notified: bool = false
 var _active_interior_exit: Dictionary = {}
+var _triggered_cutscene_active: bool = false
+var _pending_triggered_cutscenes: Array = []  # queued cutscene dicts waiting to play
 
 func _ready() -> void:
 	NPCConversationManager._start_prewarm()
 	print("[Main] ready has_scene_package=%s root='%s'" % [GameManager.has_scene_package(), GameManager.imported_scene_root_dir])
 	QuestManager.quests_changed.connect(_on_quests_changed)
+	QuestManager.npc_talked.connect(_on_npc_talked_cutscene)
+	InventoryManager.item_obtained.connect(_on_item_obtained_cutscene)
 	if GameManager.has_scene_package():
 		_build_imported_world()
+		# Register this zone's triggered cutscenes with the director, then play the
+		# opening (if any). The zone_enter check runs deferred so it lands AFTER the
+		# opening cutscene releases input (the director's drain gate waits on it).
+		CutsceneDirector.set_zone_cutscenes(
+			str(GameManager.get_scene_context().get("zone_id", "")),
+			GameManager.get_scene_package().get("cutscenes", []) as Array,
+		)
 		_maybe_start_cutscene.call_deferred()
 		if ChapterFlow.active:
 			QuestManager.notify_zone_entered.call_deferred(str(GameManager.get_scene_context().get("zone_id", "")))
+			_try_trigger_cutscene.call_deferred("zone_enter")
 	else:
 		_apply_background_limits(background.texture)
 		_spawn_enemies_for_builtin_world()
@@ -694,14 +706,24 @@ func _on_battle_finished(result: String, enemy_id: String, enemy: Node) -> void:
 		"victory":
 			GameManager.mark_enemy_defeated(enemy_id)
 			QuestManager.notify_enemy_defeated(enemy_id)
+			InventoryManager.grant_linked_items(
+				"enemy_drop", enemy_id,
+				str(GameManager.get_scene_context().get("zone_id", "")),
+			)
 			if is_instance_valid(enemy):
 				enemy.queue_free()
+			_try_trigger_cutscene("enemy_defeated", {"enemy_id": enemy_id})
 			_check_zone_cleared.call_deferred()
 		"spared":
 			GameManager.mark_enemy_spared(enemy_id)
 			QuestManager.notify_enemy_defeated(enemy_id)
+			InventoryManager.grant_linked_items(
+				"enemy_drop", enemy_id,
+				str(GameManager.get_scene_context().get("zone_id", "")),
+			)
 			if is_instance_valid(enemy):
 				enemy.become_passive()
+			_try_trigger_cutscene("enemy_defeated", {"enemy_id": enemy_id})
 			_check_zone_cleared.call_deferred()
 		"fled":
 			if is_instance_valid(enemy):
@@ -728,7 +750,9 @@ func _spawn_item_pickups(tile_context: Dictionary) -> void:
 		var definition: Dictionary = item as Dictionary
 		if not (definition.get("found_in", []) as Array).has(zone_id):
 			continue
-		for _n in range(int(definition.get("world_spawn_count", 1))):
+		var per_zone: Dictionary = definition.get("world_spawns", {}) as Dictionary
+		var spawn_count := int(per_zone.get(zone_id, definition.get("world_spawn_count", 1)))
+		for _n in range(spawn_count):
 			var tile: Vector2i = _find_pickup_tile(rng, map_size, blocked, used)
 			if tile == Vector2i(-1, -1):
 				continue
@@ -777,6 +801,54 @@ func _maybe_start_cutscene() -> void:
 	cutscene.cutscene_finished.connect(_check_zone_cleared)
 	cutscene.play(actions, self, player, generated_characters, start_tiles)
 
+# ── triggered (mid-chapter) cutscenes ───────────────────────────────────────────
+# Match a reported event against this zone's packaged cutscenes (CutsceneDirector)
+# and play the first unplayed one — the SAME way the opening cutscene plays
+# (CutscenePlayer applies the pre-placed start tiles, then restores actors).
+
+func _try_trigger_cutscene(event_type: String, params: Dictionary = {}) -> void:
+	if not ChapterFlow.active:
+		return
+	var cutscene: Dictionary = CutsceneDirector.match_event(event_type, params)
+	if cutscene.is_empty():
+		return
+	var id := str(cutscene.get("id", ""))
+	for queued in _pending_triggered_cutscenes:
+		if str((queued as Dictionary).get("id", "")) == id:
+			return  # already queued
+	_pending_triggered_cutscenes.append(cutscene)
+	_drain_triggered_cutscenes()
+
+func _drain_triggered_cutscenes() -> void:
+	if _pending_triggered_cutscenes.is_empty():
+		return
+	# Wait for a calm moment: no battle, no zone transition, no other cutscene or
+	# blocking UI (the opening cutscene and dialogue set ui_blocking_input).
+	if _battle_active or _zone_advancing or _triggered_cutscene_active or GameManager.ui_blocking_input:
+		get_tree().create_timer(0.4).timeout.connect(_drain_triggered_cutscenes, CONNECT_ONE_SHOT)
+		return
+	var cutscene: Dictionary = _pending_triggered_cutscenes.pop_front()
+	var id := str(cutscene.get("id", ""))
+	if CutsceneDirector.is_played(id):
+		_drain_triggered_cutscenes.call_deferred()
+		return
+	CutsceneDirector.mark_played(id)
+	_play_triggered_cutscene(cutscene)
+
+func _play_triggered_cutscene(cutscene: Dictionary) -> void:
+	_triggered_cutscene_active = true
+	var actions: Array = cutscene.get("actions", []) as Array
+	var start_tiles: Dictionary = cutscene.get("start_tiles", {}) as Dictionary
+	print("[Main] triggered cutscene id=%s actions=%d start_tiles=%d" % [str(cutscene.get("id", "")), actions.size(), start_tiles.size()])
+	var cutscene_player: CanvasLayer = CutscenePlayerScript.new()
+	add_child(cutscene_player)
+	cutscene_player.cutscene_finished.connect(func() -> void:
+		_triggered_cutscene_active = false
+		_drain_triggered_cutscenes.call_deferred()
+		_check_zone_cleared.call_deferred()
+	)
+	cutscene_player.play(actions, self, player, generated_characters, start_tiles)
+
 func _remaining_hostile_count() -> int:
 	var count := 0
 	for child in generated_characters.get_children():
@@ -786,7 +858,16 @@ func _remaining_hostile_count() -> int:
 
 func _on_quests_changed() -> void:
 	_refresh_quest_markers()
+	_try_trigger_cutscene("quest_changed")
 	_check_zone_cleared.call_deferred()
+
+
+func _on_npc_talked_cutscene(npc_id: String) -> void:
+	_try_trigger_cutscene("npc_talked", {"npc_id": npc_id})
+
+
+func _on_item_obtained_cutscene(item_id: String) -> void:
+	_try_trigger_cutscene("item_obtained", {"item_id": item_id})
 
 func _refresh_quest_markers() -> void:
 	for child in generated_characters.get_children():
@@ -802,6 +883,7 @@ func _check_zone_cleared() -> void:
 	if not _zone_hostiles_cleared_notified:
 		_zone_hostiles_cleared_notified = true
 		QuestManager.notify_zone_hostiles_cleared(zone_id)
+		_try_trigger_cutscene("zone_cleared")
 	# Clearing hostiles updates quests, but it no longer auto-advances the zone.
 	# The player moves to another scene only through explicit exits/transitions.
 
