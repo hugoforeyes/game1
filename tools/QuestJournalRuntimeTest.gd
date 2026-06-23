@@ -34,10 +34,14 @@ func _ready() -> void:
 
 	var journal = QuestManager._journal_view
 	assert(QuestManager._journal_open)
+	assert(QuestManager._journal_layer != null)
+	assert(QuestManager._journal_root.get_parent() == QuestManager._journal_layer)
+	assert(QuestManager._journal_layer.transform == Transform2D.IDENTITY)
+	assert(journal._hero_host.size == Vector2(400, 108))
 	assert(journal.visible_indices == [0])
 	assert(journal.selected_index == 0)
 	assert(journal._tabs_host.get_child_count() == 3)
-	assert(journal._track_button_label.text == "Đang theo dõi")
+	assert(journal._track_button_label.text == "ĐANG THEO DÕI")
 
 	journal.handle_input(_action("ui_right"))
 	assert(journal.category_index == 1)

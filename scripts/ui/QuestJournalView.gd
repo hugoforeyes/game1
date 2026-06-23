@@ -1,7 +1,7 @@
 class_name QuestJournalView
 extends Control
 ## Full-screen Quest Journal — AAA art-directed redesign.
-## Authored in a 480x270 logical canvas (QuestManager hosts it in a 2x CanvasLayer).
+## Authored in 480x270 design units, rendered into a native 960x540 CanvasLayer.
 ## Runtime data remains owned by QuestManager; this view is pure presentation.
 
 signal close_requested
@@ -12,6 +12,7 @@ const V2_DIR := "res://assets/ui/quest_journal_v2/"
 const ICON_DIR := "res://assets/ui/quest_journal_v2/icons/"
 const ORN_DIR := "res://assets/ui/quest_journal_v2/ornaments/"
 const DEFAULT_BANNER := "res://assets/ui/quest_journal_v2/hero_banner_default.png"
+const CANVAS_SCALE := 2.0
 
 const CATEGORY_IDS := ["active", "side", "completed"]
 const CATEGORY_LABELS := ["Chính", "Phụ", "Xong"]
@@ -73,6 +74,22 @@ var _track_button_label: Label
 # Hosts kept for legacy preview assertions / structural parity.
 var _hero_host: Control
 var _detail_meta_host: Control
+
+
+func _scaled_vec(value: Vector2) -> Vector2:
+	return (value * CANVAS_SCALE).round()
+
+
+func _scaled_rect(rect: Rect2) -> Rect2:
+	return Rect2(_scaled_vec(rect.position), _scaled_vec(rect.size))
+
+
+func _scaled_value(value: float) -> float:
+	return roundf(value * CANVAS_SCALE)
+
+
+func _scaled_int(value: float) -> int:
+	return int(roundf(value * CANVAS_SCALE))
 
 
 func _ready() -> void:
@@ -158,16 +175,17 @@ func _build_master_frame() -> void:
 			Color(0.0, 0.0, 0.0, 0.55))
 	# Panel body.
 	var panel := Panel.new()
-	panel.position = frame.position
-	panel.size = frame.size
+	var frame_px := _scaled_rect(frame)
+	panel.position = frame_px.position
+	panel.size = frame_px.size
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var style := StyleBoxFlat.new()
 	style.bg_color = C_BG_PANEL
 	style.border_color = C_GOLD_DIM
-	style.set_border_width_all(2)
-	style.set_corner_radius_all(2)
+	style.set_border_width_all(_scaled_int(2))
+	style.set_corner_radius_all(_scaled_int(2))
 	style.shadow_color = Color(0.0, 0.0, 0.0, 0.5)
-	style.shadow_size = 3
+	style.shadow_size = _scaled_int(3)
 	panel.add_theme_stylebox_override("panel", style)
 	add_child(panel)
 	# Inner bevel lines.
@@ -242,7 +260,7 @@ func _build_detail_panel() -> void:
 
 	# Hero banner.
 	_hero_host = _spawn_host(Rect2(155, 49, 200, 54))
-	_add_rect(_hero_host, Rect2(Vector2.ZERO, _hero_host.size), Color(0.05, 0.07, 0.09, 1.0))
+	_add_rect(_hero_host, Rect2(Vector2.ZERO, Vector2(200, 54)), Color(0.05, 0.07, 0.09, 1.0))
 	_hero_image = TextureRect.new()
 	_hero_image.position = Vector2.ZERO
 	_hero_image.size = _hero_host.size
@@ -322,8 +340,9 @@ func _build_rewards_panel() -> void:
 
 	# Track button.
 	_track_button = Control.new()
-	_track_button.position = Vector2(368, 229)
-	_track_button.size = Vector2(98, 27)
+	var track_rect := _scaled_rect(Rect2(368, 229, 98, 27))
+	_track_button.position = track_rect.position
+	_track_button.size = track_rect.size
 	_track_button.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_track_button)
 	if _has_ornament("button_plate.png"):
@@ -384,8 +403,9 @@ func _render_tabs() -> void:
 		var cx := tab_w * 0.5
 		if has_ring:
 			var tab := Control.new()
-			tab.position = Vector2(index * (tab_w + gap), 0)
-			tab.size = Vector2(tab_w, 30)
+			var tab_rect := _scaled_rect(Rect2(index * (tab_w + gap), 0, tab_w, 30))
+			tab.position = tab_rect.position
+			tab.size = tab_rect.size
 			tab.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			_tabs_host.add_child(tab)
 			# Icon nested inside the ornate ring (ring drawn on top so its rim frames it).
@@ -768,17 +788,18 @@ func _banner_or_default(quest: Dictionary) -> Texture2D:
 # ══════════════════════════════════════════════════════════════════════════════
 func _build_panel(rect: Rect2) -> void:
 	var panel := Panel.new()
-	panel.position = rect.position
-	panel.size = rect.size
+	var panel_rect := _scaled_rect(rect)
+	panel.position = panel_rect.position
+	panel.size = panel_rect.size
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var style := StyleBoxFlat.new()
 	style.bg_color = C_BG_INSET
 	style.border_color = Color(C_GOLD_DIM, 0.85)
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(1)
+	style.set_border_width_all(_scaled_int(1))
+	style.set_corner_radius_all(_scaled_int(1))
 	style.shadow_color = Color(0.0, 0.0, 0.0, 0.35)
-	style.shadow_size = 2
-	style.shadow_offset = Vector2(0, 1)
+	style.shadow_size = _scaled_int(2)
+	style.shadow_offset = _scaled_vec(Vector2(0, 1))
 	panel.add_theme_stylebox_override("panel", style)
 	add_child(panel)
 	# Top inner sheen + bottom shade for depth.
@@ -795,8 +816,9 @@ func _build_medallion(rect: Rect2, icon_file: String) -> void:
 		add_child(_make_ornament("medallion.png", rect, TextureRect.STRETCH_KEEP_ASPECT_CENTERED))
 		return
 	var plate := Control.new()
-	plate.position = rect.position
-	plate.size = rect.size
+	var plate_rect := _scaled_rect(rect)
+	plate.position = plate_rect.position
+	plate.size = plate_rect.size
 	plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(plate)
 	_add_rect(plate, Rect2(Vector2.ZERO, rect.size), Color(0.05, 0.045, 0.030, 0.95))
@@ -847,11 +869,11 @@ func _make_clipped_fill(rect: Rect2, top: Color, bottom: Color) -> Control:
 	var inner_w := rect.size.x - 2
 	var inner_h := rect.size.y - 2
 	var fill := Control.new()
-	fill.position = rect.position + Vector2(1, 1)
-	fill.size = Vector2(0, inner_h)
+	fill.position = _scaled_vec(rect.position + Vector2(1, 1))
+	fill.size = Vector2(0, _scaled_value(inner_h))
 	fill.clip_contents = true
 	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	fill.set_meta("full_w", inner_w)
+	fill.set_meta("full_w", _scaled_value(inner_w))
 	add_child(fill)
 	_add_gradient(fill, Rect2(0, 0, inner_w, inner_h), top, bottom, true)
 	_add_rect(fill, Rect2(0, 0, inner_w, 1), Color(1.0, 1.0, 1.0, 0.40))
@@ -860,8 +882,8 @@ func _make_clipped_fill(rect: Rect2, top: Color, bottom: Color) -> Control:
 
 func _add_count_badge(parent: Control, count: int, pos: Vector2) -> void:
 	var badge := Control.new()
-	badge.position = pos
-	badge.size = Vector2(11, 10)
+	badge.position = _scaled_vec(pos)
+	badge.size = _scaled_vec(Vector2(11, 10))
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(badge)
 	_add_rect(badge, Rect2(0, 0, 11, 10), Color(0.07, 0.055, 0.032, 0.96))
@@ -882,21 +904,24 @@ func _add_round_count_badge(parent: Control, count: int, center: Vector2) -> voi
 
 func _make_icon_plate(icon_file: String, rect: Rect2, selected: bool) -> Control:
 	var plate := Control.new()
-	plate.position = rect.position.round()
-	plate.size = rect.size.round()
+	var plate_rect := _scaled_rect(rect)
+	plate.position = plate_rect.position
+	plate.size = plate_rect.size
 	plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_add_rect(plate, Rect2(Vector2.ZERO, plate.size), Color(0.020, 0.018, 0.013, 0.90))
-	_add_gradient(plate, Rect2(1, 1, plate.size.x - 2, plate.size.y * 0.5), Color(0.20, 0.16, 0.08, 0.5), Color(0.0, 0.0, 0.0, 0.0), true)
-	_frame_outline(plate, Rect2(0, 0, plate.size.x, plate.size.y), Color(C_GOLD, 0.55 if selected else 0.32))
-	plate.add_child(_make_art(icon_file, Rect2(2, 2, plate.size.x - 4, plate.size.y - 4)))
+	var local_size := rect.size
+	_add_rect(plate, Rect2(Vector2.ZERO, local_size), Color(0.020, 0.018, 0.013, 0.90))
+	_add_gradient(plate, Rect2(1, 1, local_size.x - 2, local_size.y * 0.5), Color(0.20, 0.16, 0.08, 0.5), Color(0.0, 0.0, 0.0, 0.0), true)
+	_frame_outline(plate, Rect2(0, 0, local_size.x, local_size.y), Color(C_GOLD, 0.55 if selected else 0.32))
+	plate.add_child(_make_art(icon_file, Rect2(2, 2, local_size.x - 4, local_size.y - 4)))
 	return plate
 
 
 func _add_reward_slot(parent: Control, index: int, glyph: String, amount: String, tint: Color, rare: bool) -> void:
 	var slot := Control.new()
 	var col := index % 3
-	slot.position = Vector2(col * 34.0, 0)
-	slot.size = Vector2(30, 30)
+	var slot_rect := _scaled_rect(Rect2(col * 34.0, 0, 30, 30))
+	slot.position = slot_rect.position
+	slot.size = slot_rect.size
 	slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(slot)
 	var filled := not amount.is_empty()
@@ -947,8 +972,9 @@ func _make_reward_icon(glyph: String, rect: Rect2, tint: Color) -> Control:
 		return _make_art_path(art_path, rect)
 	# Procedural fallback glyph.
 	var holder := Control.new()
-	holder.position = rect.position
-	holder.size = rect.size
+	var holder_rect := _scaled_rect(rect)
+	holder.position = holder_rect.position
+	holder.size = holder_rect.size
 	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var c := rect.size * 0.5
 	match glyph:
@@ -978,33 +1004,37 @@ func _make_reward_icon(glyph: String, rect: Rect2, tint: Color) -> Control:
 
 func _make_button_shell(rect: Rect2, selected: bool) -> Control:
 	var shell := Control.new()
-	shell.position = rect.position.round()
-	shell.size = rect.size.round()
+	var shell_rect := _scaled_rect(rect)
+	shell.position = shell_rect.position
+	shell.size = shell_rect.size
 	shell.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_add_rect(shell, Rect2(Vector2.ZERO, shell.size), Color(0.075, 0.062, 0.045, 0.92) if not selected else Color(0.34, 0.21, 0.060, 0.95))
-	_add_gradient(shell, Rect2(1, 1, shell.size.x - 2, maxf(2.0, shell.size.y * 0.5)),
+	var local_size := rect.size
+	_add_rect(shell, Rect2(Vector2.ZERO, local_size), Color(0.075, 0.062, 0.045, 0.92) if not selected else Color(0.34, 0.21, 0.060, 0.95))
+	_add_gradient(shell, Rect2(1, 1, local_size.x - 2, maxf(2.0, local_size.y * 0.5)),
 			Color(1.0, 0.74, 0.26, 0.16 if selected else 0.08), Color(1.0, 0.6, 0.2, 0.0), true)
-	_frame_outline(shell, Rect2(0, 0, shell.size.x, shell.size.y), Color(0.85, 0.64, 0.26, 0.78 if selected else 0.40))
-	_add_rect(shell, Rect2(1, 1, shell.size.x - 2, 1), Color(1.0, 0.90, 0.50, 0.40 if selected else 0.22))
+	_frame_outline(shell, Rect2(0, 0, local_size.x, local_size.y), Color(0.85, 0.64, 0.26, 0.78 if selected else 0.40))
+	_add_rect(shell, Rect2(1, 1, local_size.x - 2, 1), Color(1.0, 0.90, 0.50, 0.40 if selected else 0.22))
 	if selected:
-		_add_rect(shell, Rect2(0, shell.size.y - 1, shell.size.x, 1), Color(C_GOLD, 0.6))
+		_add_rect(shell, Rect2(0, local_size.y - 1, local_size.x, 1), Color(C_GOLD, 0.6))
 	return shell
 
 
 func _make_row(rect: Rect2, selected: bool) -> Control:
 	var row := Control.new()
-	row.position = rect.position.round()
-	row.size = rect.size.round()
+	var row_rect := _scaled_rect(rect)
+	row.position = row_rect.position
+	row.size = row_rect.size
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var local_size := rect.size
 	if selected:
-		_add_gradient(row, Rect2(Vector2.ZERO, row.size), Color(0.40, 0.26, 0.085, 0.92), Color(0.20, 0.13, 0.05, 0.85), false)
-		_add_rect(row, Rect2(0, 0, 3, row.size.y), C_AMBER)
-		_add_rect(row, Rect2(3, 0, row.size.x - 3, 1), Color(C_GOLD, 0.80))
-		_add_rect(row, Rect2(3, row.size.y - 1, row.size.x - 3, 1), Color(C_GOLD, 0.55))
-		_add_rect(row, Rect2(row.size.x - 1, 1, 1, row.size.y - 2), Color(C_GOLD, 0.45))
+		_add_gradient(row, Rect2(Vector2.ZERO, local_size), Color(0.40, 0.26, 0.085, 0.92), Color(0.20, 0.13, 0.05, 0.85), false)
+		_add_rect(row, Rect2(0, 0, 3, local_size.y), C_AMBER)
+		_add_rect(row, Rect2(3, 0, local_size.x - 3, 1), Color(C_GOLD, 0.80))
+		_add_rect(row, Rect2(3, local_size.y - 1, local_size.x - 3, 1), Color(C_GOLD, 0.55))
+		_add_rect(row, Rect2(local_size.x - 1, 1, 1, local_size.y - 2), Color(C_GOLD, 0.45))
 	else:
-		_add_rect(row, Rect2(Vector2.ZERO, row.size), Color(0.060, 0.056, 0.048, 0.55))
-		_add_rect(row, Rect2(0, row.size.y - 1, row.size.x, 1), Color(0.55, 0.40, 0.18, 0.18))
+		_add_rect(row, Rect2(Vector2.ZERO, local_size), Color(0.060, 0.056, 0.048, 0.55))
+		_add_rect(row, Rect2(0, local_size.y - 1, local_size.x, 1), Color(0.55, 0.40, 0.18, 0.18))
 	return row
 
 
@@ -1013,8 +1043,9 @@ func _make_row(rect: Rect2, selected: bool) -> Control:
 # ══════════════════════════════════════════════════════════════════════════════
 func _spawn_host(rect: Rect2) -> Control:
 	var host := Control.new()
-	host.position = rect.position
-	host.size = rect.size
+	var host_rect := _scaled_rect(rect)
+	host.position = host_rect.position
+	host.size = host_rect.size
 	host.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(host)
 	return host
@@ -1029,19 +1060,23 @@ func _frame_outline(parent: Control, rect: Rect2, color: Color) -> void:
 
 func _add_diamond(parent: Control, center: Vector2, radius: float, color: Color) -> void:
 	var poly := Polygon2D.new()
+	var c := _scaled_vec(center)
+	var r := _scaled_value(radius)
 	poly.polygon = PackedVector2Array([
-		center + Vector2(0, -radius), center + Vector2(radius, 0),
-		center + Vector2(0, radius), center + Vector2(-radius, 0)])
+		c + Vector2(0, -r), c + Vector2(r, 0),
+		c + Vector2(0, r), c + Vector2(-r, 0)])
 	poly.color = color
 	parent.add_child(poly)
 
 
 func _add_diamond_outline(parent: Control, center: Vector2, radius: float, color: Color) -> void:
 	var line := Line2D.new()
+	var c := _scaled_vec(center)
+	var r := _scaled_value(radius)
 	line.points = PackedVector2Array([
-		center + Vector2(0, -radius), center + Vector2(radius, 0),
-		center + Vector2(0, radius), center + Vector2(-radius, 0), center + Vector2(0, -radius)])
-	line.width = 1.0
+		c + Vector2(0, -r), c + Vector2(r, 0),
+		c + Vector2(0, r), c + Vector2(-r, 0), c + Vector2(0, -r)])
+	line.width = _scaled_value(1.0)
 	line.default_color = color
 	line.antialiased = false
 	parent.add_child(line)
@@ -1050,9 +1085,11 @@ func _add_diamond_outline(parent: Control, center: Vector2, radius: float, color
 func _add_disc(parent: Control, center: Vector2, radius: float, color: Color) -> void:
 	var poly := Polygon2D.new()
 	var pts := PackedVector2Array()
+	var c := _scaled_vec(center)
+	var r := _scaled_value(radius)
 	for i in range(12):
 		var a := TAU * float(i) / 12.0
-		pts.append(center + Vector2(cos(a), sin(a)) * radius)
+		pts.append(c + Vector2(cos(a), sin(a)) * r)
 	poly.polygon = pts
 	poly.color = color
 	parent.add_child(poly)
@@ -1070,8 +1107,9 @@ func _add_gradient(parent: Control, rect: Rect2, from_color: Color, to_color: Co
 	tex.fill_to = Vector2(0, 1) if vertical else Vector2(1, 0)
 	var node := TextureRect.new()
 	node.texture = tex
-	node.position = rect.position
-	node.size = rect.size
+	var node_rect := _scaled_rect(rect)
+	node.position = node_rect.position
+	node.size = node_rect.size
 	node.stretch_mode = TextureRect.STRETCH_SCALE
 	node.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(node)
@@ -1091,8 +1129,9 @@ func _add_radial(parent: Control, rect: Rect2, inner: Color, outer: Color) -> vo
 	tex.fill_to = Vector2(1.0, 0.5)
 	var node := TextureRect.new()
 	node.texture = tex
-	node.position = rect.position
-	node.size = rect.size
+	var node_rect := _scaled_rect(rect)
+	node.position = node_rect.position
+	node.size = node_rect.size
 	node.stretch_mode = TextureRect.STRETCH_SCALE
 	node.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(node)
@@ -1109,8 +1148,9 @@ func _make_art_path(path: String, rect: Rect2, mode: TextureRect.StretchMode = T
 	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	art.stretch_mode = mode
 	art.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	art.position = rect.position.round()
-	art.size = rect.size.round()
+	var art_rect := _scaled_rect(rect)
+	art.position = art_rect.position
+	art.size = art_rect.size
 	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return art
 
@@ -1124,8 +1164,9 @@ func _make_ornament(file_name: String, rect: Rect2, mode: TextureRect.StretchMod
 	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	art.stretch_mode = mode
 	art.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
-	art.position = rect.position.round()
-	art.size = rect.size.round()
+	var art_rect := _scaled_rect(rect)
+	art.position = art_rect.position
+	art.size = art_rect.size
 	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return art
 
@@ -1135,16 +1176,18 @@ func _has_ornament(file_name: String) -> bool:
 
 
 func _place_label(label: Label, rect: Rect2, vertical: VerticalAlignment = VERTICAL_ALIGNMENT_CENTER) -> Label:
-	label.position = rect.position.round()
-	label.size = rect.size.round()
+	var label_rect := _scaled_rect(rect)
+	label.position = label_rect.position
+	label.size = label_rect.size
 	label.vertical_alignment = vertical
 	return label
 
 
 func _add_rect(parent: Control, rect: Rect2, color: Color) -> ColorRect:
 	var block := ColorRect.new()
-	block.position = rect.position.round()
-	block.size = rect.size.round()
+	var block_rect := _scaled_rect(rect)
+	block.position = block_rect.position
+	block.size = block_rect.size
 	block.color = color
 	block.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(block)

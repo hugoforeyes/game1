@@ -34,6 +34,7 @@ var tracked_quest_id: String = ""
 var current_zone_id: String = ""
 
 var _ui: CanvasLayer = null
+var _journal_layer: CanvasLayer = null
 var _tracker_panel: QuestTrackerFrame
 var _tracker_quest_icon: TextureRect
 var _tracker_title: Label
@@ -574,6 +575,13 @@ func _ensure_ui() -> void:
 	_ui.transform = Transform2D.IDENTITY.scaled(Vector2(2, 2))  # UI authored in 480x270
 	add_child(_ui)
 
+	# The journal is authored in 480x270 design units but renders into native
+	# 960x540 geometry, so it needs an unscaled layer like the inventory screen.
+	_journal_layer = CanvasLayer.new()
+	_journal_layer.layer = 46
+	_journal_layer.transform = Transform2D.IDENTITY
+	add_child(_journal_layer)
+
 	# Combined quest tracker, anchored to the upper-right of the 480x270 UI canvas.
 	_tracker_panel = QuestTrackerFrameScript.new()
 	_tracker_panel.setup(Rect2(TRACKER_EXPANDED_X, TRACKER_TOP, TRACKER_WIDTH, 100))
@@ -667,7 +675,7 @@ func _build_journal() -> void:
 	_journal_root.visible = false
 	_journal_view.close_requested.connect(_toggle_journal)
 	_journal_view.track_requested.connect(_on_journal_track_requested)
-	_ui.add_child(_journal_root)
+	_journal_layer.add_child(_journal_root)
 
 
 func _build_choice_dialog() -> void:

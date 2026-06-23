@@ -17,7 +17,7 @@ func _ready() -> void:
 		bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		add_child(bg)
 		var ui := CanvasLayer.new()
-		ui.transform = Transform2D.IDENTITY.scaled(Vector2(2, 2))
+		ui.transform = Transform2D.IDENTITY
 		add_child(ui)
 		var journal = JournalViewScript.new()
 		ui.add_child(journal)
