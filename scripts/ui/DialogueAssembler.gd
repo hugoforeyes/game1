@@ -26,13 +26,87 @@ static func build_active_tree(npc_data: Dictionary) -> Dictionary:
 	var story_tree: Dictionary = _active_story_tree(story)
 
 	if not world_tree.is_empty() or not story_tree.is_empty():
-		return merge_trees(world_tree, story_tree)
+		return _inject_hints(merge_trees(world_tree, story_tree), npc_data)
 
 	# Legacy package: a single pre-merged tree.
 	var legacy: Variant = npc_data.get("conversation_tree")
 	if legacy is Dictionary and not ((legacy as Dictionary).get("nodes", []) as Array).is_empty():
-		return legacy as Dictionary
+		return _inject_hints(legacy as Dictionary, npc_data)
 	return {}
+
+
+# ── quest hints ─────────────────────────────────────────────────────────────────
+## Append this NPC's hint options (from the packaged `hint_dialogue`) to the tree's
+## start node, but ONLY the hints whose objective is the player's active one. Each
+## becomes a leaf node where the NPC speaks the hint, tagged reveals:"hint".
+static func _inject_hints(tree: Dictionary, npc_data: Dictionary) -> Dictionary:
+	if tree.is_empty():
+		return tree
+	var hint_data: Dictionary = npc_data.get("hint_dialogue", {}) as Dictionary if npc_data.get("hint_dialogue") is Dictionary else {}
+	var raw_options: Array = hint_data.get("options", []) as Array if hint_data.get("options") is Array else []
+	if raw_options.is_empty():
+		return tree
+
+	var start_id := str(tree.get("start_node", ROOT))
+	var hint_root_options: Array = []
+	var hint_nodes: Array = []
+	for opt in raw_options:
+		if not (opt is Dictionary):
+			continue
+		var od: Dictionary = opt as Dictionary
+		var hint: Dictionary = od.get("hint", {}) as Dictionary if od.get("hint") is Dictionary else {}
+		if not QuestManager.is_objective_active(str(hint.get("quest_id", "")), str(hint.get("objective_id", ""))):
+			continue
+		var node_id := "hint:" + str(od.get("id", hint_nodes.size()))
+		hint_root_options.append({
+			"player_text": "(Gợi ý) " + str(od.get("player_text", "Cho tôi một gợi ý.")),
+			"goto": node_id,
+			"is_hint": true,
+		})
+		hint_nodes.append({
+			"id": node_id,
+			"npc_line": str(od.get("npc_line", "")),
+			"emotion": str(od.get("emotion", "neutral")),
+			"topic": "hint",
+			"reveals": "hint",
+			"hint": hint,
+			"options": [
+				{"player_text": "Cảm ơn.", "goto": start_id},
+				{"player_text": "Tạm biệt.", "goto": END},
+			],
+		})
+	if hint_root_options.is_empty():
+		return tree
+
+	var out: Dictionary = tree.duplicate(true)
+	var new_nodes: Array = []
+	for node in (out.get("nodes", []) as Array):
+		if node is Dictionary and str((node as Dictionary).get("id", "")) == start_id:
+			var nd: Dictionary = node as Dictionary
+			nd["options"] = _insert_before_leave(nd.get("options", []) as Array, hint_root_options)
+			new_nodes.append(nd)
+		else:
+			new_nodes.append(node)
+	new_nodes.append_array(hint_nodes)
+	out["nodes"] = new_nodes
+	return out
+
+
+## Insert the hint options just before a trailing "leave" option (goto __end__), so
+## "Tạm biệt." stays last in the menu.
+static func _insert_before_leave(existing: Array, extra: Array) -> Array:
+	var head: Array = []
+	var tail: Array = []
+	for opt in existing:
+		if opt is Dictionary and str((opt as Dictionary).get("goto", "")) == END:
+			tail.append(opt)
+		else:
+			head.append(opt)
+	var result: Array = []
+	result.append_array(head)
+	result.append_array(extra)
+	result.append_array(tail)
+	return result
 
 
 static func has_dialogue(npc_data: Dictionary) -> bool:

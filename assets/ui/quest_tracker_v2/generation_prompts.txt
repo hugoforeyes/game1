@@ -1,0 +1,13 @@
+FRAME SOURCE
+Create one complete continuous rectangular pixel-art frame on flat #00ff00.
+The entire frame interior must also be #00ff00. Frame only: no fill, text,
+icons, dividers, shadow or separate component samples. Include restrained
+ornamental badges centered on all four edges.
+
+ICON SHEET SOURCE
+Create one 3x2 sprite sheet containing all tracker icons on flat #00ff00: an
+expanded quest badge authored for 28x28, inward collapse chevrons for 14x14,
+gold objective diamond for 11x11, blue progress crystal for 10x10, cyan hint
+lightbulb for 11x11, and a complete compact quest badge for 30x30. All icons
+use one logical pixel scale and contain only detail appropriate to their final
+native canvas. No labels, grid lines, cell frames or extra objects.

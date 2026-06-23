@@ -1054,6 +1054,8 @@ func _enter_tree_node(node_id: String) -> void:
 		QuestManager.notify_npc_talked(_npc_id)
 	_set_portrait_for_emotion(str(node.get("emotion", "neutral")))
 	var line := str(node.get("npc_line", "")).strip_edges()
+	if not revisit and str(node.get("reveals", "")) == "hint" and node.get("hint") is Dictionary:
+		QuestManager.reveal_hint(_npc_name, node.get("hint") as Dictionary, line, _npc_portrait.texture)
 
 	_tree_options = []
 	var labels: Array = []

@@ -1,0 +1,15 @@
+Use case: ui-mockup.
+Asset type: ONE production sprite atlas containing separate modular pixel-art RPG UI components for a Godot game.
+Input image role: visual style reference only. Match its dark charcoal/navy panels, thin antique-gold quest border, cool cyan hint border, engraved corner flourishes, warm highlights, and handcrafted fantasy pixel-art finish. Do not recreate the screenshot or complete panels.
+
+Create ONE square component sheet on a perfectly flat solid #00ff00 chroma-key background. Arrange every component in a strict spacious 4-column grid, isolated and never touching, all front-facing orthographic and at one consistent scale and border thickness. No labels and no text.
+
+Row 1: four separate gold quest-frame corners: top-left, top-right, bottom-left, bottom-right. Compact square 90-degree corners with short, perfectly flat-ended arms. True mirrored counterparts.
+Row 2: four separate cyan hint-frame corners in the same order and geometry, made from dark teal metal with pale-cyan linework and a tiny cyan gem.
+Row 3: seamless gold horizontal edge, gold vertical edge, cyan horizontal edge, cyan vertical edge. Straight, thin, flat identical ends, no ornament.
+Row 4: seamless dark charcoal/navy fill tile; repeatable gold divider; empty gold progress-bar frame; separate gold progress fill.
+Row 5: gold quest-flower medallion; cyan lightbulb hint icon; gold closed journal icon; cyan upward collapse-chevron badge.
+
+Style: crisp deliberate pixel art, 1-pixel and 2-pixel clusters, no antialiasing, consistent palette and lighting, readable after downscaling for a 960x540 game. Dark bronze inner shadows with restrained gold or cyan highlights.
+Background: uniform #00ff00 only, with no texture, gradients, shadows, floor, reflections, or lighting variation. Do not use green in any component.
+Constraints: components never touch; no text, labels, portraits, characters, complete panels, screenshots, watermark, perspective, modern web styling, or extra decoration.

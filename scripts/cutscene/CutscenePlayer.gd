@@ -9,19 +9,33 @@ signal cutscene_finished
 
 const TYPE_SPEED := 44.0
 const MOVE_SPEED_PX := 144.0
-const LETTERBOX_H := 30.0
+const LETTERBOX_H := 9.0
 const PRESTAGE_DISTANCE_TILES := 5.0
 const PRESTAGE_APPROACH_TILES := 2.0
 const WALK_BACK_MAX_SECONDS := 2.5
 const MOVE_CLAMP_TILES := 4  # max tiles a cutscene actor may stray from the player
-const DEFAULT_PORTRAIT := "res://assets/ui/chatbox_npc_portrait.png"
+const UI_COMPONENT_DIR := "res://assets/ui/cutscene_v3/components/"
+const TEX_CORNER_TL := UI_COMPONENT_DIR + "corner_tl.png"
+const TEX_CORNER_TR := UI_COMPONENT_DIR + "corner_tr.png"
+const TEX_CORNER_BL := UI_COMPONENT_DIR + "corner_bl.png"
+const TEX_CORNER_BR := UI_COMPONENT_DIR + "corner_br.png"
+const TEX_EDGE_H := UI_COMPONENT_DIR + "edge_horizontal.png"
+const TEX_EDGE_V := UI_COMPONENT_DIR + "edge_vertical.png"
+const TEX_NAME_CAP_LEFT := UI_COMPONENT_DIR + "name_cap_left.png"
+const TEX_NAME_CAP_RIGHT := UI_COMPONENT_DIR + "name_cap_right.png"
+const TEX_BORDER_GEM := UI_COMPONENT_DIR + "border_gem.png"
+const TEX_CONTINUE_CRYSTAL := UI_COMPONENT_DIR + "continue_crystal.png"
 
-const COLOR_TEXT := Color(0.93, 0.88, 0.75, 1.0)
+const NAMEPLATE_POSITION := Vector2(112, 159)
+const NAMEPLATE_HEIGHT := 18.0
+const NAMEPLATE_MIN_WIDTH := 86.0
+const NAMEPLATE_MAX_WIDTH := 240.0
+const NAMEPLATE_TEXT_PADDING := 14.0
+
+const DIALOGUE_PANEL_RECT := Rect2(134, 176, 316, 68)
+const NARRATOR_PANEL_TOP := 40.0
+
 const COLOR_SPEAKER := Color(0.96, 0.88, 0.50, 1.0)
-
-# Dialogue block vertical offset when flipped to the top of the screen so it
-# never covers speakers standing in the lower half.
-const DIALOGUE_TOP_OFFSET := -146.0
 
 var _world: Node2D = null
 var _player: Node2D = null
@@ -46,11 +60,12 @@ var _bottom_bar: ColorRect
 var _dialogue_root: Control
 var _dialogue_panel: Panel
 var _name_plate: Panel
+var _nameplate_art_root: Control
 var _name_label: Label
-var _portrait_frame: Panel
+var _portrait_frame: Control
 var _portrait_rect: TextureRect
 var _text_label: Label
-var _continue_marker: Label
+var _continue_marker: TextureRect
 var _title_dim: ColorRect
 var _title_label: Label
 var _title_banner: TextureRect
@@ -379,48 +394,79 @@ func _build_ui() -> void:
 	bars.tween_property(_top_bar, "position:y", 0.0, 0.6).set_trans(Tween.TRANS_CUBIC)
 	bars.parallel().tween_property(_bottom_bar, "position:y", viewport_size.y - LETTERBOX_H, 0.6).set_trans(Tween.TRANS_CUBIC)
 
-	_skip_hint = UiKit.make_label("ESC  skip", 7, UiKit.COLOR_TEXT_DIM)
-	_skip_hint.position = Vector2(430, 8)
+	_skip_hint = UiKit.make_label("ESC  Bỏ qua  ›", 7, Color(0.93, 0.88, 0.75, 0.72))
+	_skip_hint.position = Vector2(350, 8)
+	_skip_hint.size = Vector2(120, 12)
+	_skip_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	add_child(_skip_hint)
 
-	# ── dialogue block: portrait frame + name plate + ornate text panel ──
+	# ── cinematic dialogue block: large portrait + modular ornate frame ──
 	_dialogue_root = Control.new()
 	_dialogue_root.position = Vector2(0, 0)
 	_dialogue_root.visible = false
 	add_child(_dialogue_root)
 
-	_portrait_frame = UiKit.make_panel(Rect2(26, 182, 58, 58))
+	_portrait_frame = Control.new()
+	_portrait_frame.position = Vector2(0, 62)
+	_portrait_frame.size = Vector2(158, 208)
+	_portrait_frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_portrait_frame.z_index = 2
 	_dialogue_root.add_child(_portrait_frame)
 
 	_portrait_rect = TextureRect.new()
-	_portrait_rect.position = Vector2(5, 5)
-	_portrait_rect.size = Vector2(48, 48)
 	_portrait_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_portrait_rect.position = Vector2(0, 0)
+	_portrait_rect.size = _portrait_frame.size
 	_portrait_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	_portrait_rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_portrait_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	_portrait_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_portrait_frame.add_child(_portrait_rect)
 
-	_dialogue_panel = UiKit.make_panel(Rect2(88, 196, 366, 56))
+	var panel_rect := DIALOGUE_PANEL_RECT
+	_dialogue_panel = Panel.new()
+	_dialogue_panel.position = panel_rect.position
+	_dialogue_panel.size = panel_rect.size
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.025, 0.035, 0.085, 0.94)
+	panel_style.set_corner_radius_all(2)
+	_dialogue_panel.add_theme_stylebox_override("panel", panel_style)
 	_dialogue_root.add_child(_dialogue_panel)
+	_add_modular_frame(_dialogue_root, panel_rect)
 
-	_name_plate = UiKit.make_panel(Rect2(96, 184, 110, 20))
+	var name_rect := Rect2(NAMEPLATE_POSITION, Vector2(NAMEPLATE_MIN_WIDTH, NAMEPLATE_HEIGHT))
+	_name_plate = Panel.new()
+	_name_plate.position = name_rect.position
+	_name_plate.size = name_rect.size
+	var name_style := StyleBoxFlat.new()
+	name_style.bg_color = Color(0.035, 0.045, 0.105, 0.98)
+	_name_plate.add_theme_stylebox_override("panel", name_style)
 	_dialogue_root.add_child(_name_plate)
+	_nameplate_art_root = Control.new()
+	_nameplate_art_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_dialogue_root.add_child(_nameplate_art_root)
+	_add_nameplate_art(_nameplate_art_root, name_rect)
 
-	_name_label = UiKit.make_label("", 8, COLOR_SPEAKER)
-	_name_label.position = Vector2(8, 4)
-	_name_label.size = Vector2(96, 12)
+	_name_label = UiKit.make_label("", 10, Color(0.98, 0.88, 0.63, 1.0))
+	_name_label.position = Vector2(14, 0)
+	_name_label.size = Vector2(58, 18)
 	_name_label.clip_text = true
+	_name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_name_label.z_index = 3
 	_name_plate.add_child(_name_label)
 
-	_text_label = UiKit.make_label("", 8, COLOR_TEXT)
-	_text_label.position = Vector2(12, 16)
-	_text_label.size = Vector2(342, 34)
+	_text_label = UiKit.make_label("", 8, Color(0.95, 0.89, 0.76, 1.0))
+	_text_label.position = Vector2(18, 9)
+	_text_label.size = Vector2(270, 50)
 	_text_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_text_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_text_label.add_theme_constant_override("line_spacing", 2)
+	_text_label.z_index = 3
 	_dialogue_panel.add_child(_text_label)
 
-	_continue_marker = UiKit.make_label("v", 8, COLOR_SPEAKER)
-	_continue_marker.position = Vector2(348, 40)
+	_continue_marker = _make_texture_rect(TEX_CONTINUE_CRYSTAL, Rect2(293, 39, 9, 22))
 	_continue_marker.visible = false
+	_continue_marker.z_index = 3
 	_dialogue_panel.add_child(_continue_marker)
 
 	# ── title card ──
@@ -443,6 +489,97 @@ func _build_ui() -> void:
 	_title_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_title_label.modulate.a = 0.0
 	add_child(_title_label)
+
+
+func _make_texture_rect(path: String, rect: Rect2, stretch_mode: TextureRect.StretchMode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED) -> TextureRect:
+	var texture_rect := TextureRect.new()
+	texture_rect.texture = load(path) as Texture2D
+	texture_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	texture_rect.position = rect.position
+	texture_rect.size = rect.size
+	texture_rect.stretch_mode = stretch_mode
+	texture_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	if stretch_mode == TextureRect.STRETCH_TILE:
+		texture_rect.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+	texture_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return texture_rect
+
+
+func _add_modular_frame(parent: Control, rect: Rect2) -> void:
+	var corner_size := Vector2(17, 16)
+	var corners := [
+		[TEX_CORNER_TL, rect.position - Vector2(2, 2)],
+		[TEX_CORNER_TR, Vector2(rect.end.x - corner_size.x + 2, rect.position.y - 2)],
+		[TEX_CORNER_BL, Vector2(rect.position.x - 2, rect.end.y - corner_size.y + 2)],
+		[TEX_CORNER_BR, rect.end - corner_size + Vector2(2, 2)],
+	]
+	for corner_data in corners:
+		parent.add_child(_make_texture_rect(corner_data[0], Rect2(corner_data[1], corner_size)))
+
+	# Generated corner arms resolve to exactly two authored pixels. Keep the
+	# repeated edges on those same axes so the joins do not step or widen.
+	var horizontal_rect := Rect2(rect.position.x + 10, rect.position.y - 1, rect.size.x - 20, 2)
+	_add_repeated_edge(parent, TEX_EDGE_H, horizontal_rect, true)
+	horizontal_rect.position.y = rect.end.y - 1
+	_add_repeated_edge(parent, TEX_EDGE_H, horizontal_rect, true)
+
+	var vertical_rect := Rect2(rect.position.x - 1, rect.position.y + 10, 2, rect.size.y - 20)
+	_add_repeated_edge(parent, TEX_EDGE_V, vertical_rect, false)
+	vertical_rect.position.x = rect.end.x - 1
+	_add_repeated_edge(parent, TEX_EDGE_V, vertical_rect, false)
+
+	var gem_size := Vector2(20, 8)
+	var gem_x := rect.position.x + (rect.size.x - gem_size.x) * 0.5
+	parent.add_child(_make_texture_rect(TEX_BORDER_GEM, Rect2(gem_x, rect.position.y - 3, gem_size.x, gem_size.y)))
+	parent.add_child(_make_texture_rect(TEX_BORDER_GEM, Rect2(gem_x, rect.end.y - 5, gem_size.x, gem_size.y)))
+
+
+func _add_nameplate_art(parent: Control, rect: Rect2) -> void:
+	_add_repeated_edge(parent, TEX_EDGE_H, Rect2(rect.position.x + 8, rect.position.y, rect.size.x - 16, 2), true)
+	_add_repeated_edge(parent, TEX_EDGE_H, Rect2(rect.position.x + 8, rect.end.y - 2, rect.size.x - 16, 2), true)
+	parent.add_child(_make_texture_rect(TEX_NAME_CAP_LEFT, Rect2(rect.position.x - 6, rect.position.y - 2, 14, 22)))
+	parent.add_child(_make_texture_rect(TEX_NAME_CAP_RIGHT, Rect2(rect.end.x - 8, rect.position.y - 2, 14, 22)))
+
+
+func _layout_nameplate(speaker: String) -> void:
+	var font := _name_label.get_theme_font("font")
+	var font_size := _name_label.get_theme_font_size("font_size")
+	var text_width := font.get_string_size(
+		speaker,
+		HORIZONTAL_ALIGNMENT_LEFT,
+		-1.0,
+		font_size,
+	).x
+	var plate_width := clampf(
+		ceilf(text_width) + NAMEPLATE_TEXT_PADDING * 2.0,
+		NAMEPLATE_MIN_WIDTH,
+		NAMEPLATE_MAX_WIDTH,
+	)
+	var name_rect := Rect2(NAMEPLATE_POSITION, Vector2(plate_width, NAMEPLATE_HEIGHT))
+	_name_plate.position = name_rect.position
+	_name_plate.size = name_rect.size
+	_name_label.position = Vector2(NAMEPLATE_TEXT_PADDING, 0)
+	_name_label.size = Vector2(plate_width - NAMEPLATE_TEXT_PADDING * 2.0, NAMEPLATE_HEIGHT)
+
+	for child in _nameplate_art_root.get_children():
+		child.free()
+	_add_nameplate_art(_nameplate_art_root, name_rect)
+
+
+func _add_repeated_edge(parent: Control, path: String, rect: Rect2, horizontal: bool) -> void:
+	var tile_length := 48.0
+	var overlap := 0.5
+	var total := rect.size.x if horizontal else rect.size.y
+	var offset := 0.0
+	while offset < total:
+		var length := minf(tile_length, total - offset)
+		var tile_rect: Rect2
+		if horizontal:
+			tile_rect = Rect2(rect.position + Vector2(offset, 0), Vector2(length + overlap, rect.size.y))
+		else:
+			tile_rect = Rect2(rect.position + Vector2(0, offset), Vector2(rect.size.x, length + overlap))
+		parent.add_child(_make_texture_rect(path, tile_rect, TextureRect.STRETCH_SCALE))
+		offset += tile_length
 
 
 func _setup_camera() -> void:
@@ -510,26 +647,6 @@ func _actor_anim_sprite(actor: Node2D) -> AnimatedSprite2D:
 	return actor.get("anim_sprite") as AnimatedSprite2D if actor != null else null
 
 
-# ── dialogue placement ────────────────────────────────────────────────────────
-
-
-func _should_place_dialogue_on_top(actor_id: String) -> bool:
-	if _camera == null:
-		return false
-	var screen_center: Vector2 = _camera.get_screen_center_position()
-	var participants: Array[Node2D] = []
-	var speaker: Node2D = _find_actor(actor_id)
-	if speaker != null:
-		participants.append(speaker)
-	if actor_id != "player":
-		participants.append(_player)
-	for participant in participants:
-		var screen_y: float = participant.global_position.y - screen_center.y + 270.0
-		if screen_y > 300.0:
-			return true
-	return false
-
-
 # ── speaker portraits ─────────────────────────────────────────────────────────
 
 
@@ -559,25 +676,22 @@ func _normalize_emotion(emotion: String) -> String:
 
 func _resolve_portrait(actor_id: String, emotion: String) -> Texture2D:
 	var package: Dictionary = GameManager.get_scene_package()
+	var characters: Dictionary = package.get("characters", {}) as Dictionary
 
 	if actor_id == "player":
+		var main_character: Variant = characters.get("main_character", {})
+		if main_character is Dictionary:
+			var generated := _emotion_portrait(main_character as Dictionary, emotion)
+			if generated != null:
+				return generated
 		return _sheet_frame(GameManager.load_texture(GameManager.get_player_sprite_path()))
 
-	var characters: Dictionary = package.get("characters", {}) as Dictionary
 	for npc in characters.get("npcs", []) as Array:
 		if not (npc is Dictionary) or str((npc as Dictionary).get("id", "")) != actor_id:
 			continue
-		var emotion_info: Variant = (npc as Dictionary).get("emotion_portraits")
-		if emotion_info is Dictionary:
-			var portraits: Array = (emotion_info as Dictionary).get("portraits", []) as Array
-			for wanted in [emotion, "neutral"]:
-				for portrait in portraits:
-					if portrait is Dictionary and str((portrait as Dictionary).get("emotion", "")) == wanted:
-						var texture: Texture2D = GameManager.load_texture(
-							GameManager.get_scene_asset_path(str((portrait as Dictionary).get("file", "")))
-						)
-						if texture != null:
-							return texture
+		var generated := _emotion_portrait(npc as Dictionary, emotion)
+		if generated != null:
+			return generated
 		# No generated emotion portrait — fall back to THIS character's own
 		# sprite (the one walking on the map), never a generic stranger portrait.
 		var sheet_file: String = str((npc as Dictionary).get("sprite_sheet_file", ""))
@@ -601,6 +715,22 @@ func _resolve_portrait(actor_id: String, emotion: String) -> Texture2D:
 			var sheet: String = str((enemy as Dictionary).get("sprite_sheet_file", ""))
 			if not sheet.is_empty():
 				return _sheet_frame(GameManager.load_texture(GameManager.get_scene_asset_path(sheet)))
+	return null
+
+
+func _emotion_portrait(character: Dictionary, emotion: String) -> Texture2D:
+	var emotion_info: Variant = character.get("emotion_portraits")
+	if not (emotion_info is Dictionary):
+		return null
+	var portraits: Array = (emotion_info as Dictionary).get("portraits", []) as Array
+	for wanted in [emotion, "neutral"]:
+		for portrait in portraits:
+			if portrait is Dictionary and str((portrait as Dictionary).get("emotion", "")) == wanted:
+				var texture := GameManager.load_texture(
+					GameManager.get_scene_asset_path(str((portrait as Dictionary).get("file", "")))
+				)
+				if texture != null:
+					return texture
 	return null
 
 
@@ -760,24 +890,31 @@ func _do_say(action: Dictionary) -> void:
 	else:
 		_portrait_rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 
-	# Flip the dialogue block to the top when the speaker (or the player)
-	# stands in the lower half of the screen, so it never covers them.
-	_dialogue_root.position.y = DIALOGUE_TOP_OFFSET if _should_place_dialogue_on_top(actor_id) else 0.0
+	var has_named_speaker := actor_id not in ["", "narrator"]
+	var target_position := Vector2.ZERO
+	if not has_named_speaker:
+		target_position = Vector2(
+			240.0 - DIALOGUE_PANEL_RECT.get_center().x,
+			NARRATOR_PANEL_TOP - DIALOGUE_PANEL_RECT.position.y,
+		)
+	_dialogue_root.position = target_position
 
-	var base_y: float = _dialogue_root.position.y
 	var was_hidden: bool = not _dialogue_root.visible
 	_dialogue_root.visible = true
-	_name_plate.visible = actor_id != "narrator"
+	_name_plate.visible = has_named_speaker
+	_nameplate_art_root.visible = has_named_speaker
 	_name_label.text = speaker
+	if has_named_speaker:
+		_layout_nameplate(speaker)
 	if was_hidden:
 		_dialogue_root.modulate.a = 0.0
-		_dialogue_root.position.y = base_y + 8.0
+		_dialogue_root.position = target_position + Vector2(0, 8)
 		var pop := create_tween()
 		pop.tween_property(_dialogue_root, "modulate:a", 1.0, 0.18)
-		pop.parallel().tween_property(_dialogue_root, "position:y", base_y, 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		pop.parallel().tween_property(_dialogue_root, "position", target_position, 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	if portrait != null:
-		_portrait_rect.scale = Vector2(1.12, 1.12)
-		_portrait_rect.pivot_offset = Vector2(24, 48)
+		_portrait_rect.scale = Vector2(1.04, 1.04)
+		_portrait_rect.pivot_offset = Vector2(79, 194)
 		var pop_portrait := create_tween()
 		pop_portrait.tween_property(_portrait_rect, "scale", Vector2.ONE, 0.2).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 

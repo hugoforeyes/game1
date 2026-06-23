@@ -1,0 +1,6 @@
+Use case: ui-mockup
+Asset type: production sprite sheet for a 2D pixel-art RPG quest tracker
+Primary request: Create exactly three standalone icons arranged horizontally: a gold objective diamond pointer, inward-chevron collapse, and four-arrow outward expand.
+Style: crisp frameless pixel art, readable at 14x14, antique gold with dark-brown pixel shadows.
+Background: perfectly flat solid #00ff00 chroma key.
+Constraints: icons only; no text, button background, border, frame, plaque or container.

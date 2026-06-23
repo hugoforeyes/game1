@@ -1,0 +1,12 @@
+Use case: ui-mockup.
+Asset type: one production sprite atlas containing exactly 20 separate modular pixel-art Quest Journal components for a multi-world Godot RPG.
+Input image role: visual reference for neutral dark surfaces, warm metallic lines, geometric corners and state colors. Do not recreate the full screen or any text.
+
+Create one square sheet on uniform #00ff00 chroma-key, arranged in a spacious 4-column by 5-row grid:
+Row 1: top-left, top-right, bottom-left and bottom-right modular frame corners.
+Row 2: seamless horizontal edge, seamless vertical edge, dark navy fill tile and neutral divider.
+Row 3: normal tab, selected tab, normal quest row and selected quest row; no text or icons, nine-patch friendly.
+Row 4: main quest, side quest, hidden quest and completed quest medallions.
+Row 5: journal/compass, hint bulb, XP and unknown reward medallions.
+
+Use crisp handcrafted, theme-neutral pixel art with consistent density. No world-specific flowers, leaves, snow, gears, skulls, sand or elemental motifs. Components must be isolated, front-facing and non-overlapping. No screen, characters, scenery, labels, quest titles, watermark or perspective.

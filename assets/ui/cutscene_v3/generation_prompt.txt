@@ -1,0 +1,18 @@
+Use case: ui-mockup.
+Asset type: a single production COMPONENT SHEET containing separate modular game UI assets.
+Image 1 role: definitive visual target and style reference. Match its delicate antique-gold linework, dark bronze engraving, violet amethyst accents, elegant illustrated fantasy RPG finish, and thin refined proportions. Do NOT recreate the full dialogue frame or screenshot.
+
+Create ONE square component sheet. Every component must be an independent isolated object with wide empty gaps, all drawn at the same scale, same border thickness, same lighting, same gold palette, and same artistic hand. Arrange in a precise clean grid without labels:
+- Row 1: top-left 90-degree corner; top-right 90-degree corner.
+- Row 2: bottom-left 90-degree corner; bottom-right 90-degree corner.
+- Row 3 left: one perfectly straight seamless horizontal border tile, long and thin, flat identical cut ends.
+- Row 3 right: one perfectly straight seamless vertical border tile, tall and thin, flat identical cut ends.
+- Row 4 left: ornate left end-cap for a nameplate, pointing outward.
+- Row 4 center-left: mirrored ornate right end-cap for a nameplate.
+- Row 4 center-right: small perfectly symmetrical horizontal center ornament with one violet diamond crystal.
+- Row 4 right: standalone faceted violet crystal continue icon with a small gold downward chevron beneath it.
+
+Corner requirements: each corner is a separate compact L-shaped ornament with short arms. The arm endpoints are perfectly flat and use exactly the same two-line geometry and thickness as the horizontal and vertical tiles, enabling seamless joins. Corners are true mirrored counterparts, not perspective variations.
+Style: thin double antique-gold lines, restrained angular filigree only near corners and caps, dark bronze inset shadows, subtle warm highlights, small faceted violet gems. Front-facing orthographic game asset rendering. Crisp silhouette and readable when downscaled for a 960x540 game.
+Background: perfectly flat uniform solid #00ff00 chroma-key background across the whole sheet. No gradients, texture, shadows, floor, reflections, or lighting variation. Do not use green in any component.
+Critical constraints: components must never touch or overlap; no text or letters; no labels; no panel fill; no portrait; no complete frame; no full UI; no screenshot; no watermark; no cast shadows outside components. Exact bilateral symmetry where appropriate. Clean production-ready asset sheet.
