@@ -24,15 +24,15 @@ func _ready() -> void:
 	assert(journal._tabs_host.get_child_count() == 3)
 	assert(journal._list_host.get_child_count() == 2)
 	assert(journal._detail_title.text == "Tiếng Gọi Từ Phương Xa")
-	assert(journal._tracked_badge.text == "Đang theo dõi")
+	assert(journal._tracked_badge.text == "◆ ĐANG THEO DÕI")
 	assert(journal._objectives_host.get_child_count() >= 3)
 	assert(journal._hints_host.get_child_count() >= 3)
 	assert(journal._basic_rewards_host.get_child_count() == 3)
 	assert(journal._bonus_rewards_host.get_child_count() == 3)
-	assert(journal._rewards_host.get_child_count() == 1)
-	assert(journal._track_button_label.text == "Đang theo dõi")
+	assert(journal._rewards_host.get_child_count() == 2)
+	assert(journal._track_button_label.text == "ĐANG THEO DÕI")
 
-	var output := "res://assets/ui/quest_journal_v1/preview.png"
+	var output := "res://assets/ui/quest_journal_v2/preview.png"
 	get_viewport().get_texture().get_image().save_png(ProjectSettings.globalize_path(output))
 	print("[QuestJournalUiPreview] wrote %s" % output)
 	get_tree().quit()

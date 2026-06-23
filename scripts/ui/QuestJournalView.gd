@@ -1,23 +1,42 @@
 class_name QuestJournalView
 extends Control
-## Theme-neutral full-screen Quest Journal. Runtime data remains owned by QuestManager.
+## Full-screen Quest Journal — AAA art-directed redesign.
+## Authored in a 480x270 logical canvas (QuestManager hosts it in a 2x CanvasLayer).
+## Runtime data remains owned by QuestManager; this view is pure presentation.
 
 signal close_requested
 signal track_requested(quest_id: String)
 
 const COMPONENT_DIR := "res://assets/ui/quest_journal_v1/components/"
+const V2_DIR := "res://assets/ui/quest_journal_v2/"
+const ICON_DIR := "res://assets/ui/quest_journal_v2/icons/"
+const ORN_DIR := "res://assets/ui/quest_journal_v2/ornaments/"
+const DEFAULT_BANNER := "res://assets/ui/quest_journal_v2/hero_banner_default.png"
+
 const CATEGORY_IDS := ["active", "side", "completed"]
-const CATEGORY_LABELS := ["Đang", "Phụ", "Xong"]
-const LIST_PAGE_SIZE := 7
+const CATEGORY_LABELS := ["Chính", "Phụ", "Xong"]
+const LIST_PAGE_SIZE := 6
 
-const COLOR_GREEN := Color(0.62, 0.82, 0.36, 1.0)
-const COLOR_HIDDEN := Color(0.72, 0.48, 0.90, 1.0)
-const COLOR_HINT := Color(0.58, 0.94, 0.96, 1.0)
-const COLOR_BLUE := Color(0.42, 0.72, 1.0, 1.0)
-const COLOR_PANEL_DARK := Color(0.05, 0.045, 0.035, 0.92)
-const COLOR_PANEL_SOFT := Color(0.14, 0.105, 0.055, 0.38)
-const COLOR_LINE := Color(0.70, 0.52, 0.25, 0.58)
+# ── Palette ──────────────────────────────────────────────────────────────────
+const C_BG_DEEP := Color(0.027, 0.035, 0.050)
+const C_BG_PANEL := Color(0.055, 0.070, 0.098, 0.97)
+const C_BG_INSET := Color(0.015, 0.020, 0.030, 0.94)
+const C_BG_SOFT := Color(0.105, 0.090, 0.060, 0.30)
+const C_GOLD := Color(0.99, 0.85, 0.48)
+const C_GOLD_DIM := Color(0.76, 0.57, 0.28)
+const C_GOLD_DEEP := Color(0.45, 0.33, 0.16)
+const C_LINE := Color(0.70, 0.52, 0.25, 0.55)
+const C_TEXT := Color(0.94, 0.90, 0.80)
+const C_TEXT_DIM := Color(0.94, 0.90, 0.80, 0.52)
+const C_TEXT_FAINT := Color(0.94, 0.90, 0.80, 0.30)
+const C_GREEN := Color(0.57, 0.84, 0.43)
+const C_BLUE := Color(0.44, 0.74, 1.00)
+const C_AMBER := Color(1.00, 0.71, 0.29)
+const C_PURPLE := Color(0.78, 0.55, 0.97)
+const C_CYAN := Color(0.56, 0.93, 0.96)
+const C_RED := Color(0.93, 0.45, 0.42)
 
+# ── Runtime state ────────────────────────────────────────────────────────────
 var quests: Array = []
 var quest_states: Dictionary = {}
 var revealed_hints: Dictionary = {}
@@ -26,10 +45,14 @@ var selected_index := 0
 var category_index := 0
 var visible_indices: Array[int] = []
 
+# ── Node references ──────────────────────────────────────────────────────────
 var _context_label: Label
 var _tabs_host: Control
 var _list_host: Control
 var _page_label: Label
+var _list_count_label: Label
+
+var _hero_image: TextureRect
 var _detail_type: Label
 var _detail_title: Label
 var _detail_summary: Label
@@ -37,16 +60,19 @@ var _detail_meta: Label
 var _tracked_badge: Label
 var _objectives_host: Control
 var _hints_host: Control
-var _rewards_host: Control
-
-var _hero_host: Control
-var _hero_image: TextureRect
-var _progress_bar_bg: ColorRect
-var _progress_bar_fill: ColorRect
+var _progress_bar_fill: Control
 var _progress_label: Label
+
 var _basic_rewards_host: Control
 var _bonus_rewards_host: Control
+var _rewards_host: Control
+var _exp_fill: Control
+var _track_button: Control
 var _track_button_label: Label
+
+# Hosts kept for legacy preview assertions / structural parity.
+var _hero_host: Control
+var _detail_meta_host: Control
 
 
 func _ready() -> void:
@@ -100,126 +126,221 @@ func handle_input(event: InputEvent) -> bool:
 	return false
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# STATIC UI CONSTRUCTION
+# ══════════════════════════════════════════════════════════════════════════════
 func _build_static_ui() -> void:
+	_build_backdrop()
+	_build_master_frame()
+	_build_header()
+	_build_list_panel()
+	_build_detail_panel()
+	_build_rewards_panel()
+
+
+func _build_backdrop() -> void:
 	var dim := ColorRect.new()
-	dim.color = Color(0.008, 0.010, 0.014, 0.94)
+	dim.color = Color(0.004, 0.006, 0.010, 0.97)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(dim)
+	# Vertical depth gradient across the whole canvas.
+	_add_gradient(self, Rect2(0, 0, 480, 270),
+			Color(0.045, 0.058, 0.080, 1.0), Color(0.012, 0.016, 0.026, 1.0), true)
+	# Soft warm glow behind the frame centre for depth.
+	_add_radial(self, Rect2(40, 20, 400, 230),
+			Color(0.22, 0.18, 0.12, 0.30), Color(0.0, 0.0, 0.0, 0.0))
 
-	_add_frame(self, Rect2(6, 6, 468, 248))
-	_add_rect(self, Rect2(8, 7, 464, 25), Color(0.17, 0.12, 0.065, 0.54))
-	add_child(_make_art("icon_journal.png", Rect2(10, 6, 25, 25)))
-	var title := _place_label(UiKit.make_label("NHIỆM VỤ", 12, UiKit.COLOR_ACCENT), Rect2(41, 8, 175, 20))
+
+func _build_master_frame() -> void:
+	var frame := Rect2(5, 5, 470, 260)
+	# Drop shadow halo.
+	_add_rect(self, Rect2(frame.position.x - 2, frame.position.y - 2, frame.size.x + 4, frame.size.y + 4),
+			Color(0.0, 0.0, 0.0, 0.55))
+	# Panel body.
+	var panel := Panel.new()
+	panel.position = frame.position
+	panel.size = frame.size
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var style := StyleBoxFlat.new()
+	style.bg_color = C_BG_PANEL
+	style.border_color = C_GOLD_DIM
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(2)
+	style.shadow_color = Color(0.0, 0.0, 0.0, 0.5)
+	style.shadow_size = 3
+	panel.add_theme_stylebox_override("panel", style)
+	add_child(panel)
+	# Inner bevel lines.
+	_add_rect(self, Rect2(frame.position.x + 3, frame.position.y + 3, frame.size.x - 6, 1), Color(1.0, 0.82, 0.40, 0.22))
+	_add_rect(self, Rect2(frame.position.x + 3, frame.end.y - 4, frame.size.x - 6, 1), Color(0.0, 0.0, 0.0, 0.30))
+	_add_rect(self, Rect2(frame.position.x + 3, frame.position.y + 4, 1, frame.size.y - 8), Color(1.0, 0.82, 0.40, 0.10))
+	# Ornate filigree corners.
+	if _has_ornament("corner_tl.png"):
+		var cs := Vector2(21, 20)
+		add_child(_make_ornament("corner_tl.png", Rect2(frame.position.x - 3, frame.position.y - 3, cs.x, cs.y)))
+		add_child(_make_ornament("corner_tr.png", Rect2(frame.end.x - cs.x + 3, frame.position.y - 3, cs.x, cs.y)))
+		add_child(_make_ornament("corner_bl.png", Rect2(frame.position.x - 3, frame.end.y - cs.y + 3, cs.x, cs.y)))
+		add_child(_make_ornament("corner_br.png", Rect2(frame.end.x - cs.x + 3, frame.end.y - cs.y + 3, cs.x, cs.y)))
+	else:
+		add_child(_make_art("corner_tl.png", Rect2(frame.position.x - 1, frame.position.y - 1, 15, 15)))
+		add_child(_make_art("corner_tr.png", Rect2(frame.end.x - 14, frame.position.y - 1, 15, 15)))
+		add_child(_make_art("corner_bl.png", Rect2(frame.position.x - 1, frame.end.y - 14, 15, 15)))
+		add_child(_make_art("corner_br.png", Rect2(frame.end.x - 14, frame.end.y - 14, 15, 15)))
+
+
+func _build_header() -> void:
+	# Header band fill with a subtle warm sheen.
+	_add_rect(self, Rect2(9, 9, 462, 31), Color(0.12, 0.095, 0.050, 0.55))
+	_add_gradient(self, Rect2(9, 9, 462, 16), Color(0.22, 0.16, 0.07, 0.55), Color(0.10, 0.08, 0.04, 0.0), true)
+	# Title medallion.
+	_build_medallion(Rect2(12, 10, 26, 26), "icon_journal.png")
+	# Title + subtitle.
+	var title := _place_label(UiKit.make_label("NHẬT KÝ NHIỆM VỤ", 13, C_GOLD), Rect2(46, 9, 220, 18))
 	add_child(title)
-	_context_label = _place_label(UiKit.make_label("", 5, UiKit.COLOR_TEXT_DIM), Rect2(215, 12, 188, 10))
-	_context_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	add_child(_place_label(UiKit.make_label("HỒ SƠ HÀNH TRÌNH", 5, C_TEXT_DIM), Rect2(47, 26, 140, 9)))
+	# Chapter context (right aligned, before the close button).
+	_context_label = _place_label(UiKit.make_label("", 6, C_TEXT_DIM), Rect2(250, 17, 192, 10))
+	_context_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	add_child(_context_label)
-	var close_button := _make_button_shell(Rect2(447, 10, 18, 18), false)
+	# Close button.
+	var close_button := _make_button_shell(Rect2(450, 11, 21, 21), false)
 	add_child(close_button)
-	var close_hint := _place_label(UiKit.make_label("×", 11, UiKit.COLOR_TEXT), Rect2(0, -1, 18, 18))
-	close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	close_button.add_child(close_hint)
+	var close_glyph := _place_label(UiKit.make_label("×", 12, C_TEXT), Rect2(0, -1, 21, 21))
+	close_glyph.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	close_button.add_child(close_glyph)
+	# Header underline with a centred jewelled divider ornament.
+	_add_rect(self, Rect2(10, 40, 461, 1), Color(0.97, 0.74, 0.30, 0.42))
+	_add_rect(self, Rect2(10, 41, 461, 1), Color(0.0, 0.0, 0.0, 0.35))
+	if _has_ornament("divider.png"):
+		add_child(_make_ornament("divider.png", Rect2(170, 31, 140, 20), TextureRect.STRETCH_KEEP_ASPECT_CENTERED))
+	else:
+		_add_diamond(self, Vector2(240, 40.5), 3.0, C_GOLD)
 
-	_add_frame(self, Rect2(10, 36, 145, 213))
-	_tabs_host = Control.new()
-	_tabs_host.position = Vector2(15, 40)
-	_tabs_host.size = Vector2(135, 31)
-	add_child(_tabs_host)
-	_list_host = Control.new()
-	_list_host.position = Vector2(15, 74)
-	_list_host.size = Vector2(135, 158)
-	add_child(_list_host)
-	_page_label = _place_label(UiKit.make_label("", 5, UiKit.COLOR_TEXT_DIM), Rect2(15, 235, 135, 8))
+
+# ── Left list panel ──────────────────────────────────────────────────────────
+func _build_list_panel() -> void:
+	var rect := Rect2(9, 45, 138, 213)
+	_build_panel(rect)
+	_panel_caption(Rect2(14, 49, 128, 12), "DANH MỤC", "lọc")
+	_tabs_host = _spawn_host(Rect2(14, 63, 128, 30))
+	# List sub-header with live count.
+	_section_label(Rect2(15, 96, 90, 10), "DANH SÁCH")
+	_list_count_label = _place_label(UiKit.make_label("", 5, C_GOLD), Rect2(95, 96, 47, 10))
+	_list_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	add_child(_list_count_label)
+	_add_rect(self, Rect2(15, 107, 127, 1), C_LINE)
+	_list_host = _spawn_host(Rect2(13, 110, 130, 132))
+	_page_label = _place_label(UiKit.make_label("", 5, C_TEXT_DIM), Rect2(14, 245, 128, 9))
 	_page_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	add_child(_page_label)
 
-	_add_frame(self, Rect2(163, 36, 301, 213))
-	_hero_host = Control.new()
-	_hero_host.position = Vector2(168, 42)
-	_hero_host.size = Vector2(291, 64)
-	add_child(_hero_host)
-	_build_hero_backdrop()
+
+# ── Center detail panel ──────────────────────────────────────────────────────
+func _build_detail_panel() -> void:
+	var rect := Rect2(151, 45, 208, 213)
+	_build_panel(rect)
+
+	# Hero banner.
+	_hero_host = _spawn_host(Rect2(155, 49, 200, 54))
+	_add_rect(_hero_host, Rect2(Vector2.ZERO, _hero_host.size), Color(0.05, 0.07, 0.09, 1.0))
 	_hero_image = TextureRect.new()
 	_hero_image.position = Vector2.ZERO
 	_hero_image.size = _hero_host.size
 	_hero_image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	_hero_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-	_hero_image.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_hero_image.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	_hero_image.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_hero_host.add_child(_hero_image)
-	_add_rect(_hero_host, Rect2(0, 0, 132, 64), Color(0.025, 0.022, 0.018, 0.60))
-	_add_rect(_hero_host, Rect2(130, 0, 84, 64), Color(0.025, 0.022, 0.018, 0.30))
-
-	add_child(_make_art("icon_journal.png", Rect2(174, 49, 28, 28)))
-	_detail_title = _place_label(UiKit.make_label("", 11, UiKit.COLOR_ACCENT), Rect2(208, 49, 186, 18))
+	# Banner framing + scrims.
+	_add_gradient(_hero_host, Rect2(0, 30, 200, 24), Color(0.01, 0.02, 0.03, 0.0), Color(0.01, 0.02, 0.03, 0.80), true)
+	_add_rect(_hero_host, Rect2(0, 0, 200, 1), Color(1.0, 0.82, 0.40, 0.35))
+	_add_rect(_hero_host, Rect2(0, 53, 200, 1), Color(0.0, 0.0, 0.0, 0.6))
+	_add_rect(_hero_host, Rect2(0, 0, 1, 54), Color(1.0, 0.82, 0.40, 0.18))
+	_add_rect(_hero_host, Rect2(199, 0, 1, 54), Color(1.0, 0.82, 0.40, 0.18))
+	# Type ribbon (top-left).
+	_detail_type = _place_label(UiKit.make_label("", 5, C_GOLD), Rect2(6, 5, 120, 9))
+	_hero_host.add_child(_detail_type)
+	# Tracked badge (top-right).
+	_tracked_badge = _place_label(UiKit.make_label("", 5, C_GREEN), Rect2(74, 5, 120, 9))
+	_tracked_badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_hero_host.add_child(_tracked_badge)
+	# Title over the bottom scrim.
+	_detail_title = _place_label(UiKit.make_label("", 11, C_GOLD), Rect2(7, 35, 186, 16))
 	_detail_title.clip_text = true
 	_detail_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	add_child(_detail_title)
-	_detail_meta = _place_label(UiKit.make_label("", 5, UiKit.COLOR_TEXT_DIM), Rect2(209, 69, 180, 10))
-	add_child(_detail_meta)
-	_detail_summary = _place_label(UiKit.make_label("", 5, UiKit.COLOR_TEXT), Rect2(174, 83, 172, 19), VERTICAL_ALIGNMENT_TOP)
+	_hero_host.add_child(_detail_title)
+
+	# Meta + summary.
+	_detail_meta_host = _spawn_host(Rect2(156, 104, 198, 9))
+	_detail_summary = _place_label(UiKit.make_label("", 5, C_TEXT), Rect2(156, 114, 198, 20), VERTICAL_ALIGNMENT_TOP)
 	_detail_summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_detail_summary.max_lines_visible = 2
 	_detail_summary.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	add_child(_detail_summary)
-	_detail_type = _place_label(UiKit.make_label("", 5, UiKit.COLOR_ACCENT), Rect2(349, 84, 104, 9))
-	_detail_type.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	add_child(_detail_type)
-	_tracked_badge = _place_label(UiKit.make_label("", 5, COLOR_GREEN), Rect2(349, 94, 104, 9))
-	_tracked_badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	add_child(_tracked_badge)
 
-	_add_rect(self, Rect2(168, 109, 291, 1), COLOR_LINE)
-	_add_section_title(self, "Mục tiêu nhiệm vụ", Rect2(174, 116, 176, 12), UiKit.COLOR_ACCENT)
-	_objectives_host = Control.new()
-	_objectives_host.position = Vector2(174, 132)
-	_objectives_host.size = Vector2(182, 28)
-	add_child(_objectives_host)
+	_add_rect(self, Rect2(156, 135, 198, 1), C_LINE)
 
-	_add_section_title(self, "Tiến độ nhiệm vụ", Rect2(174, 163, 176, 12), UiKit.COLOR_ACCENT)
-	_progress_bar_bg = _add_rect(self, Rect2(174, 180, 181, 5), Color(0.03, 0.026, 0.018, 0.88))
-	_progress_bar_fill = _add_rect(self, Rect2(175, 181, 0, 3), COLOR_BLUE)
-	_progress_label = _place_label(UiKit.make_label("", 5, UiKit.COLOR_TEXT), Rect2(358, 176, 28, 12))
+	# Objectives.
+	_section_label(Rect2(157, 139, 120, 11), "MỤC TIÊU")
+	_objectives_host = _spawn_host(Rect2(157, 153, 197, 46))
+
+	# Progress.
+	_section_label(Rect2(157, 211, 90, 10), "TIẾN ĐỘ")
+	_progress_label = _place_label(UiKit.make_label("", 6, C_GOLD), Rect2(300, 210, 54, 10))
 	_progress_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	add_child(_progress_label)
+	_build_progress_track(Rect2(157, 224, 197, 6))
 
-	_add_section_title(self, "Thông tin", Rect2(174, 193, 94, 12), UiKit.COLOR_ACCENT)
-	_hints_host = Control.new()
-	_hints_host.position = Vector2(174, 208)
-	_hints_host.size = Vector2(182, 30)
-	add_child(_hints_host)
+	# Field hint card.
+	_hints_host = _spawn_host(Rect2(156, 234, 198, 21))
 
-	_add_rect(self, Rect2(363, 110, 1, 132), COLOR_LINE)
-	_add_section_title(self, "Phần thưởng", Rect2(371, 117, 82, 12), UiKit.COLOR_ACCENT)
-	_basic_rewards_host = Control.new()
-	_basic_rewards_host.position = Vector2(371, 136)
-	_basic_rewards_host.size = Vector2(82, 30)
-	add_child(_basic_rewards_host)
-	_bonus_rewards_host = Control.new()
-	_bonus_rewards_host.position = Vector2(371, 177)
-	_bonus_rewards_host.size = Vector2(82, 26)
-	add_child(_bonus_rewards_host)
-	_rewards_host = Control.new()
-	_rewards_host.position = Vector2(371, 136)
-	_rewards_host.size = Vector2(82, 67)
-	add_child(_rewards_host)
-	var bonus_title := _place_label(UiKit.make_label("Thưởng thêm", 5, UiKit.COLOR_ACCENT), Rect2(371, 166, 82, 9))
-	add_child(bonus_title)
-	var track_button := _make_button_shell(Rect2(371, 219, 82, 20), true)
-	add_child(track_button)
-	_track_button_label = _place_label(UiKit.make_label("", 7, UiKit.COLOR_TEXT), Rect2(0, 2, 82, 16))
+
+# ── Right rewards panel ──────────────────────────────────────────────────────
+func _build_rewards_panel() -> void:
+	var rect := Rect2(363, 45, 108, 213)
+	_build_panel(rect)
+	_panel_caption(Rect2(368, 49, 98, 12), "PHẦN THƯỞNG", "")
+
+	_section_label(Rect2(370, 67, 96, 10), "Cơ bản")
+	_basic_rewards_host = _spawn_host(Rect2(368, 80, 98, 40))
+
+	_section_label(Rect2(370, 123, 96, 10), "Hiếm")
+	_bonus_rewards_host = _spawn_host(Rect2(368, 136, 98, 40))
+
+	_add_rect(self, Rect2(368, 174, 98, 1), C_LINE)
+	_section_label(Rect2(370, 179, 96, 10), "Kinh nghiệm")
+	_rewards_host = _spawn_host(Rect2(368, 191, 98, 10))
+	if _has_ornament("badge.png"):
+		add_child(_make_ornament("badge.png", Rect2(367, 200, 17, 16), TextureRect.STRETCH_KEEP_ASPECT_CENTERED))
+		_build_exp_track(Rect2(388, 202, 78, 7))
+	else:
+		_build_exp_track(Rect2(368, 202, 98, 7))
+
+	var note := _place_label(UiKit.make_label("Nhận khi hoàn thành nhiệm vụ", 4, C_TEXT_FAINT), Rect2(368, 219, 98, 8))
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	add_child(note)
+
+	# Track button.
+	_track_button = Control.new()
+	_track_button.position = Vector2(368, 229)
+	_track_button.size = Vector2(98, 27)
+	_track_button.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_track_button)
+	if _has_ornament("button_plate.png"):
+		_add_radial(_track_button, Rect2(6, 0, 86, 26), Color(1.0, 0.80, 0.34, 0.22), Color(0, 0, 0, 0))
+		_track_button.add_child(_make_ornament("button_plate.png", Rect2(0, 3, 98, 21)))
+		_track_button_label = _place_label(UiKit.make_label("", 7, Color(0.22, 0.13, 0.04)), Rect2(0, 1, 98, 17))
+	else:
+		_track_button.add_child(_make_button_shell(Rect2(0, 1, 98, 25), true))
+		_track_button.add_child(_make_art("icon_main.png", Rect2(9, 7, 13, 13)))
+		_track_button_label = _place_label(UiKit.make_label("", 7, C_TEXT), Rect2(22, 5, 70, 16))
 	_track_button_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	track_button.add_child(_track_button_label)
-
-	_add_frame(self, Rect2(166, 251, 298, 14))
-	var help := _place_label(
-		UiKit.make_label("←/→ Danh mục     ↑/↓ Chọn     ENTER Theo dõi     ESC Đóng", 5, UiKit.COLOR_TEXT),
-		Rect2(174, 252, 282, 11),
-	)
-	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	add_child(help)
+	_track_button.add_child(_track_button_label)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# RENDER
+# ══════════════════════════════════════════════════════════════════════════════
 func _render() -> void:
 	_render_tabs()
 	_render_list()
@@ -255,29 +376,52 @@ func _rebuild_visible_indices() -> void:
 
 func _render_tabs() -> void:
 	_clear(_tabs_host)
+	var tab_w := 41.0
+	var gap := 2.5
+	var has_ring := _has_ornament("tab_normal.png")
 	for index in range(CATEGORY_IDS.size()):
 		var selected := index == category_index
-		var tab := _make_button_shell(Rect2(index * 45.0, 0, 42, 31), selected)
-		_tabs_host.add_child(tab)
-		tab.add_child(_make_art(_tab_icon_file(CATEGORY_IDS[index]), Rect2(11, 3, 13, 13)))
-		var count := _count_for_category(CATEGORY_IDS[index])
-		if count > 0:
-			var badge := _add_rect(tab, Rect2(31, 1, 8, 8), UiKit.COLOR_ACCENT)
-			var count_label := _place_label(UiKit.make_label(str(count), 4, Color(0.12, 0.075, 0.015, 1.0)), Rect2(0, -1, 8, 8))
-			count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-			badge.add_child(count_label)
-		var label := _place_label(
-			UiKit.make_label(CATEGORY_LABELS[index], 4, UiKit.COLOR_ACCENT if selected else UiKit.COLOR_TEXT_DIM),
-			Rect2(1, 17, 40, 11),
-		)
-		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		tab.add_child(label)
+		var cx := tab_w * 0.5
+		if has_ring:
+			var tab := Control.new()
+			tab.position = Vector2(index * (tab_w + gap), 0)
+			tab.size = Vector2(tab_w, 30)
+			tab.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			_tabs_host.add_child(tab)
+			# Icon nested inside the ornate ring (ring drawn on top so its rim frames it).
+			var icon_tint := 1.0 if selected else 0.78
+			var icon := _make_art(_tab_icon_file(CATEGORY_IDS[index]), Rect2(cx - 6, 4, 12, 11))
+			icon.modulate = Color(1, 1, 1, icon_tint)
+			tab.add_child(icon)
+			tab.add_child(_make_ornament("tab_glow.png" if selected else "tab_normal.png",
+					Rect2(cx - 11, 1, 22, 19), TextureRect.STRETCH_KEEP_ASPECT_CENTERED))
+			var count := _count_for_category(CATEGORY_IDS[index])
+			if count > 0:
+				_add_round_count_badge(tab, count, Vector2(cx + 9.0, 3.0))
+			var label := _place_label(
+					UiKit.make_label(CATEGORY_LABELS[index], 5, C_GOLD if selected else C_TEXT_DIM),
+					Rect2(0, 20, tab_w, 11))
+			label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			tab.add_child(label)
+		else:
+			var tab := _make_button_shell(Rect2(index * (tab_w + gap), 0, tab_w, 30), selected)
+			_tabs_host.add_child(tab)
+			tab.add_child(_make_icon_plate(_tab_icon_file(CATEGORY_IDS[index]), Rect2(tab_w * 0.5 - 7, 4, 14, 14), selected))
+			var count := _count_for_category(CATEGORY_IDS[index])
+			if count > 0:
+				_add_count_badge(tab, count, Vector2(tab_w - 11, 2))
+			var label := _place_label(
+					UiKit.make_label(CATEGORY_LABELS[index], 5, C_GOLD if selected else C_TEXT_DIM),
+					Rect2(0, 19, tab_w, 11))
+			label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			tab.add_child(label)
 
 
 func _render_list() -> void:
 	_clear(_list_host)
+	_list_count_label.text = "%d" % visible_indices.size()
 	if visible_indices.is_empty():
-		var empty := _place_label(UiKit.make_label("Không có nhiệm vụ", 6, UiKit.COLOR_TEXT_DIM), Rect2(6, 24, 123, 20))
+		var empty := _place_label(UiKit.make_label("Không có nhiệm vụ", 6, C_TEXT_DIM), Rect2(6, 30, 118, 20))
 		empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		_list_host.add_child(empty)
 		_page_label.text = ""
@@ -290,26 +434,27 @@ func _render_list() -> void:
 		var quest_index: int = page_indices[row_index]
 		var quest: Dictionary = quests[quest_index] as Dictionary
 		var selected := quest_index == selected_index
-		var row := _make_row(Rect2(0, row_index * 22.0, 135, 20), selected)
+		var row := _make_row(Rect2(0, row_index * 22.0, 130, 20), selected)
 		_list_host.add_child(row)
-		row.add_child(_make_art(_quest_icon_file(quest), Rect2(6, 3, 14, 14)))
-		var title := _place_label(UiKit.make_label(str(quest.get("title", "")), 5, UiKit.COLOR_TEXT), Rect2(25, 2, 91, 8))
+		row.add_child(_make_icon_plate(_quest_icon_file(quest), Rect2(6, 4, 13, 13), selected))
+		var title := _place_label(UiKit.make_label(str(quest.get("title", "")), 5, C_TEXT if not selected else C_GOLD), Rect2(24, 2, 90, 9))
 		title.clip_text = true
 		title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		row.add_child(title)
 		var giver: Dictionary = quest.get("giver", {}) as Dictionary
-		var location := str(giver.get("zone_id", ""))
-		var status_color: Color = _quest_state_label(quest)[1]
-		var status := _place_label(UiKit.make_label(location if not location.is_empty() else _quest_state_label(quest)[0], 4, status_color), Rect2(25, 11, 90, 8))
-		status.clip_text = true
-		status.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		row.add_child(status)
-		var right_mark := _status_mark(quest)
-		var mark := _place_label(UiKit.make_label(right_mark[0], 7, right_mark[1]), Rect2(117, 4, 13, 12))
-		mark.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		row.add_child(mark)
+		var location := _quest_location_label(quest, giver)
+		var status_pair := _quest_state_label(quest)
+		var subtitle_text: String = location if not location.is_empty() and location != "Không rõ" else str(status_pair[0])
+		var subtitle := _place_label(UiKit.make_label(subtitle_text, 4, status_pair[1]), Rect2(24, 11, 92, 8))
+		subtitle.clip_text = true
+		subtitle.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		row.add_child(subtitle)
+		var mark := _status_mark(quest)
+		var mark_label := _place_label(UiKit.make_label(mark[0], 6, mark[1]), Rect2(118, 5, 10, 10))
+		mark_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		row.add_child(mark_label)
 	var page_count := ceili(float(visible_indices.size()) / float(LIST_PAGE_SIZE))
-	_page_label.text = "%d / %d" % [page + 1, maxi(1, page_count)] if page_count > 1 else ""
+	_page_label.text = "Trang %d / %d" % [page + 1, maxi(1, page_count)] if page_count > 1 else ""
 
 
 func _render_detail() -> void:
@@ -318,131 +463,188 @@ func _render_detail() -> void:
 	_clear(_rewards_host)
 	_clear(_basic_rewards_host)
 	_clear(_bonus_rewards_host)
+	_clear(_detail_meta_host)
 	var quest := _selected_quest()
 	if quest.is_empty():
 		_detail_type.text = ""
-		_detail_title.text = "Chưa có nhiệm vụ"
+		_detail_title.text = "Chưa chọn nhiệm vụ"
 		_detail_summary.text = ""
-		_detail_meta.text = ""
 		_tracked_badge.text = ""
 		_progress_label.text = ""
 		_progress_bar_fill.size.x = 0
-		_hero_image.texture = null
+		_hero_image.texture = _banner_or_default({})
 		_track_button_label.text = "Theo dõi"
 		return
 	var state := _state_of(quest)
 	var state_name := str(state.get("state", "inactive"))
 	var quest_id := str(quest.get("id", ""))
 	var giver: Dictionary = quest.get("giver", {}) as Dictionary
-	_detail_type.text = {"main": "Chính tuyến", "side": "Nhiệm vụ phụ", "hidden": "Nhiệm vụ ẩn"}.get(str(quest.get("type", "side")), "Nhiệm vụ")
+	var is_tracked := quest_id == tracked_quest_id
+	var type_pair: Dictionary = {
+		"main": "◆ CHÍNH TUYẾN", "side": "◆ NHIỆM VỤ PHỤ", "hidden": "◆ NHIỆM VỤ ẨN",
+	}
+	_detail_type.text = type_pair.get(str(quest.get("type", "side")), "NHIỆM VỤ")
+	_detail_type.add_theme_color_override("font_color", _type_color(str(quest.get("type", "side"))))
 	_detail_title.text = str(quest.get("title", ""))
 	_detail_summary.text = str(quest.get("summary", ""))
-	_detail_meta.text = "📍 %s" % str(giver.get("zone_id", "Không rõ"))
-	_tracked_badge.text = "Đang theo dõi" if quest_id == tracked_quest_id else ""
-	_hero_image.texture = _quest_banner_texture(quest)
+	# Location pin + label.
+	_detail_meta_host.add_child(_make_art("icon_hidden.png", Rect2(0, 0, 8, 8)))
+	_detail_meta = _place_label(UiKit.make_label("Khu vực: %s" % _quest_location_label(quest, giver), 5, Color(C_GOLD, 0.80)), Rect2(11, 0, 187, 9))
+	_detail_meta_host.add_child(_detail_meta)
+	_tracked_badge.text = "◆ ĐANG THEO DÕI" if is_tracked else _quest_state_label(quest)[0]
+	_tracked_badge.add_theme_color_override("font_color", C_GREEN if is_tracked else _quest_state_label(quest)[1])
+	_hero_image.texture = _banner_or_default(quest)
 	_render_objectives(quest, state, state_name)
 	_render_hints(quest, state, state_name)
 	_render_rewards(quest)
 	_render_progress(quest, state, state_name)
-	_track_button_label.text = "Đang theo dõi" if quest_id == tracked_quest_id else "Theo dõi"
-	_track_button_label.add_theme_color_override("font_color", COLOR_GREEN if quest_id == tracked_quest_id else UiKit.COLOR_TEXT)
+	var on_plate := _has_ornament("button_plate.png")
+	var c_active := Color(0.08, 0.26, 0.07) if on_plate else C_GREEN
+	var c_idle := Color(0.22, 0.13, 0.03) if on_plate else C_TEXT
+	if state_name == "completed":
+		_track_button_label.text = "ĐÃ HOÀN THÀNH"
+		_track_button_label.add_theme_color_override("font_color", c_active)
+	else:
+		_track_button_label.text = "ĐANG THEO DÕI" if is_tracked else "THEO DÕI"
+		_track_button_label.add_theme_color_override("font_color", c_active if is_tracked else c_idle)
 
 
 func _render_objectives(quest: Dictionary, state: Dictionary, state_name: String) -> void:
 	var objectives: Array = quest.get("objectives", []) as Array
 	var current_index := int(state.get("objective_index", 0))
 	if objectives.is_empty():
-		var empty := _place_label(UiKit.make_label("Chưa có mục tiêu.", 5, UiKit.COLOR_TEXT_DIM), Rect2(16, 0, 160, 20))
-		_objectives_host.add_child(empty)
+		_objectives_host.add_child(_place_label(UiKit.make_label("Chưa có mục tiêu.", 5, C_TEXT_DIM), Rect2(16, 2, 170, 12)))
 		return
-	var objective: Dictionary = objectives[clampi(current_index, 0, objectives.size() - 1)] as Dictionary
 	var completed := state_name == "completed"
-	var mark := "✓" if completed else "◆"
-	var color := COLOR_GREEN if completed else UiKit.COLOR_ACCENT
-	var progress := _objective_progress_text(objective, state, completed)
-	_objectives_host.add_child(_make_art("icon_main.png", Rect2(0, 2, 12, 12)))
-	var line := _place_label(UiKit.make_label("%s  %s" % [mark, str(objective.get("description", ""))], 5, color), Rect2(15, 0, 135, 18), VERTICAL_ALIGNMENT_TOP)
-	line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	line.max_lines_visible = 2
-	line.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_objectives_host.add_child(line)
-	if not progress.is_empty():
-		var progress_label := _place_label(UiKit.make_label(progress, 5, UiKit.COLOR_TEXT), Rect2(151, 2, 30, 10))
-		progress_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		_objectives_host.add_child(progress_label)
+	var row_count: int = mini(objectives.size(), 3)
+	for index in range(row_count):
+		if not (objectives[index] is Dictionary):
+			continue
+		var objective: Dictionary = objectives[index] as Dictionary
+		var y := float(index * 15)
+		var done := completed or index < current_index
+		var active := not completed and index == clampi(current_index, 0, objectives.size() - 1)
+		# Connector spine.
+		if index < row_count - 1:
+			_add_rect(_objectives_host, Rect2(5, y + 11, 1, 9), Color(C_GOLD_DIM, 0.45 if done else 0.28))
+		var node_color := C_GREEN if done else C_AMBER if active else Color(C_TEXT_DIM, 0.85)
+		# Node halo + ring.
+		_add_diamond(_objectives_host, Vector2(5.5, y + 5.5), 5.0 if active else 4.0, Color(node_color, 0.16))
+		_add_diamond_outline(_objectives_host, Vector2(5.5, y + 5.5), 4.0, node_color)
+		var glyph := "✓" if done else "◆" if active else "•"
+		var glyph_label := _place_label(UiKit.make_label(glyph, 6 if active else 5, node_color), Rect2(0, y - 1, 11, 12))
+		glyph_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_objectives_host.add_child(glyph_label)
+		var text_color := C_TEXT if active else Color(C_GREEN, 0.90) if done else Color(C_TEXT, 0.50)
+		var description := str(objective.get("description", ""))
+		var progress := _objective_progress_text(objective, state, completed) if active else ""
+		var line_width := 142.0 if not progress.is_empty() else 178.0
+		var line := _place_label(UiKit.make_label(description, 5 if active else 5, text_color), Rect2(15, y, line_width, 13), VERTICAL_ALIGNMENT_TOP)
+		line.clip_text = true
+		line.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		_objectives_host.add_child(line)
+		if not progress.is_empty():
+			# Mini progress pill.
+			_add_rect(_objectives_host, Rect2(160, y + 1, 33, 10), Color(0.02, 0.03, 0.04, 0.80))
+			_add_rect(_objectives_host, Rect2(160, y + 1, 33, 1), Color(C_AMBER, 0.40))
+			var prog_label := _place_label(UiKit.make_label(progress, 5, C_AMBER), Rect2(160, y, 31, 12))
+			prog_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+			_objectives_host.add_child(prog_label)
+	if objectives.size() > row_count:
+		_objectives_host.add_child(_place_label(UiKit.make_label("+%d bước tiếp theo" % (objectives.size() - row_count), 4, C_TEXT_DIM), Rect2(15, 45, 170, 8)))
 
 
 func _render_hints(quest: Dictionary, state: Dictionary, state_name: String) -> void:
+	# Card chrome.
+	_add_rect(_hints_host, Rect2(0, 0, 198, 21), Color(0.035, 0.060, 0.062, 0.42))
+	_add_rect(_hints_host, Rect2(0, 0, 2, 21), Color(C_CYAN, 0.85))
+	_add_rect(_hints_host, Rect2(0, 0, 198, 1), Color(C_CYAN, 0.16))
+	_add_rect(_hints_host, Rect2(0, 20, 198, 1), Color(0.0, 0.0, 0.0, 0.35))
+	_hints_host.add_child(_make_art("icon_hint.png", Rect2(6, 5, 11, 11)))
+
 	var info_text := str(quest.get("info", ""))
 	if info_text.is_empty():
-		info_text = "Theo dõi lời kể, dấu vết và đối thoại trong khu vực để mở thêm gợi ý."
-	var info := _place_label(UiKit.make_label(info_text, 4, Color(UiKit.COLOR_TEXT, 0.82)), Rect2(0, 0, 180, 12), VERTICAL_ALIGNMENT_TOP)
-	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	info.max_lines_visible = 2
-	info.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_hints_host.add_child(info)
+		info_text = "Theo dõi lời kể, dấu vết và đối thoại để mở thêm gợi ý."
+	var label_text := "Manh mối: %s" % info_text
+	var label_color := Color(C_TEXT, 0.72)
+
+	var revealed := _latest_hint_text(quest, state, state_name)
+	if not revealed.is_empty():
+		label_text = "Gợi ý: %s" % revealed
+		label_color = C_CYAN
+
+	var hint := _place_label(UiKit.make_label(label_text, 5, label_color), Rect2(22, 0, 172, 21))
+	hint.clip_text = true
+	hint.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_hints_host.add_child(hint)
+
+
+func _latest_hint_text(quest: Dictionary, state: Dictionary, state_name: String) -> String:
 	if state_name != "active":
-		return
+		return ""
 	var objectives: Array = quest.get("objectives", []) as Array
 	var current_index := int(state.get("objective_index", 0))
 	if current_index < 0 or current_index >= objectives.size():
-		return
+		return ""
 	var objective: Dictionary = objectives[current_index] as Dictionary
 	var key := "%s:%s" % [str(quest.get("id", "")), str(objective.get("id", ""))]
 	var hints_by_level: Dictionary = revealed_hints.get(key, {}) as Dictionary
 	if hints_by_level.is_empty():
-		return
+		return ""
 	var levels: Array[int] = []
 	for level_key in hints_by_level:
 		levels.append(int(level_key))
 	levels.sort()
-	var latest_level := levels[levels.size() - 1]
-	var payload: Dictionary = hints_by_level.get(str(latest_level), {}) as Dictionary
-	_hints_host.add_child(_make_art("icon_hint.png", Rect2(0, 16, 11, 11)))
-	var hint := _place_label(UiKit.make_label("Gợi ý: %s" % str(payload.get("text", "")), 4, COLOR_HINT), Rect2(15, 15, 165, 13), VERTICAL_ALIGNMENT_TOP)
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.max_lines_visible = 2
-	hint.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_hints_host.add_child(hint)
+	var payload: Dictionary = hints_by_level.get(str(levels[levels.size() - 1]), {}) as Dictionary
+	return str(payload.get("text", ""))
 
 
 func _render_rewards(quest: Dictionary) -> void:
 	var reward: Dictionary = quest.get("reward", {}) as Dictionary
 	var reward_item: Dictionary = InventoryManager.reward_item_for(str(quest.get("id", "")))
-	var basic_slots := [
-		["icon_xp.png", str(reward.get("gold", 500))],
-		["icon_unknown.png", str(reward.get("crystal", 30))],
-		["icon_hint.png", str(reward.get("potion", 3))],
+	# Basic rewards: gold, crystal, potion.
+	var basic := [
+		["gold", str(reward.get("gold", 500)), C_GOLD],
+		["crystal", str(reward.get("crystal", 30)), C_CYAN],
+		["potion", str(reward.get("potion", 3)), C_RED],
 	]
-	for index in range(basic_slots.size()):
-		_add_reward_slot(_basic_rewards_host, index, basic_slots[index][0], basic_slots[index][1])
-	var bonus_name := str(reward_item.get("name", "Vật phẩm"))
-	var bonus_slots := [
-		["icon_side.png", ""],
-		["icon_journal.png", ""],
-		["icon_unknown.png", ""],
+	for index in range(basic.size()):
+		_add_reward_slot(_basic_rewards_host, index, basic[index][0], basic[index][1], basic[index][2], false)
+	# Rare rewards: signature item + two relic slots.
+	var bonus_name := str(reward_item.get("name", ""))
+	var has_item := not bonus_name.is_empty() and bonus_name != "Vật phẩm"
+	var bonus := [
+		["scroll", "1" if has_item else "", C_PURPLE],
+		["rune", "", C_BLUE],
+		["star", "", C_GOLD],
 	]
-	if not bonus_name.is_empty() and bonus_name != "Vật phẩm":
-		bonus_slots[0][1] = "1"
-	for index in range(bonus_slots.size()):
-		_add_reward_slot(_bonus_rewards_host, index, bonus_slots[index][0], bonus_slots[index][1])
+	for index in range(bonus.size()):
+		_add_reward_slot(_bonus_rewards_host, index, bonus[index][0], bonus[index][1], bonus[index][2], true)
+	# Experience line.
 	var xp := int(reward.get("xp", 0))
-	var xp_line := _place_label(UiKit.make_label("EXP                 %d / 1000" % xp, 5, UiKit.COLOR_TEXT), Rect2(0, 52, 82, 9))
-	_rewards_host.add_child(xp_line)
+	var exp_label := _place_label(UiKit.make_label("EXP", 5, Color(C_GOLD, 0.85)), Rect2(0, 0, 30, 9))
+	_rewards_host.add_child(exp_label)
+	var exp_value := _place_label(UiKit.make_label("%d / 1000" % xp, 5, C_TEXT), Rect2(48, 0, 50, 9))
+	exp_value.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_rewards_host.add_child(exp_value)
+	_exp_fill.size.x = floor(float(_exp_fill.get_meta("full_w")) * clampf(float(xp) / 1000.0, 0.0, 1.0))
 
 
 func _render_progress(quest: Dictionary, state: Dictionary, state_name: String) -> void:
 	var objectives: Array = quest.get("objectives", []) as Array
-	var progress_ratio := 0.0
+	var ratio := 0.0
 	if not objectives.is_empty():
 		if state_name == "completed":
-			progress_ratio = 1.0
+			ratio = 1.0
 		else:
-			progress_ratio = clampf(float(int(state.get("objective_index", 0))) / float(objectives.size()), 0.0, 1.0)
-	_progress_bar_fill.size.x = floor(179.0 * progress_ratio)
-	_progress_label.text = "%d%%" % int(round(progress_ratio * 100.0))
+			ratio = clampf(float(int(state.get("objective_index", 0))) / float(objectives.size()), 0.0, 1.0)
+	_progress_bar_fill.size.x = maxf(0.0, floor(float(_progress_bar_fill.get_meta("full_w")) * ratio))
+	_progress_label.text = "%d%%" % int(round(ratio * 100.0))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# DATA HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
 func _selected_quest() -> Dictionary:
 	if selected_index >= 0 and selected_index < quests.size() and quests[selected_index] is Dictionary:
 		return quests[selected_index] as Dictionary
@@ -456,40 +658,37 @@ func _state_of(quest: Dictionary) -> Dictionary:
 func _quest_icon_file(quest: Dictionary) -> String:
 	if str(_state_of(quest).get("state", "")) == "completed":
 		return "icon_completed.png"
-	return {
-		"main": "icon_main.png",
-		"hidden": "icon_hidden.png",
-	}.get(str(quest.get("type", "side")), "icon_side.png")
+	return {"main": "icon_main.png", "hidden": "icon_hidden.png"}.get(str(quest.get("type", "side")), "icon_side.png")
 
 
 func _tab_icon_file(category: String) -> String:
-	return {
-		"active": "icon_journal.png",
-		"side": "icon_side.png",
-		"completed": "icon_completed.png",
-	}.get(category, "icon_unknown.png")
+	return {"active": "icon_main.png", "side": "icon_side.png", "completed": "icon_completed.png"}.get(category, "icon_unknown.png")
+
+
+func _type_color(quest_type: String) -> Color:
+	return {"main": C_GOLD, "side": C_BLUE, "hidden": C_PURPLE}.get(quest_type, C_GOLD)
 
 
 func _quest_state_label(quest: Dictionary) -> Array:
 	var state := str(_state_of(quest).get("state", "inactive"))
 	if state == "completed":
-		return ["Đã hoàn thành", COLOR_GREEN]
+		return ["Đã hoàn thành", C_GREEN]
 	if str(quest.get("type", "")) == "hidden":
-		return ["Nhiệm vụ ẩn", COLOR_HIDDEN]
+		return ["Nhiệm vụ ẩn", C_PURPLE]
 	if state == "active":
-		return ["Đang thực hiện", UiKit.COLOR_ACCENT]
-	return ["Chưa bắt đầu", UiKit.COLOR_TEXT_DIM]
+		return ["Đang thực hiện", C_AMBER]
+	return ["Chưa bắt đầu", Color(C_TEXT, 0.60)]
 
 
 func _status_mark(quest: Dictionary) -> Array:
 	var state := str(_state_of(quest).get("state", "inactive"))
 	if state == "completed":
-		return ["✓", COLOR_GREEN]
+		return ["✓", C_GREEN]
 	if str(quest.get("id", "")) == tracked_quest_id:
-		return ["!", UiKit.COLOR_ACCENT]
+		return ["◆", C_AMBER]
 	if state == "active":
-		return ["◆", COLOR_BLUE]
-	return ["•", UiKit.COLOR_TEXT_DIM]
+		return ["◆", C_BLUE]
+	return ["○", C_TEXT_DIM]
 
 
 func _count_for_category(category: String) -> int:
@@ -513,6 +712,39 @@ func _count_for_category(category: String) -> int:
 	return count
 
 
+func _quest_location_label(quest: Dictionary, giver: Dictionary) -> String:
+	for key in ["zone_name", "location_name", "location", "area_name", "display_zone"]:
+		var value := str(giver.get(key, "")).strip_edges()
+		if not value.is_empty():
+			return value
+	for key in ["zone_name", "location_name", "location", "area_name", "display_zone"]:
+		var value := str(quest.get(key, "")).strip_edges()
+		if not value.is_empty():
+			return value
+	var zone_id := str(giver.get("zone_id", "")).strip_edges()
+	if zone_id.is_empty():
+		var objectives: Array = quest.get("objectives", []) as Array
+		if not objectives.is_empty() and objectives[0] is Dictionary:
+			zone_id = str((objectives[0] as Dictionary).get("zone_id", "")).strip_edges()
+	if zone_id.is_empty():
+		return "Không rõ"
+	for zone in ChapterFlow.current_chapter_zones():
+		if zone is Dictionary and str((zone as Dictionary).get("zone_id", "")) == zone_id:
+			var display_name := str((zone as Dictionary).get("name", "")).strip_edges()
+			if not display_name.is_empty():
+				return display_name
+	return _format_zone_id(zone_id)
+
+
+func _format_zone_id(zone_id: String) -> String:
+	var clean := zone_id.strip_edges()
+	if clean.begins_with("zone_"):
+		var suffix := clean.trim_prefix("zone_")
+		if suffix.is_valid_int():
+			return "Khu %02d" % int(suffix)
+	return clean.capitalize().replace("_", " ")
+
+
 func _objective_progress_text(objective: Dictionary, state: Dictionary, completed: bool) -> String:
 	if completed:
 		return ""
@@ -521,24 +753,227 @@ func _objective_progress_text(objective: Dictionary, state: Dictionary, complete
 	return "0/1"
 
 
-func _quest_banner_texture(quest: Dictionary) -> Texture2D:
+func _banner_or_default(quest: Dictionary) -> Texture2D:
 	for key in ["banner", "banner_path", "image", "image_path", "hero_image", "thumbnail"]:
 		var path := str(quest.get(key, ""))
-		if path.is_empty():
-			continue
-		if ResourceLoader.exists(path):
+		if not path.is_empty() and ResourceLoader.exists(path):
 			return load(path) as Texture2D
+	if ResourceLoader.exists(DEFAULT_BANNER):
+		return load(DEFAULT_BANNER) as Texture2D
 	return null
 
 
-func _add_reward_slot(parent: Control, index: int, icon_file: String, amount: String) -> void:
-	var slot := _make_button_shell(Rect2(index * 27.0, 0, 24, 24), false)
+# ══════════════════════════════════════════════════════════════════════════════
+# WIDGET BUILDERS
+# ══════════════════════════════════════════════════════════════════════════════
+func _build_panel(rect: Rect2) -> void:
+	var panel := Panel.new()
+	panel.position = rect.position
+	panel.size = rect.size
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var style := StyleBoxFlat.new()
+	style.bg_color = C_BG_INSET
+	style.border_color = Color(C_GOLD_DIM, 0.85)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(1)
+	style.shadow_color = Color(0.0, 0.0, 0.0, 0.35)
+	style.shadow_size = 2
+	style.shadow_offset = Vector2(0, 1)
+	panel.add_theme_stylebox_override("panel", style)
+	add_child(panel)
+	# Top inner sheen + bottom shade for depth.
+	_add_gradient(self, Rect2(rect.position.x + 1, rect.position.y + 1, rect.size.x - 2, 10),
+			Color(0.16, 0.13, 0.08, 0.45), Color(0.05, 0.06, 0.08, 0.0), true)
+	_add_rect(self, Rect2(rect.position.x + 1, rect.position.y + 1, rect.size.x - 2, 1), Color(1.0, 0.82, 0.40, 0.16))
+
+
+func _build_medallion(rect: Rect2, icon_file: String) -> void:
+	if _has_ornament("medallion.png"):
+		# Soft glow halo behind the medallion.
+		_add_radial(self, Rect2(rect.position.x - 4, rect.position.y - 4, rect.size.x + 8, rect.size.y + 8),
+				Color(1.0, 0.78, 0.34, 0.28), Color(0, 0, 0, 0))
+		add_child(_make_ornament("medallion.png", rect, TextureRect.STRETCH_KEEP_ASPECT_CENTERED))
+		return
+	var plate := Control.new()
+	plate.position = rect.position
+	plate.size = rect.size
+	plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(plate)
+	_add_rect(plate, Rect2(Vector2.ZERO, rect.size), Color(0.05, 0.045, 0.030, 0.95))
+	_add_gradient(plate, Rect2(1, 1, rect.size.x - 2, rect.size.y * 0.5), Color(0.30, 0.22, 0.10, 0.6), Color(0.05, 0.04, 0.02, 0.0), true)
+	# Double border.
+	_frame_outline(plate, Rect2(0, 0, rect.size.x, rect.size.y), Color(C_GOLD, 0.85))
+	_frame_outline(plate, Rect2(2, 2, rect.size.x - 4, rect.size.y - 4), Color(C_GOLD_DEEP, 0.7))
+	plate.add_child(_make_art(icon_file, Rect2(4, 4, rect.size.x - 8, rect.size.y - 8)))
+
+
+func _panel_caption(rect: Rect2, title: String, tag: String) -> void:
+	_add_rect(self, rect, Color(0.10, 0.085, 0.05, 0.75))
+	_add_rect(self, Rect2(rect.position.x, rect.position.y, rect.size.x, 1), Color(C_GOLD, 0.30))
+	_add_rect(self, Rect2(rect.position.x, rect.end.y - 1, rect.size.x, 1), Color(0.0, 0.0, 0.0, 0.40))
+	_add_rect(self, Rect2(rect.position.x, rect.position.y, 2, rect.size.y), C_GOLD)
+	add_child(_place_label(UiKit.make_label(title, 6, C_GOLD), Rect2(rect.position.x + 6, rect.position.y, rect.size.x - 10, rect.size.y)))
+	if not tag.is_empty():
+		var tag_label := _place_label(UiKit.make_label(tag, 4, C_TEXT_FAINT), Rect2(rect.position.x, rect.position.y, rect.size.x - 5, rect.size.y))
+		tag_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		add_child(tag_label)
+
+
+func _section_label(rect: Rect2, text: String) -> void:
+	# Expand the text box so tall Vietnamese diacritics are never clipped.
+	var lr := Rect2(rect.position.x, rect.position.y - 3, rect.size.x, rect.size.y + 6)
+	add_child(_place_label(UiKit.make_label(text, 6, Color(C_GOLD, 0.92)), lr))
+	# Decorative leading ticks.
+	_add_rect(self, Rect2(rect.position.x - 6, rect.position.y + 5, 3, 1), Color(C_GOLD_DIM, 0.8))
+	_add_diamond(self, Vector2(rect.position.x - 8, rect.position.y + 5.5), 1.5, Color(C_GOLD, 0.7))
+
+
+func _build_progress_track(rect: Rect2) -> void:
+	_add_rect(self, rect, C_BG_INSET)
+	_frame_outline(self, rect, Color(C_GOLD_DEEP, 0.6))
+	_add_rect(self, Rect2(rect.position.x + 1, rect.position.y + 1, rect.size.x - 2, 1), Color(1.0, 1.0, 1.0, 0.06))
+	_progress_bar_fill = _make_clipped_fill(rect, Color(1.0, 0.88, 0.50), Color(0.88, 0.58, 0.20))
+
+
+func _build_exp_track(rect: Rect2) -> void:
+	_add_rect(self, rect, C_BG_INSET)
+	_frame_outline(self, rect, Color(C_GOLD_DEEP, 0.6))
+	_exp_fill = _make_clipped_fill(rect, Color(1.0, 0.86, 0.44), Color(0.86, 0.56, 0.20))
+
+
+## A progress fill that reveals a fixed-width gradient by clipping — robust to any
+## fill width. Set the returned control's size.x at render time.
+func _make_clipped_fill(rect: Rect2, top: Color, bottom: Color) -> Control:
+	var inner_w := rect.size.x - 2
+	var inner_h := rect.size.y - 2
+	var fill := Control.new()
+	fill.position = rect.position + Vector2(1, 1)
+	fill.size = Vector2(0, inner_h)
+	fill.clip_contents = true
+	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	fill.set_meta("full_w", inner_w)
+	add_child(fill)
+	_add_gradient(fill, Rect2(0, 0, inner_w, inner_h), top, bottom, true)
+	_add_rect(fill, Rect2(0, 0, inner_w, 1), Color(1.0, 1.0, 1.0, 0.40))
+	return fill
+
+
+func _add_count_badge(parent: Control, count: int, pos: Vector2) -> void:
+	var badge := Control.new()
+	badge.position = pos
+	badge.size = Vector2(11, 10)
+	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(badge)
+	_add_rect(badge, Rect2(0, 0, 11, 10), Color(0.07, 0.055, 0.032, 0.96))
+	_add_gradient(badge, Rect2(1, 1, 9, 4), Color(0.32, 0.23, 0.10, 0.7), Color(0.07, 0.05, 0.02, 0.0), true)
+	_frame_outline(badge, Rect2(0, 0, 11, 10), Color(C_GOLD, 0.78))
+	var label := _place_label(UiKit.make_label(str(count), 4, C_GOLD), Rect2(0, -1, 11, 11))
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	badge.add_child(label)
+
+
+func _add_round_count_badge(parent: Control, count: int, center: Vector2) -> void:
+	_add_disc(parent, center, 4.7, Color(0.88, 0.68, 0.30, 1.0))
+	_add_disc(parent, center, 3.7, Color(0.11, 0.08, 0.045, 1.0))
+	var label := _place_label(UiKit.make_label(str(count), 4, C_GOLD), Rect2(center.x - 6, center.y - 6, 12, 12))
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	parent.add_child(label)
+
+
+func _make_icon_plate(icon_file: String, rect: Rect2, selected: bool) -> Control:
+	var plate := Control.new()
+	plate.position = rect.position.round()
+	plate.size = rect.size.round()
+	plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_add_rect(plate, Rect2(Vector2.ZERO, plate.size), Color(0.020, 0.018, 0.013, 0.90))
+	_add_gradient(plate, Rect2(1, 1, plate.size.x - 2, plate.size.y * 0.5), Color(0.20, 0.16, 0.08, 0.5), Color(0.0, 0.0, 0.0, 0.0), true)
+	_frame_outline(plate, Rect2(0, 0, plate.size.x, plate.size.y), Color(C_GOLD, 0.55 if selected else 0.32))
+	plate.add_child(_make_art(icon_file, Rect2(2, 2, plate.size.x - 4, plate.size.y - 4)))
+	return plate
+
+
+func _add_reward_slot(parent: Control, index: int, glyph: String, amount: String, tint: Color, rare: bool) -> void:
+	var slot := Control.new()
+	var col := index % 3
+	slot.position = Vector2(col * 34.0, 0)
+	slot.size = Vector2(30, 30)
+	slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(slot)
-	slot.add_child(_make_art(icon_file, Rect2(4, 3, 16, 16)))
-	if not amount.is_empty():
-		var label := _place_label(UiKit.make_label(amount, 4, UiKit.COLOR_TEXT), Rect2(9, 15, 14, 8))
-		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		slot.add_child(label)
+	var filled := not amount.is_empty()
+	var frame_file := "slot_rare.png" if rare else "slot_basic.png"
+	var use_orn := _has_ornament(frame_file)
+	var icon_rect := Rect2(7, 6, 16, 16) if use_orn else Rect2(6, 5, 18, 18)
+
+	if use_orn:
+		# Dark recessed centre + faint rarity glow behind the icon.
+		_add_rect(slot, Rect2(5, 5, 20, 20), Color(0.020, 0.026, 0.038, 0.94))
+		if filled:
+			_add_gradient(slot, Rect2(5, 5, 20, 20), Color(tint.r, tint.g, tint.b, 0.20 if rare else 0.12), Color(tint.r, tint.g, tint.b, 0.0), true)
+	else:
+		# Procedural fallback frame.
+		_add_rect(slot, Rect2(0, 0, 30, 30), Color(0.020, 0.025, 0.035, 0.95))
+		var border := tint if filled else Color(C_GOLD_DEEP, 0.45)
+		_frame_outline(slot, Rect2(0, 0, 30, 30), Color(border, 0.85 if filled else 0.5))
+		if rare and filled:
+			_frame_outline(slot, Rect2(1, 1, 28, 28), Color(border, 0.35))
+
+	# Icon or mystery ghost (drawn under the ornate frame so the border overlaps cleanly).
+	if filled:
+		slot.add_child(_make_reward_icon(glyph, icon_rect, tint))
+	else:
+		var ghost := _make_reward_icon(glyph, icon_rect, tint)
+		ghost.modulate = Color(1, 1, 1, 0.16)
+		slot.add_child(ghost)
+		var q := _place_label(UiKit.make_label("?", 9, Color(tint, 0.80)), Rect2(0, 6, 30, 18))
+		q.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		slot.add_child(q)
+
+	# Ornate frame overlay.
+	if use_orn:
+		slot.add_child(_make_ornament(frame_file, Rect2(-1, -1, 32, 32), TextureRect.STRETCH_SCALE))
+
+	# Quantity, centred beneath the slot.
+	if filled:
+		var qty := _place_label(UiKit.make_label(amount, 5, C_TEXT), Rect2(-3, 31, 36, 9))
+		qty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		slot.add_child(qty)
+
+
+## Reward icon: prefers generated art (ICON_DIR), falls back to a kit medallion,
+## then to a coloured procedural glyph so the slot is never empty.
+func _make_reward_icon(glyph: String, rect: Rect2, tint: Color) -> Control:
+	var art_path := ICON_DIR + "icon_%s.png" % glyph
+	if ResourceLoader.exists(art_path):
+		return _make_art_path(art_path, rect)
+	# Procedural fallback glyph.
+	var holder := Control.new()
+	holder.position = rect.position
+	holder.size = rect.size
+	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var c := rect.size * 0.5
+	match glyph:
+		"gold":
+			_add_disc(holder, c, rect.size.x * 0.42, C_GOLD)
+			_add_disc(holder, c, rect.size.x * 0.30, Color(1.0, 0.92, 0.55))
+			_add_rect(holder, Rect2(c.x - 1, c.y - 3, 2, 6), Color(0.65, 0.45, 0.12, 0.8))
+		"crystal":
+			_add_diamond(holder, c, rect.size.x * 0.42, C_CYAN)
+			_add_diamond(holder, c - Vector2(0, 1), rect.size.x * 0.24, Color(0.80, 0.98, 1.0))
+		"potion":
+			_add_disc(holder, c + Vector2(0, 2), rect.size.x * 0.34, C_RED)
+			_add_rect(holder, Rect2(c.x - 2, c.y - 7, 4, 5), Color(0.7, 0.7, 0.75))
+			_add_rect(holder, Rect2(c.x - 2.5, c.y - 8, 5, 2), C_GOLD)
+		"scroll":
+			_add_rect(holder, Rect2(c.x - 5, c.y - 6, 10, 12), Color(0.92, 0.84, 0.62))
+			_add_rect(holder, Rect2(c.x - 6, c.y - 6, 12, 2), C_GOLD_DIM)
+			_add_rect(holder, Rect2(c.x - 6, c.y + 4, 12, 2), C_GOLD_DIM)
+		"rune":
+			_add_diamond(holder, c, rect.size.x * 0.44, Color(C_BLUE, 0.9))
+			_add_rect(holder, Rect2(c.x - 0.5, c.y - 4, 1, 8), Color(0.85, 0.95, 1.0))
+			_add_rect(holder, Rect2(c.x - 3, c.y - 0.5, 6, 1), Color(0.85, 0.95, 1.0))
+		_:
+			_add_diamond(holder, c, rect.size.x * 0.42, tint)
+	return holder
 
 
 func _make_button_shell(rect: Rect2, selected: bool) -> Control:
@@ -546,14 +981,13 @@ func _make_button_shell(rect: Rect2, selected: bool) -> Control:
 	shell.position = rect.position.round()
 	shell.size = rect.size.round()
 	shell.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var bg := _add_rect(shell, Rect2(Vector2.ZERO, shell.size), Color(0.08, 0.065, 0.045, 0.88) if not selected else Color(0.25, 0.17, 0.055, 0.90))
-	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_add_rect(shell, Rect2(1, 1, shell.size.x - 2, 1), Color(0.82, 0.62, 0.24, 0.70 if selected else 0.38))
-	_add_rect(shell, Rect2(1, shell.size.y - 2, shell.size.x - 2, 1), Color(0.82, 0.62, 0.24, 0.64 if selected else 0.32))
-	_add_rect(shell, Rect2(1, 1, 1, shell.size.y - 2), Color(0.82, 0.62, 0.24, 0.58 if selected else 0.30))
-	_add_rect(shell, Rect2(shell.size.x - 2, 1, 1, shell.size.y - 2), Color(0.82, 0.62, 0.24, 0.58 if selected else 0.30))
+	_add_rect(shell, Rect2(Vector2.ZERO, shell.size), Color(0.075, 0.062, 0.045, 0.92) if not selected else Color(0.34, 0.21, 0.060, 0.95))
+	_add_gradient(shell, Rect2(1, 1, shell.size.x - 2, maxf(2.0, shell.size.y * 0.5)),
+			Color(1.0, 0.74, 0.26, 0.16 if selected else 0.08), Color(1.0, 0.6, 0.2, 0.0), true)
+	_frame_outline(shell, Rect2(0, 0, shell.size.x, shell.size.y), Color(0.85, 0.64, 0.26, 0.78 if selected else 0.40))
+	_add_rect(shell, Rect2(1, 1, shell.size.x - 2, 1), Color(1.0, 0.90, 0.50, 0.40 if selected else 0.22))
 	if selected:
-		_add_rect(shell, Rect2(4, shell.size.y - 3, shell.size.x - 8, 1), UiKit.COLOR_ACCENT)
+		_add_rect(shell, Rect2(0, shell.size.y - 1, shell.size.x, 1), Color(C_GOLD, 0.6))
 	return shell
 
 
@@ -562,63 +996,116 @@ func _make_row(rect: Rect2, selected: bool) -> Control:
 	row.position = rect.position.round()
 	row.size = rect.size.round()
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_add_rect(row, Rect2(Vector2.ZERO, row.size), Color(0.07, 0.055, 0.038, 0.78))
-	_add_rect(row, Rect2(0, row.size.y - 1, row.size.x, 1), Color(0.58, 0.42, 0.18, 0.28))
 	if selected:
-		_add_rect(row, Rect2(0, 0, row.size.x, row.size.y), Color(0.95, 0.63, 0.16, 0.12))
-		_add_rect(row, Rect2(1, 1, row.size.x - 2, 1), UiKit.COLOR_ACCENT)
-		_add_rect(row, Rect2(1, row.size.y - 2, row.size.x - 2, 1), UiKit.COLOR_ACCENT)
-		_add_rect(row, Rect2(1, 1, 1, row.size.y - 2), UiKit.COLOR_ACCENT)
-		_add_rect(row, Rect2(row.size.x - 2, 1, 1, row.size.y - 2), UiKit.COLOR_ACCENT)
+		_add_gradient(row, Rect2(Vector2.ZERO, row.size), Color(0.40, 0.26, 0.085, 0.92), Color(0.20, 0.13, 0.05, 0.85), false)
+		_add_rect(row, Rect2(0, 0, 3, row.size.y), C_AMBER)
+		_add_rect(row, Rect2(3, 0, row.size.x - 3, 1), Color(C_GOLD, 0.80))
+		_add_rect(row, Rect2(3, row.size.y - 1, row.size.x - 3, 1), Color(C_GOLD, 0.55))
+		_add_rect(row, Rect2(row.size.x - 1, 1, 1, row.size.y - 2), Color(C_GOLD, 0.45))
+	else:
+		_add_rect(row, Rect2(Vector2.ZERO, row.size), Color(0.060, 0.056, 0.048, 0.55))
+		_add_rect(row, Rect2(0, row.size.y - 1, row.size.x, 1), Color(0.55, 0.40, 0.18, 0.18))
 	return row
 
 
-func _build_hero_backdrop() -> void:
-	_add_rect(_hero_host, Rect2(Vector2.ZERO, _hero_host.size), Color(0.08, 0.10, 0.085, 1.0))
-	_add_rect(_hero_host, Rect2(0, 0, 291, 24), Color(0.16, 0.21, 0.23, 0.74))
-	_add_rect(_hero_host, Rect2(0, 24, 291, 40), Color(0.16, 0.13, 0.055, 0.72))
-	for index in range(0, 10):
-		var x := float(index * 31)
-		_add_rect(_hero_host, Rect2(x, 36 - (index % 3) * 3, 22, 28), Color(0.18, 0.29, 0.13, 0.45))
+# ══════════════════════════════════════════════════════════════════════════════
+# PRIMITIVE HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+func _spawn_host(rect: Rect2) -> Control:
+	var host := Control.new()
+	host.position = rect.position
+	host.size = rect.size
+	host.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(host)
+	return host
 
 
-func _add_section_title(parent: Control, text: String, rect: Rect2, color: Color) -> void:
-	var label := _place_label(UiKit.make_label(text, 6, color), rect)
-	parent.add_child(label)
-	var left := _add_rect(parent, Rect2(rect.position.x - 8, rect.position.y + 5, 5, 1), COLOR_LINE)
-	left.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var right := _add_rect(parent, Rect2(rect.position.x + rect.size.x - 32, rect.position.y + 5, 18, 1), COLOR_LINE)
-	right.mouse_filter = Control.MOUSE_FILTER_IGNORE
+func _frame_outline(parent: Control, rect: Rect2, color: Color) -> void:
+	_add_rect(parent, Rect2(rect.position.x, rect.position.y, rect.size.x, 1), color)
+	_add_rect(parent, Rect2(rect.position.x, rect.end.y - 1, rect.size.x, 1), Color(color, color.a * 0.8))
+	_add_rect(parent, Rect2(rect.position.x, rect.position.y, 1, rect.size.y), Color(color, color.a * 0.85))
+	_add_rect(parent, Rect2(rect.end.x - 1, rect.position.y, 1, rect.size.y), Color(color, color.a * 0.85))
 
 
-func _add_frame(parent: Control, rect: Rect2) -> void:
-	var fill := _make_art("panel_fill.png", Rect2(rect.position + Vector2(2, 2), rect.size - Vector2(4, 4)), TextureRect.STRETCH_TILE)
-	fill.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
-	parent.add_child(fill)
-	var corners := [
-		["corner_tl.png", rect.position],
-		["corner_tr.png", Vector2(rect.end.x - 15, rect.position.y)],
-		["corner_bl.png", Vector2(rect.position.x, rect.end.y - 15)],
-		["corner_br.png", rect.end - Vector2(15, 15)],
-	]
-	var edges := [
-		Rect2(rect.position + Vector2(9, 1), Vector2(rect.size.x - 18, 2)),
-		Rect2(Vector2(rect.position.x + 9, rect.end.y - 3), Vector2(rect.size.x - 18, 2)),
-		Rect2(rect.position + Vector2(1, 9), Vector2(2, rect.size.y - 18)),
-		Rect2(Vector2(rect.end.x - 3, rect.position.y + 9), Vector2(2, rect.size.y - 18)),
-	]
-	for index in range(edges.size()):
-		var path := "edge_horizontal.png" if index < 2 else "edge_vertical.png"
-		var edge := _make_art(path, edges[index], TextureRect.STRETCH_TILE)
-		edge.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
-		parent.add_child(edge)
-	for corner_data in corners:
-		parent.add_child(_make_art(corner_data[0], Rect2(corner_data[1], Vector2(15, 15))))
+func _add_diamond(parent: Control, center: Vector2, radius: float, color: Color) -> void:
+	var poly := Polygon2D.new()
+	poly.polygon = PackedVector2Array([
+		center + Vector2(0, -radius), center + Vector2(radius, 0),
+		center + Vector2(0, radius), center + Vector2(-radius, 0)])
+	poly.color = color
+	parent.add_child(poly)
 
 
-func _make_art(file_name: String, rect: Rect2, mode: TextureRect.StretchMode = TextureRect.STRETCH_SCALE) -> TextureRect:
+func _add_diamond_outline(parent: Control, center: Vector2, radius: float, color: Color) -> void:
+	var line := Line2D.new()
+	line.points = PackedVector2Array([
+		center + Vector2(0, -radius), center + Vector2(radius, 0),
+		center + Vector2(0, radius), center + Vector2(-radius, 0), center + Vector2(0, -radius)])
+	line.width = 1.0
+	line.default_color = color
+	line.antialiased = false
+	parent.add_child(line)
+
+
+func _add_disc(parent: Control, center: Vector2, radius: float, color: Color) -> void:
+	var poly := Polygon2D.new()
+	var pts := PackedVector2Array()
+	for i in range(12):
+		var a := TAU * float(i) / 12.0
+		pts.append(center + Vector2(cos(a), sin(a)) * radius)
+	poly.polygon = pts
+	poly.color = color
+	parent.add_child(poly)
+
+
+func _add_gradient(parent: Control, rect: Rect2, from_color: Color, to_color: Color, vertical: bool) -> TextureRect:
+	var grad := Gradient.new()
+	grad.set_color(0, from_color)
+	grad.set_color(1, to_color)
+	var tex := GradientTexture2D.new()
+	tex.gradient = grad
+	tex.width = 2 if vertical else 64
+	tex.height = 64 if vertical else 2
+	tex.fill_from = Vector2(0, 0)
+	tex.fill_to = Vector2(0, 1) if vertical else Vector2(1, 0)
+	var node := TextureRect.new()
+	node.texture = tex
+	node.position = rect.position
+	node.size = rect.size
+	node.stretch_mode = TextureRect.STRETCH_SCALE
+	node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(node)
+	return node
+
+
+func _add_radial(parent: Control, rect: Rect2, inner: Color, outer: Color) -> void:
+	var grad := Gradient.new()
+	grad.set_color(0, inner)
+	grad.set_color(1, outer)
+	var tex := GradientTexture2D.new()
+	tex.gradient = grad
+	tex.width = 96
+	tex.height = 96
+	tex.fill = GradientTexture2D.FILL_RADIAL
+	tex.fill_from = Vector2(0.5, 0.5)
+	tex.fill_to = Vector2(1.0, 0.5)
+	var node := TextureRect.new()
+	node.texture = tex
+	node.position = rect.position
+	node.size = rect.size
+	node.stretch_mode = TextureRect.STRETCH_SCALE
+	node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(node)
+
+
+func _make_art(file_name: String, rect: Rect2, mode: TextureRect.StretchMode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED) -> TextureRect:
+	return _make_art_path(COMPONENT_DIR + file_name, rect, mode)
+
+
+func _make_art_path(path: String, rect: Rect2, mode: TextureRect.StretchMode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED) -> TextureRect:
 	var art := TextureRect.new()
-	art.texture = load(COMPONENT_DIR + file_name) as Texture2D
+	if ResourceLoader.exists(path):
+		art.texture = load(path) as Texture2D
 	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	art.stretch_mode = mode
 	art.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
@@ -626,6 +1113,25 @@ func _make_art(file_name: String, rect: Rect2, mode: TextureRect.StretchMode = T
 	art.size = rect.size.round()
 	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return art
+
+
+## Ornate gold/jewel decoration art — detailed, so it uses smooth linear filtering.
+func _make_ornament(file_name: String, rect: Rect2, mode: TextureRect.StretchMode = TextureRect.STRETCH_SCALE) -> TextureRect:
+	var art := TextureRect.new()
+	var path := ORN_DIR + file_name
+	if ResourceLoader.exists(path):
+		art.texture = load(path) as Texture2D
+	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	art.stretch_mode = mode
+	art.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	art.position = rect.position.round()
+	art.size = rect.size.round()
+	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return art
+
+
+func _has_ornament(file_name: String) -> bool:
+	return ResourceLoader.exists(ORN_DIR + file_name)
 
 
 func _place_label(label: Label, rect: Rect2, vertical: VerticalAlignment = VERTICAL_ALIGNMENT_CENTER) -> Label:
