@@ -18,6 +18,32 @@ const CATEGORY_IDS := ["active", "side", "completed"]
 const CATEGORY_LABELS := ["Chính", "Phụ", "Xong"]
 const LIST_PAGE_SIZE := 6
 
+# Native 960x540 typography, tuned against InventoryManager's readable scale.
+const FONT_HEADER := 28
+const FONT_HEADER_SUB := 10
+const FONT_CONTEXT := 12
+const FONT_CLOSE := 18
+const FONT_PANEL_TITLE := 12
+const FONT_PANEL_TAG := 9
+const FONT_SECTION := 12
+const FONT_TAB := 10
+const FONT_BADGE := 8
+const FONT_LIST_TITLE := 10
+const FONT_LIST_META := 8
+const FONT_LIST_MARK := 11
+const FONT_DETAIL_OVERLINE := 10
+const FONT_DETAIL_TITLE := 20
+const FONT_BODY := 11
+const FONT_META := 10
+const FONT_PROGRESS := 12
+const FONT_OBJECTIVE := 10
+const FONT_OBJECTIVE_ACTIVE := 11
+const FONT_OBJECTIVE_GLYPH := 12
+const FONT_REWARD_QTY := 11
+const FONT_REWARD_GHOST := 18
+const FONT_BUTTON := 13
+const FONT_NOTE := 9
+
 # ── Palette ──────────────────────────────────────────────────────────────────
 const C_BG_DEEP := Color(0.027, 0.035, 0.050)
 const C_BG_PANEL := Color(0.055, 0.070, 0.098, 0.97)
@@ -213,17 +239,17 @@ func _build_header() -> void:
 	# Title medallion.
 	_build_medallion(Rect2(12, 10, 26, 26), "icon_journal.png")
 	# Title + subtitle.
-	var title := _place_label(UiKit.make_label("NHẬT KÝ NHIỆM VỤ", 13, C_GOLD), Rect2(46, 9, 220, 18))
+	var title := _place_label(UiKit.make_label("NHẬT KÝ NHIỆM VỤ", FONT_HEADER, C_GOLD), Rect2(46, 8, 220, 20))
 	add_child(title)
-	add_child(_place_label(UiKit.make_label("HỒ SƠ HÀNH TRÌNH", 5, C_TEXT_DIM), Rect2(47, 26, 140, 9)))
+	add_child(_place_label(UiKit.make_label("HỒ SƠ HÀNH TRÌNH", FONT_HEADER_SUB, C_TEXT_DIM), Rect2(47, 27, 140, 9)))
 	# Chapter context (right aligned, before the close button).
-	_context_label = _place_label(UiKit.make_label("", 6, C_TEXT_DIM), Rect2(250, 17, 192, 10))
+	_context_label = _place_label(UiKit.make_label("", FONT_CONTEXT, C_TEXT_DIM), Rect2(250, 16, 192, 12))
 	_context_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	add_child(_context_label)
 	# Close button.
 	var close_button := _make_button_shell(Rect2(450, 11, 21, 21), false)
 	add_child(close_button)
-	var close_glyph := _place_label(UiKit.make_label("×", 12, C_TEXT), Rect2(0, -1, 21, 21))
+	var close_glyph := _place_label(UiKit.make_label("×", FONT_CLOSE, C_TEXT), Rect2(0, -1, 21, 21))
 	close_glyph.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	close_button.add_child(close_glyph)
 	# Header underline with a centred jewelled divider ornament.
@@ -243,12 +269,12 @@ func _build_list_panel() -> void:
 	_tabs_host = _spawn_host(Rect2(14, 63, 128, 30))
 	# List sub-header with live count.
 	_section_label(Rect2(15, 96, 90, 10), "DANH SÁCH")
-	_list_count_label = _place_label(UiKit.make_label("", 5, C_GOLD), Rect2(95, 96, 47, 10))
+	_list_count_label = _place_label(UiKit.make_label("", FONT_META, C_GOLD), Rect2(95, 96, 47, 10))
 	_list_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	add_child(_list_count_label)
 	_add_rect(self, Rect2(15, 107, 127, 1), C_LINE)
 	_list_host = _spawn_host(Rect2(13, 110, 130, 132))
-	_page_label = _place_label(UiKit.make_label("", 5, C_TEXT_DIM), Rect2(14, 245, 128, 9))
+	_page_label = _place_label(UiKit.make_label("", FONT_META, C_TEXT_DIM), Rect2(14, 245, 128, 9))
 	_page_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	add_child(_page_label)
 
@@ -276,21 +302,21 @@ func _build_detail_panel() -> void:
 	_add_rect(_hero_host, Rect2(0, 0, 1, 54), Color(1.0, 0.82, 0.40, 0.18))
 	_add_rect(_hero_host, Rect2(199, 0, 1, 54), Color(1.0, 0.82, 0.40, 0.18))
 	# Type ribbon (top-left).
-	_detail_type = _place_label(UiKit.make_label("", 5, C_GOLD), Rect2(6, 5, 120, 9))
+	_detail_type = _place_label(UiKit.make_label("", FONT_DETAIL_OVERLINE, C_GOLD), Rect2(6, 5, 120, 10))
 	_hero_host.add_child(_detail_type)
 	# Tracked badge (top-right).
-	_tracked_badge = _place_label(UiKit.make_label("", 5, C_GREEN), Rect2(74, 5, 120, 9))
+	_tracked_badge = _place_label(UiKit.make_label("", FONT_DETAIL_OVERLINE, C_GREEN), Rect2(74, 5, 120, 10))
 	_tracked_badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_hero_host.add_child(_tracked_badge)
 	# Title over the bottom scrim.
-	_detail_title = _place_label(UiKit.make_label("", 11, C_GOLD), Rect2(7, 35, 186, 16))
+	_detail_title = _place_label(UiKit.make_label("", FONT_DETAIL_TITLE, C_GOLD), Rect2(7, 34, 186, 17))
 	_detail_title.clip_text = true
 	_detail_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_hero_host.add_child(_detail_title)
 
 	# Meta + summary.
 	_detail_meta_host = _spawn_host(Rect2(156, 104, 198, 9))
-	_detail_summary = _place_label(UiKit.make_label("", 5, C_TEXT), Rect2(156, 114, 198, 20), VERTICAL_ALIGNMENT_TOP)
+	_detail_summary = _place_label(UiKit.make_label("", FONT_BODY, C_TEXT), Rect2(156, 114, 198, 21), VERTICAL_ALIGNMENT_TOP)
 	_detail_summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_detail_summary.max_lines_visible = 2
 	_detail_summary.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -304,7 +330,7 @@ func _build_detail_panel() -> void:
 
 	# Progress.
 	_section_label(Rect2(157, 211, 90, 10), "TIẾN ĐỘ")
-	_progress_label = _place_label(UiKit.make_label("", 6, C_GOLD), Rect2(300, 210, 54, 10))
+	_progress_label = _place_label(UiKit.make_label("", FONT_PROGRESS, C_GOLD), Rect2(300, 210, 54, 11))
 	_progress_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	add_child(_progress_label)
 	_build_progress_track(Rect2(157, 224, 197, 6))
@@ -334,7 +360,7 @@ func _build_rewards_panel() -> void:
 	else:
 		_build_exp_track(Rect2(368, 202, 98, 7))
 
-	var note := _place_label(UiKit.make_label("Nhận khi hoàn thành nhiệm vụ", 4, C_TEXT_FAINT), Rect2(368, 219, 98, 8))
+	var note := _place_label(UiKit.make_label("Nhận khi hoàn thành nhiệm vụ", FONT_NOTE, C_TEXT_FAINT), Rect2(368, 218, 98, 9))
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	add_child(note)
 
@@ -348,11 +374,11 @@ func _build_rewards_panel() -> void:
 	if _has_ornament("button_plate.png"):
 		_add_radial(_track_button, Rect2(6, 0, 86, 26), Color(1.0, 0.80, 0.34, 0.22), Color(0, 0, 0, 0))
 		_track_button.add_child(_make_ornament("button_plate.png", Rect2(0, 3, 98, 21)))
-		_track_button_label = _place_label(UiKit.make_label("", 7, Color(0.22, 0.13, 0.04)), Rect2(0, 1, 98, 17))
+		_track_button_label = _place_label(UiKit.make_label("", FONT_BUTTON, Color(0.22, 0.13, 0.04)), Rect2(0, 1, 98, 17))
 	else:
 		_track_button.add_child(_make_button_shell(Rect2(0, 1, 98, 25), true))
 		_track_button.add_child(_make_art("icon_main.png", Rect2(9, 7, 13, 13)))
-		_track_button_label = _place_label(UiKit.make_label("", 7, C_TEXT), Rect2(22, 5, 70, 16))
+		_track_button_label = _place_label(UiKit.make_label("", FONT_BUTTON, C_TEXT), Rect2(22, 5, 70, 16))
 	_track_button_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_track_button.add_child(_track_button_label)
 
@@ -419,7 +445,7 @@ func _render_tabs() -> void:
 			if count > 0:
 				_add_round_count_badge(tab, count, Vector2(cx + 9.0, 3.0))
 			var label := _place_label(
-					UiKit.make_label(CATEGORY_LABELS[index], 5, C_GOLD if selected else C_TEXT_DIM),
+					UiKit.make_label(CATEGORY_LABELS[index], FONT_TAB, C_GOLD if selected else C_TEXT_DIM),
 					Rect2(0, 20, tab_w, 11))
 			label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			tab.add_child(label)
@@ -431,7 +457,7 @@ func _render_tabs() -> void:
 			if count > 0:
 				_add_count_badge(tab, count, Vector2(tab_w - 11, 2))
 			var label := _place_label(
-					UiKit.make_label(CATEGORY_LABELS[index], 5, C_GOLD if selected else C_TEXT_DIM),
+					UiKit.make_label(CATEGORY_LABELS[index], FONT_TAB, C_GOLD if selected else C_TEXT_DIM),
 					Rect2(0, 19, tab_w, 11))
 			label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			tab.add_child(label)
@@ -441,7 +467,7 @@ func _render_list() -> void:
 	_clear(_list_host)
 	_list_count_label.text = "%d" % visible_indices.size()
 	if visible_indices.is_empty():
-		var empty := _place_label(UiKit.make_label("Không có nhiệm vụ", 6, C_TEXT_DIM), Rect2(6, 30, 118, 20))
+		var empty := _place_label(UiKit.make_label("Không có nhiệm vụ", FONT_BODY, C_TEXT_DIM), Rect2(6, 30, 118, 20))
 		empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		_list_host.add_child(empty)
 		_page_label.text = ""
@@ -454,10 +480,10 @@ func _render_list() -> void:
 		var quest_index: int = page_indices[row_index]
 		var quest: Dictionary = quests[quest_index] as Dictionary
 		var selected := quest_index == selected_index
-		var row := _make_row(Rect2(0, row_index * 22.0, 130, 20), selected)
+		var row := _make_row(Rect2(0, row_index * 22.0, 130, 22), selected)
 		_list_host.add_child(row)
 		row.add_child(_make_icon_plate(_quest_icon_file(quest), Rect2(6, 4, 13, 13), selected))
-		var title := _place_label(UiKit.make_label(str(quest.get("title", "")), 5, C_TEXT if not selected else C_GOLD), Rect2(24, 2, 90, 9))
+		var title := _place_label(UiKit.make_label(str(quest.get("title", "")), FONT_LIST_TITLE, C_TEXT if not selected else C_GOLD), Rect2(24, 2, 90, 10))
 		title.clip_text = true
 		title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		row.add_child(title)
@@ -465,12 +491,12 @@ func _render_list() -> void:
 		var location := _quest_location_label(quest, giver)
 		var status_pair := _quest_state_label(quest)
 		var subtitle_text: String = location if not location.is_empty() and location != "Không rõ" else str(status_pair[0])
-		var subtitle := _place_label(UiKit.make_label(subtitle_text, 4, status_pair[1]), Rect2(24, 11, 92, 8))
+		var subtitle := _place_label(UiKit.make_label(subtitle_text, FONT_LIST_META, status_pair[1]), Rect2(24, 12, 92, 8))
 		subtitle.clip_text = true
 		subtitle.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		row.add_child(subtitle)
 		var mark := _status_mark(quest)
-		var mark_label := _place_label(UiKit.make_label(mark[0], 6, mark[1]), Rect2(118, 5, 10, 10))
+		var mark_label := _place_label(UiKit.make_label(mark[0], FONT_LIST_MARK, mark[1]), Rect2(118, 5, 10, 10))
 		mark_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		row.add_child(mark_label)
 	var page_count := ceili(float(visible_indices.size()) / float(LIST_PAGE_SIZE))
@@ -509,10 +535,15 @@ func _render_detail() -> void:
 	_detail_summary.text = str(quest.get("summary", ""))
 	# Location pin + label.
 	_detail_meta_host.add_child(_make_art("icon_hidden.png", Rect2(0, 0, 8, 8)))
-	_detail_meta = _place_label(UiKit.make_label("Khu vực: %s" % _quest_location_label(quest, giver), 5, Color(C_GOLD, 0.80)), Rect2(11, 0, 187, 9))
+	_detail_meta = _place_label(UiKit.make_label("Khu vực: %s" % _quest_location_label(quest, giver), FONT_META, Color(C_GOLD, 0.80)), Rect2(11, 0, 187, 9))
 	_detail_meta_host.add_child(_detail_meta)
-	_tracked_badge.text = "◆ ĐANG THEO DÕI" if is_tracked else _quest_state_label(quest)[0]
-	_tracked_badge.add_theme_color_override("font_color", C_GREEN if is_tracked else _quest_state_label(quest)[1])
+	var state_pair := _quest_state_label(quest)
+	if state_name == "completed":
+		_tracked_badge.text = "◆ ĐÃ HOÀN THÀNH"
+		_tracked_badge.add_theme_color_override("font_color", C_GREEN)
+	else:
+		_tracked_badge.text = "◆ ĐANG THEO DÕI" if is_tracked else state_pair[0]
+		_tracked_badge.add_theme_color_override("font_color", C_GREEN if is_tracked else state_pair[1])
 	_hero_image.texture = _banner_or_default(quest)
 	_render_objectives(quest, state, state_name)
 	_render_hints(quest, state, state_name)
@@ -533,7 +564,7 @@ func _render_objectives(quest: Dictionary, state: Dictionary, state_name: String
 	var objectives: Array = quest.get("objectives", []) as Array
 	var current_index := int(state.get("objective_index", 0))
 	if objectives.is_empty():
-		_objectives_host.add_child(_place_label(UiKit.make_label("Chưa có mục tiêu.", 5, C_TEXT_DIM), Rect2(16, 2, 170, 12)))
+		_objectives_host.add_child(_place_label(UiKit.make_label("Chưa có mục tiêu.", FONT_BODY, C_TEXT_DIM), Rect2(16, 2, 170, 12)))
 		return
 	var completed := state_name == "completed"
 	var row_count: int = mini(objectives.size(), 3)
@@ -552,14 +583,15 @@ func _render_objectives(quest: Dictionary, state: Dictionary, state_name: String
 		_add_diamond(_objectives_host, Vector2(5.5, y + 5.5), 5.0 if active else 4.0, Color(node_color, 0.16))
 		_add_diamond_outline(_objectives_host, Vector2(5.5, y + 5.5), 4.0, node_color)
 		var glyph := "✓" if done else "◆" if active else "•"
-		var glyph_label := _place_label(UiKit.make_label(glyph, 6 if active else 5, node_color), Rect2(0, y - 1, 11, 12))
+		var glyph_label := _place_label(UiKit.make_label(glyph, FONT_OBJECTIVE_GLYPH, node_color), Rect2(0, y - 1, 11, 12))
 		glyph_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		_objectives_host.add_child(glyph_label)
 		var text_color := C_TEXT if active else Color(C_GREEN, 0.90) if done else Color(C_TEXT, 0.50)
 		var description := str(objective.get("description", ""))
 		var progress := _objective_progress_text(objective, state, completed) if active else ""
 		var line_width := 142.0 if not progress.is_empty() else 178.0
-		var line := _place_label(UiKit.make_label(description, 5 if active else 5, text_color), Rect2(15, y, line_width, 13), VERTICAL_ALIGNMENT_TOP)
+		var objective_font := FONT_OBJECTIVE_ACTIVE if active else FONT_OBJECTIVE
+		var line := _place_label(UiKit.make_label(description, objective_font, text_color), Rect2(15, y, line_width, 13), VERTICAL_ALIGNMENT_TOP)
 		line.clip_text = true
 		line.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		_objectives_host.add_child(line)
@@ -567,11 +599,11 @@ func _render_objectives(quest: Dictionary, state: Dictionary, state_name: String
 			# Mini progress pill.
 			_add_rect(_objectives_host, Rect2(160, y + 1, 33, 10), Color(0.02, 0.03, 0.04, 0.80))
 			_add_rect(_objectives_host, Rect2(160, y + 1, 33, 1), Color(C_AMBER, 0.40))
-			var prog_label := _place_label(UiKit.make_label(progress, 5, C_AMBER), Rect2(160, y, 31, 12))
+			var prog_label := _place_label(UiKit.make_label(progress, FONT_META, C_AMBER), Rect2(160, y, 31, 12))
 			prog_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 			_objectives_host.add_child(prog_label)
 	if objectives.size() > row_count:
-		_objectives_host.add_child(_place_label(UiKit.make_label("+%d bước tiếp theo" % (objectives.size() - row_count), 4, C_TEXT_DIM), Rect2(15, 45, 170, 8)))
+		_objectives_host.add_child(_place_label(UiKit.make_label("+%d bước tiếp theo" % (objectives.size() - row_count), FONT_NOTE, C_TEXT_DIM), Rect2(15, 45, 170, 8)))
 
 
 func _render_hints(quest: Dictionary, state: Dictionary, state_name: String) -> void:
@@ -593,7 +625,7 @@ func _render_hints(quest: Dictionary, state: Dictionary, state_name: String) -> 
 		label_text = "Gợi ý: %s" % revealed
 		label_color = C_CYAN
 
-	var hint := _place_label(UiKit.make_label(label_text, 5, label_color), Rect2(22, 0, 172, 21))
+	var hint := _place_label(UiKit.make_label(label_text, FONT_META, label_color), Rect2(22, 0, 172, 21))
 	hint.clip_text = true
 	hint.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_hints_host.add_child(hint)
@@ -642,9 +674,9 @@ func _render_rewards(quest: Dictionary) -> void:
 		_add_reward_slot(_bonus_rewards_host, index, bonus[index][0], bonus[index][1], bonus[index][2], true)
 	# Experience line.
 	var xp := int(reward.get("xp", 0))
-	var exp_label := _place_label(UiKit.make_label("EXP", 5, Color(C_GOLD, 0.85)), Rect2(0, 0, 30, 9))
+	var exp_label := _place_label(UiKit.make_label("EXP", FONT_META, Color(C_GOLD, 0.85)), Rect2(0, 0, 30, 9))
 	_rewards_host.add_child(exp_label)
-	var exp_value := _place_label(UiKit.make_label("%d / 1000" % xp, 5, C_TEXT), Rect2(48, 0, 50, 9))
+	var exp_value := _place_label(UiKit.make_label("%d / 1000" % xp, FONT_META, C_TEXT), Rect2(48, 0, 50, 9))
 	exp_value.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_rewards_host.add_child(exp_value)
 	_exp_fill.size.x = floor(float(_exp_fill.get_meta("full_w")) * clampf(float(xp) / 1000.0, 0.0, 1.0))
@@ -834,9 +866,9 @@ func _panel_caption(rect: Rect2, title: String, tag: String) -> void:
 	_add_rect(self, Rect2(rect.position.x, rect.position.y, rect.size.x, 1), Color(C_GOLD, 0.30))
 	_add_rect(self, Rect2(rect.position.x, rect.end.y - 1, rect.size.x, 1), Color(0.0, 0.0, 0.0, 0.40))
 	_add_rect(self, Rect2(rect.position.x, rect.position.y, 2, rect.size.y), C_GOLD)
-	add_child(_place_label(UiKit.make_label(title, 6, C_GOLD), Rect2(rect.position.x + 6, rect.position.y, rect.size.x - 10, rect.size.y)))
+	add_child(_place_label(UiKit.make_label(title, FONT_PANEL_TITLE, C_GOLD), Rect2(rect.position.x + 6, rect.position.y, rect.size.x - 10, rect.size.y)))
 	if not tag.is_empty():
-		var tag_label := _place_label(UiKit.make_label(tag, 4, C_TEXT_FAINT), Rect2(rect.position.x, rect.position.y, rect.size.x - 5, rect.size.y))
+		var tag_label := _place_label(UiKit.make_label(tag, FONT_PANEL_TAG, C_TEXT_FAINT), Rect2(rect.position.x, rect.position.y, rect.size.x - 5, rect.size.y))
 		tag_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		add_child(tag_label)
 
@@ -844,7 +876,7 @@ func _panel_caption(rect: Rect2, title: String, tag: String) -> void:
 func _section_label(rect: Rect2, text: String) -> void:
 	# Expand the text box so tall Vietnamese diacritics are never clipped.
 	var lr := Rect2(rect.position.x, rect.position.y - 3, rect.size.x, rect.size.y + 6)
-	add_child(_place_label(UiKit.make_label(text, 6, Color(C_GOLD, 0.92)), lr))
+	add_child(_place_label(UiKit.make_label(text, FONT_SECTION, Color(C_GOLD, 0.92)), lr))
 	# Decorative leading ticks.
 	_add_rect(self, Rect2(rect.position.x - 6, rect.position.y + 5, 3, 1), Color(C_GOLD_DIM, 0.8))
 	_add_diamond(self, Vector2(rect.position.x - 8, rect.position.y + 5.5), 1.5, Color(C_GOLD, 0.7))
@@ -889,7 +921,7 @@ func _add_count_badge(parent: Control, count: int, pos: Vector2) -> void:
 	_add_rect(badge, Rect2(0, 0, 11, 10), Color(0.07, 0.055, 0.032, 0.96))
 	_add_gradient(badge, Rect2(1, 1, 9, 4), Color(0.32, 0.23, 0.10, 0.7), Color(0.07, 0.05, 0.02, 0.0), true)
 	_frame_outline(badge, Rect2(0, 0, 11, 10), Color(C_GOLD, 0.78))
-	var label := _place_label(UiKit.make_label(str(count), 4, C_GOLD), Rect2(0, -1, 11, 11))
+	var label := _place_label(UiKit.make_label(str(count), FONT_BADGE, C_GOLD), Rect2(0, -1, 11, 11))
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	badge.add_child(label)
 
@@ -897,7 +929,7 @@ func _add_count_badge(parent: Control, count: int, pos: Vector2) -> void:
 func _add_round_count_badge(parent: Control, count: int, center: Vector2) -> void:
 	_add_disc(parent, center, 4.7, Color(0.88, 0.68, 0.30, 1.0))
 	_add_disc(parent, center, 3.7, Color(0.11, 0.08, 0.045, 1.0))
-	var label := _place_label(UiKit.make_label(str(count), 4, C_GOLD), Rect2(center.x - 6, center.y - 6, 12, 12))
+	var label := _place_label(UiKit.make_label(str(count), FONT_BADGE, C_GOLD), Rect2(center.x - 6, center.y - 6, 12, 12))
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	parent.add_child(label)
 
@@ -949,7 +981,7 @@ func _add_reward_slot(parent: Control, index: int, glyph: String, amount: String
 		var ghost := _make_reward_icon(glyph, icon_rect, tint)
 		ghost.modulate = Color(1, 1, 1, 0.16)
 		slot.add_child(ghost)
-		var q := _place_label(UiKit.make_label("?", 9, Color(tint, 0.80)), Rect2(0, 6, 30, 18))
+		var q := _place_label(UiKit.make_label("?", FONT_REWARD_GHOST, Color(tint, 0.80)), Rect2(0, 6, 30, 18))
 		q.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		slot.add_child(q)
 
@@ -959,7 +991,7 @@ func _add_reward_slot(parent: Control, index: int, glyph: String, amount: String
 
 	# Quantity, centred beneath the slot.
 	if filled:
-		var qty := _place_label(UiKit.make_label(amount, 5, C_TEXT), Rect2(-3, 31, 36, 9))
+		var qty := _place_label(UiKit.make_label(amount, FONT_REWARD_QTY, C_TEXT), Rect2(-3, 31, 36, 9))
 		qty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		slot.add_child(qty)
 
