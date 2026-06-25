@@ -20,16 +20,19 @@ func _ready() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	await get_tree().process_frame
-	assert(journal.visible_indices == [0, 2])
+	# Only received (active) quests appear — the inactive quest_hidden is now hidden.
+	assert(journal.visible_indices == [0])
 	assert(journal._tabs_host.get_child_count() == 3)
-	assert(journal._list_host.get_child_count() == 2)
+	assert(journal._list_host.get_child_count() == 1)
 	assert(journal._detail_title.text == "Tiếng Gọi Từ Phương Xa")
-	assert(journal._tracked_badge.text == "◆ ĐANG THEO DÕI")
+	assert(journal._tracked_badge.text == "ĐANG THEO DÕI")
 	assert(journal._objectives_host.get_child_count() >= 3)
+	var objective_texts := _objective_texts(journal._objectives_host)
+	assert(objective_texts[0] == "Thu thập 4 mảnh tín hiệu")
+	assert(objective_texts[1] == "Tìm lối vào khu vực bị lãng quên")
 	assert(journal._hints_host.get_child_count() >= 3)
-	assert(journal._basic_rewards_host.get_child_count() == 3)
-	assert(journal._bonus_rewards_host.get_child_count() == 3)
-	assert(journal._rewards_host.get_child_count() == 2)
+	assert(journal._basic_rewards_host.get_child_count() == 1)
+	assert(journal._bonus_rewards_host.get_child_count() == 0)
 	assert(journal._track_button_label.text == "ĐANG THEO DÕI")
 
 	var output := "res://assets/ui/quest_journal_v2/preview.png"
@@ -101,3 +104,13 @@ func _hints() -> Dictionary:
 			"3": {"text": "Một mảnh nằm sau vật thể có biểu tượng giống nhau."},
 		},
 	}
+
+
+func _objective_texts(parent: Node) -> Array[String]:
+	var result: Array[String] = []
+	for child in parent.get_children():
+		if child is Label:
+			var text := str((child as Label).text)
+			if not text.is_empty() and not text.begins_with("+"):
+				result.append(text)
+	return result

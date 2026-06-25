@@ -133,7 +133,7 @@ func _build_ui() -> void:
 	_eyebrow_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_eyebrow_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_eyebrow_label.add_theme_constant_override("shadow_offset_y", 1)
-	_eyebrow_label.position = Vector2(169, 0)
+	_eyebrow_label.position = Vector2(169, 1)
 	_eyebrow_label.size = Vector2(142, 25)
 	_title_group.add_child(_eyebrow_label)
 
@@ -173,8 +173,8 @@ func _build_ui() -> void:
 	_text_rtl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_text_rtl.focus_mode = Control.FOCUS_NONE
 	_text_rtl.mouse_filter = Control.MOUSE_FILTER_STOP
-	_text_rtl.position = Vector2(45, 15)
-	_text_rtl.size = Vector2(238, 45)
+	_text_rtl.position = Vector2(45, 11)
+	_text_rtl.size = Vector2(238, 43)
 	_text_rtl.add_theme_font_size_override("normal_font_size", TEXT_FONT_SIZE)
 	_text_rtl.add_theme_color_override("default_color", COLOR_TEXT)
 	_text_rtl.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.92))
@@ -186,7 +186,7 @@ func _build_ui() -> void:
 	_text_panel.add_child(_text_rtl)
 
 	_continue_marker = UiKit.make_label("›", 12, COLOR_TITLE)
-	_continue_marker.position = Vector2(288, 46)
+	_continue_marker.position = Vector2(288, 42)
 	_continue_marker.size = Vector2(16, 14)
 	_continue_marker.visible = false
 	_text_panel.add_child(_continue_marker)
@@ -340,10 +340,10 @@ func _play_slide(index: int) -> void:
 		titles.tween_property(_title_group, "modulate:a", 1.0, 1.1)
 
 	# Text panel rises in with the typewriter.
-	_text_panel.position.y = 187
+	_text_panel.position.y = 183
 	_text_panel.modulate.a = 0.0
 	var panel_in := create_tween()
-	panel_in.tween_property(_text_panel, "position:y", 176.0, 0.4).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	panel_in.tween_property(_text_panel, "position:y", 172.0, 0.4).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	panel_in.parallel().tween_property(_text_panel, "modulate:a", 1.0, 0.4)
 
 	_begin_text(str(slide.get("text", "")))

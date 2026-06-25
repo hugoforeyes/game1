@@ -33,7 +33,7 @@ func _ready() -> void:
 	assert(QuestManager._toast_busy)
 	assert(QuestManager._toast_queue.size() == 1)
 	assert(QuestManager._toast_host.get_child_count() == 1)
-	assert(not QuestManager._tracker_panel.visible)
+	assert(not QuestManager._tracker_view.visible)
 
 	await get_tree().create_timer(3.2).timeout
 	await get_tree().process_frame
@@ -48,6 +48,6 @@ func _ready() -> void:
 	assert(not QuestManager._toast_busy)
 	assert(QuestManager._toast_host.get_child_count() == 0)
 	QuestManager._process(0.0)
-	assert(QuestManager._tracker_panel.visible)
+	assert(QuestManager._tracker_view.visible)
 	print("[NotificationQueueTest] sequential playback and HUD suppression passed")
 	get_tree().quit()

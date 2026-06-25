@@ -14,18 +14,9 @@ signal quests_changed
 signal npc_talked(npc_id: String)
 
 const TOAST_SECONDS := 2.4
-const QuestTrackerFrameScript = preload("res://scripts/ui/QuestTrackerFrame.gd")
+const QuestTrackerViewScript = preload("res://scripts/ui/QuestTrackerView.gd")
 const QuestNotificationToastScript = preload("res://scripts/ui/QuestNotificationToast.gd")
 const QuestJournalViewScript = preload("res://scripts/ui/QuestJournalView.gd")
-const QUEST_UI_COMPONENT_DIR := "res://assets/ui/quest_hint_v1/components/"
-const TRACKER_V2_COMPONENT_DIR := "res://assets/ui/quest_tracker_v2/components/"
-const COLOR_HINT := Color(0.58, 0.94, 0.96, 1.0)
-const TRACKER_WIDTH := 170.0
-const TRACKER_RIGHT_MARGIN := 6.0
-const TRACKER_TOP := 6.0
-const TRACKER_EXPANDED_X := 480.0 - TRACKER_RIGHT_MARGIN - TRACKER_WIDTH
-const TRACKER_COMPACT_SIZE := 30.0
-const TRACKER_COMPACT_X := 480.0 - TRACKER_RIGHT_MARGIN - TRACKER_COMPACT_SIZE
 
 var quests: Array = []
 var quest_states: Dictionary = {}  # quest_id -> {state, objective_index, progress, choices}
@@ -35,30 +26,9 @@ var current_zone_id: String = ""
 
 var _ui: CanvasLayer = null
 var _journal_layer: CanvasLayer = null
-var _tracker_panel: QuestTrackerFrame
-var _tracker_quest_icon: TextureRect
-var _tracker_title: Label
-var _tracker_objective_heading: Label
-var _tracker_objective: Label
-var _tracker_progress: Label
-var _tracker_collapse_icon: TextureButton
-var _tracker_divider: TextureRect
-var _tracker_objective_icon: TextureRect
-var _tracker_progress_divider: TextureRect
-var _tracker_progress_icon: TextureRect
-var _tracker_progress_heading: Label
-var _tracker_progress_bar_bg: ColorRect
-var _tracker_progress_bar_fill: ColorRect
-var _tracker_hint_divider: TextureRect
-var _tracker_hint_icon: TextureRect
-var _tracker_hint_heading: Label
-var _tracker_hints_root: Control
-var _tracker_hint_rows: Array[Control] = []
-var _tracker_core_nodes: Array[CanvasItem] = []
-var _tracker_base_height := 48.0
+var _tracker_view: QuestTrackerView = null
+var _tracker_layer: CanvasLayer = null
 var _tracker_compact: bool = false
-var _hint_collapsed: bool = false
-var _hint_available: bool = false
 var _toast_host: Control
 var _toast_queue: Array = []
 var _toast_busy: bool = false
@@ -339,10 +309,10 @@ func reveal_hint(
 	}
 	hints_by_level[level_key] = payload
 	revealed_hints[key] = hints_by_level
-	_hint_collapsed = false
 	if is_new:
 		_toast_queue.append({"kind": "hint", "hint": payload})
 	_refresh_tracker()
+	_refresh_open_journal()
 
 
 func stage_unlocked(unlock: Dictionary) -> bool:
@@ -465,12 +435,13 @@ func resolve_quest_choice(quest_id: String, option_id: String) -> bool:
 			outcome,
 		):
 			return false
-		_pending_choices = _pending_choices.filter(func(payload: Dictionary) -> bool:
-			var queued_quest: Dictionary = payload.get("quest", {}) as Dictionary
-			var queued_objective: Dictionary = payload.get("objective", {}) as Dictionary
-			return str(queued_quest.get("id", "")) != quest_id \
-				or str(queued_objective.get("id", "")) != str(objective.get("id", ""))
-		)
+		var kept_choices: Array = []
+		for payload in _pending_choices:
+			var queued_quest: Dictionary = (payload as Dictionary).get("quest", {}) as Dictionary
+			var queued_objective: Dictionary = (payload as Dictionary).get("objective", {}) as Dictionary
+			if str(queued_quest.get("id", "")) != quest_id or str(queued_objective.get("id", "")) != str(objective.get("id", "")):
+				kept_choices.append(payload)
+		_pending_choices = kept_choices
 		choices[str(objective.get("id"))] = option_id
 		_apply_choice_outcome(outcome)
 		_complete_current_objective(quest)
@@ -534,39 +505,6 @@ func _finish_quest(quest: Dictionary) -> void:
 # ── UI construction ───────────────────────────────────────────────────────────
 
 
-func _make_art(file_name: String, rect: Rect2, mode: TextureRect.StretchMode = TextureRect.STRETCH_SCALE) -> TextureRect:
-	var art := TextureRect.new()
-	art.texture = load(QUEST_UI_COMPONENT_DIR + file_name) as Texture2D
-	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	art.stretch_mode = mode
-	art.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	art.position = rect.position.round()
-	art.size = rect.size.round()
-	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	if mode == TextureRect.STRETCH_TILE:
-		art.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
-	return art
-
-
-func _make_tracker_art(file_name: String, rect: Rect2) -> TextureRect:
-	var art := TextureRect.new()
-	art.texture = load(TRACKER_V2_COMPONENT_DIR + file_name) as Texture2D
-	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	art.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	art.position = rect.position.round()
-	art.size = rect.size.round()
-	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	return art
-
-
-func _place_label(label: Label, rect: Rect2, vertical: VerticalAlignment = VERTICAL_ALIGNMENT_CENTER) -> Label:
-	label.position = rect.position.round()
-	label.size = rect.size.round()
-	label.vertical_alignment = vertical
-	return label
-
-
 func _ensure_ui() -> void:
 	if _ui != null:
 		return
@@ -582,83 +520,15 @@ func _ensure_ui() -> void:
 	_journal_layer.transform = Transform2D.IDENTITY
 	add_child(_journal_layer)
 
-	# Combined quest tracker, anchored to the upper-right of the 480x270 UI canvas.
-	_tracker_panel = QuestTrackerFrameScript.new()
-	_tracker_panel.setup(Rect2(TRACKER_EXPANDED_X, TRACKER_TOP, TRACKER_WIDTH, 100))
-	_tracker_panel.visible = false
-	_ui.add_child(_tracker_panel)
-
-	_tracker_quest_icon = _make_tracker_art("badge_expanded.png", Rect2(8, 5, 28, 28))
-	_tracker_panel.add_child(_tracker_quest_icon)
-	_tracker_title = _place_label(UiKit.make_label("", 8, UiKit.COLOR_ACCENT), Rect2(40, 6, 104, 24))
-	_tracker_title.clip_text = true
-	_tracker_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_tracker_panel.add_child(_tracker_title)
-	_tracker_collapse_icon = TextureButton.new()
-	_tracker_collapse_icon.texture_normal = load(TRACKER_V2_COMPONENT_DIR + "icon_collapse.png") as Texture2D
-	_tracker_collapse_icon.ignore_texture_size = true
-	_tracker_collapse_icon.stretch_mode = TextureButton.STRETCH_KEEP_ASPECT_CENTERED
-	_tracker_collapse_icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	_tracker_collapse_icon.position = Vector2(148, 10)
-	_tracker_collapse_icon.size = Vector2(14, 14)
-	_tracker_collapse_icon.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	_tracker_collapse_icon.pressed.connect(_toggle_tracker_compact)
-	_tracker_panel.add_child(_tracker_collapse_icon)
-	_tracker_divider = _make_art("divider.png", Rect2(10, 35, 150, 2), TextureRect.STRETCH_TILE)
-	_tracker_panel.add_child(_tracker_divider)
-
-	_tracker_objective_icon = _make_tracker_art("icon_objective.png", Rect2(10, 40, 11, 11))
-	_tracker_panel.add_child(_tracker_objective_icon)
-	_tracker_objective_heading = _place_label(UiKit.make_label("MỤC TIÊU", 6, UiKit.COLOR_ACCENT), Rect2(25, 38, 120, 14))
-	_tracker_panel.add_child(_tracker_objective_heading)
-	_tracker_objective = _place_label(
-		UiKit.make_label("", 6, UiKit.COLOR_TEXT), Rect2(25, 52, 135, 16), VERTICAL_ALIGNMENT_TOP
-	)
-	_tracker_objective.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_tracker_objective.max_lines_visible = 4
-	_tracker_objective.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_tracker_panel.add_child(_tracker_objective)
-
-	_tracker_progress_divider = _make_art("divider.png", Rect2(10, 72, 150, 2), TextureRect.STRETCH_TILE)
-	_tracker_progress_divider.modulate = Color(0.48, 0.72, 1.0, 0.55)
-	_tracker_panel.add_child(_tracker_progress_divider)
-	_tracker_progress_icon = _make_tracker_art("icon_progress.png", Rect2(10, 78, 10, 10))
-	_tracker_panel.add_child(_tracker_progress_icon)
-	_tracker_progress_heading = _place_label(UiKit.make_label("TIẾN ĐỘ", 6, Color(0.45, 0.75, 1.0, 1.0)), Rect2(25, 75, 90, 14))
-	_tracker_panel.add_child(_tracker_progress_heading)
-	_tracker_progress = _place_label(UiKit.make_label("", 6, UiKit.COLOR_TEXT), Rect2(124, 75, 36, 14))
-	_tracker_progress.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_tracker_panel.add_child(_tracker_progress)
-	_tracker_progress_bar_bg = ColorRect.new()
-	_tracker_progress_bar_bg.color = Color(0.06, 0.07, 0.08, 1.0)
-	_tracker_progress_bar_bg.position = Vector2(25, 91)
-	_tracker_progress_bar_bg.size = Vector2(135, 4)
-	_tracker_progress_bar_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tracker_panel.add_child(_tracker_progress_bar_bg)
-	_tracker_progress_bar_fill = ColorRect.new()
-	_tracker_progress_bar_fill.color = Color(0.34, 0.65, 1.0, 0.95)
-	_tracker_progress_bar_fill.position = Vector2(26, 92)
-	_tracker_progress_bar_fill.size = Vector2(0, 2)
-	_tracker_progress_bar_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tracker_panel.add_child(_tracker_progress_bar_fill)
-
-	_tracker_hint_divider = _make_art("divider.png", Rect2(10, 102, 150, 2), TextureRect.STRETCH_TILE)
-	_tracker_hint_divider.modulate = Color(0.55, 1.0, 1.0, 0.65)
-	_tracker_panel.add_child(_tracker_hint_divider)
-	_tracker_hint_icon = _make_tracker_art("icon_hint.png", Rect2(10, 107, 11, 11))
-	_tracker_panel.add_child(_tracker_hint_icon)
-	_tracker_hint_heading = _place_label(UiKit.make_label("GỢI Ý", 6, COLOR_HINT), Rect2(25, 104, 90, 14))
-	_tracker_panel.add_child(_tracker_hint_heading)
-	_tracker_hints_root = Control.new()
-	_tracker_hints_root.position = Vector2(25, 119)
-	_tracker_hints_root.size = Vector2(135, 1)
-	_tracker_panel.add_child(_tracker_hints_root)
-	_tracker_core_nodes.assign([
-		_tracker_quest_icon, _tracker_title, _tracker_divider,
-		_tracker_objective_icon, _tracker_objective_heading, _tracker_objective,
-		_tracker_progress_divider, _tracker_progress_icon, _tracker_progress_heading,
-		_tracker_progress, _tracker_progress_bar_bg, _tracker_progress_bar_fill,
-	])
+	# Quest tracker HUD — authored crisp in native 960x540 in its own unscaled layer.
+	_tracker_layer = CanvasLayer.new()
+	_tracker_layer.layer = 44
+	_tracker_layer.transform = Transform2D.IDENTITY
+	add_child(_tracker_layer)
+	_tracker_view = QuestTrackerViewScript.new()
+	_tracker_view.visible = false
+	_tracker_view.collapse_toggled.connect(_toggle_tracker_compact)
+	_tracker_layer.add_child(_tracker_view)
 
 	# Toast host (top-center)
 	_toast_host = Control.new()
@@ -676,6 +546,11 @@ func _build_journal() -> void:
 	_journal_view.close_requested.connect(_toggle_journal)
 	_journal_view.track_requested.connect(_on_journal_track_requested)
 	_journal_layer.add_child(_journal_root)
+	# Keep an open journal in sync with live quest and inventory state in real time.
+	if not quests_changed.is_connected(_refresh_open_journal):
+		quests_changed.connect(_refresh_open_journal)
+	if not InventoryManager.inventory_changed.is_connected(_refresh_open_journal):
+		InventoryManager.inventory_changed.connect(_refresh_open_journal)
 
 
 func _build_choice_dialog() -> void:
@@ -722,7 +597,8 @@ func _process(_delta: float) -> void:
 	var has_active: bool = quests.any(func(q): return str(_state_of(q).get("state")) == "active")
 	var hud_visible := has_active and not GameManager.ui_blocking_input and not _journal_open \
 		and not _choice_open and not _toast_busy
-	_tracker_panel.visible = hud_visible
+	if _tracker_view != null:
+		_tracker_view.visible = hud_visible
 
 	if not _pending_choices.is_empty() and not _choice_open and not GameManager.ui_blocking_input:
 		_open_choice(_pending_choices.pop_front() as Dictionary)
@@ -740,143 +616,35 @@ func _refresh_tracker() -> void:
 		if str(quest.get("id", "")) == tracked_quest_id:
 			display_quest = quest
 			break
-	if not display_quest.is_empty():
-		var objective: Dictionary = _current_objective(display_quest)
-		for node in _tracker_core_nodes:
-			node.visible = true
-		_tracker_collapse_icon.visible = true
-		_tracker_title.text = str(display_quest.get("title", ""))
-		_tracker_objective.text = str(objective.get("description", ""))
-		var state: Dictionary = _state_of(display_quest)
-		var has_count := objective.has("count")
-		var current := maxi(0, int(state.get("progress", 0))) if has_count else 0
-		var total := maxi(1, int(objective.get("count", 1))) if has_count else 1
-		_tracker_progress.text = "%d / %d" % [current, total]
-		var ratio := clampf(float(current) / float(total), 0.0, 1.0)
-		_tracker_progress_bar_fill.size.x = roundf(133.0 * ratio)
-		_layout_tracker_objective()
-		_refresh_hint_rows(display_quest, objective)
-		_apply_tracker_compact()
+	if display_quest.is_empty():
 		return
-	_hint_available = false
-	_tracker_title.text = ""
-	_tracker_objective.text = ""
-	_tracker_progress.text = ""
-	_tracker_panel.size = Vector2(TRACKER_WIDTH, 48)
-	_tracker_collapse_icon.visible = false
-	_tracker_hint_divider.visible = false
-	_tracker_hint_icon.visible = false
-	_tracker_hints_root.visible = false
-
-
-func _layout_tracker_objective() -> void:
-	var text := _tracker_objective.text
-	var font := _tracker_objective.get_theme_font("font")
-	var measured := font.get_multiline_string_size(
-		text, HORIZONTAL_ALIGNMENT_LEFT, 135.0, 6, 4
-	)
-	var objective_height := clampf(ceilf(measured.y), 14.0, 44.0)
-	_tracker_objective.position = Vector2(25, 52)
-	_tracker_objective.size = Vector2(135, objective_height)
-	var progress_y := 52.0 + objective_height + 4.0
-	_tracker_progress_divider.position = Vector2(10, progress_y)
-	_tracker_progress_icon.position = Vector2(10, progress_y + 7.0)
-	_tracker_progress_heading.position = Vector2(25, progress_y + 4.0)
-	_tracker_progress.position = Vector2(124, progress_y + 4.0)
-	_tracker_progress_bar_bg.position = Vector2(25, progress_y + 20.0)
-	_tracker_progress_bar_fill.position = Vector2(26, progress_y + 21.0)
-	_tracker_base_height = progress_y + 30.0
-	var hint_divider_y := _tracker_base_height + 1.0
-	_tracker_hint_divider.position = Vector2(10, hint_divider_y)
-	_tracker_hint_icon.position = Vector2(10, hint_divider_y + 6.0)
-	_tracker_hint_heading.position = Vector2(25, hint_divider_y + 3.0)
-	_tracker_hints_root.position = Vector2(25, hint_divider_y + 18.0)
-
-
-func _refresh_hint_rows(quest: Dictionary, objective: Dictionary) -> void:
-	for child in _tracker_hints_root.get_children():
-		child.free()
-	_tracker_hint_rows.clear()
-	var key := "%s:%s" % [str(quest.get("id", "")), str(objective.get("id", ""))]
+	var objective: Dictionary = _current_objective(display_quest)
+	var state: Dictionary = _state_of(display_quest)
+	var has_count := objective.has("count")
+	var current := maxi(0, int(state.get("progress", 0))) if has_count else 0
+	var total := maxi(1, int(objective.get("count", 1))) if has_count else 1
+	var key := "%s:%s" % [str(display_quest.get("id", "")), str(objective.get("id", ""))]
 	var hints_by_level: Dictionary = revealed_hints.get(key, {}) as Dictionary
 	var levels: Array[int] = []
 	for level_key in hints_by_level:
 		levels.append(int(level_key))
 	levels.sort()
-	_hint_available = not levels.is_empty()
-	var show_hints := _hint_available and not _hint_collapsed
-	_tracker_hint_divider.visible = show_hints
-	_tracker_hint_icon.visible = show_hints
-	_tracker_hint_heading.visible = show_hints
-	_tracker_hints_root.visible = show_hints
-	if not show_hints:
-		_tracker_panel.size = Vector2(TRACKER_WIDTH, _tracker_base_height)
-		return
-
-	var y_offset := 0.0
-	for index in range(levels.size()):
-		var level := levels[index]
+	var hints: Array = []
+	for level in levels:
 		var payload: Dictionary = hints_by_level.get(str(level), {}) as Dictionary
-		var row := Control.new()
-		row.position = Vector2(0, y_offset)
-		row.size.x = 135
-		_tracker_hints_root.add_child(row)
-		_tracker_hint_rows.append(row)
-
-		var branch_text := "└" if index == levels.size() - 1 else "├"
-		var branch := _place_label(UiKit.make_label(branch_text, 6, COLOR_HINT), Rect2(0, 0, 10, 11), VERTICAL_ALIGNMENT_TOP)
-		row.add_child(branch)
-		var line_text := "Gợi ý %d · %s" % [level, str(payload.get("text", ""))]
-		var line := UiKit.make_label(line_text, 6, Color(COLOR_HINT, 0.86))
-		line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		line.max_lines_visible = 3
-		line.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		var font := line.get_theme_font("font")
-		var measured := font.get_multiline_string_size(line_text, HORIZONTAL_ALIGNMENT_LEFT, 124.0, 6, 3)
-		var row_height := clampf(ceilf(measured.y), 11.0, 33.0)
-		line.position = Vector2(11, 0)
-		line.size = Vector2(124, row_height)
-		line.vertical_alignment = VERTICAL_ALIGNMENT_TOP
-		row.add_child(line)
-		row.size.y = row_height
-		y_offset += row_height + 2.0
-
-	_tracker_hints_root.size.y = y_offset
-	_tracker_panel.size = Vector2(TRACKER_WIDTH, _tracker_hints_root.position.y + y_offset + 7.0)
+		hints.append({"level": level, "text": str(payload.get("text", ""))})
+	_tracker_view.set_data({
+		"title": str(display_quest.get("title", "")),
+		"type": str(display_quest.get("type", "main")),
+		"objective": str(objective.get("description", "")),
+		"current": current, "total": total, "has_count": has_count,
+		"hints": hints,
+		"compact": _tracker_compact,
+	})
 
 
 func _toggle_tracker_compact() -> void:
 	_tracker_compact = not _tracker_compact
-	_refresh_tracker()
-
-
-func _apply_tracker_compact() -> void:
-	if _tracker_panel == null:
-		return
-	if _tracker_compact:
-		_tracker_panel.set_frame_visible(false)
-		for node in _tracker_core_nodes:
-			node.visible = false
-		_tracker_hint_divider.visible = false
-		_tracker_hint_icon.visible = false
-		_tracker_hint_heading.visible = false
-		_tracker_hints_root.visible = false
-		_tracker_panel.position = Vector2(TRACKER_COMPACT_X, TRACKER_TOP)
-		_tracker_panel.size = Vector2(TRACKER_COMPACT_SIZE, TRACKER_COMPACT_SIZE)
-		_tracker_collapse_icon.position = Vector2.ZERO
-		_tracker_collapse_icon.size = Vector2(TRACKER_COMPACT_SIZE, TRACKER_COMPACT_SIZE)
-		_tracker_collapse_icon.texture_normal = load(TRACKER_V2_COMPONENT_DIR + "badge_compact.png") as Texture2D
-	else:
-		_tracker_panel.set_frame_visible(true)
-		_tracker_panel.position = Vector2(TRACKER_EXPANDED_X, TRACKER_TOP)
-		_tracker_collapse_icon.position = Vector2(148, 10)
-		_tracker_collapse_icon.size = Vector2(14, 14)
-		_tracker_collapse_icon.texture_normal = load(TRACKER_V2_COMPONENT_DIR + "icon_collapse.png") as Texture2D
-
-
-func _apply_hint_collapsed() -> void:
-	if _tracker_panel == null:
-		return
 	_refresh_tracker()
 
 
@@ -983,6 +751,11 @@ func _refresh_journal() -> void:
 	_journal_view.set_data(quests, quest_states, revealed_hints, tracked_quest_id, context)
 
 
+func _refresh_open_journal() -> void:
+	if _journal_open:
+		_refresh_journal()
+
+
 func _on_journal_track_requested(quest_id: String) -> void:
 	tracked_quest_id = quest_id
 	_refresh_tracker()
@@ -1050,8 +823,8 @@ func _confirm_choice() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.is_pressed() and not event.is_echo():
-		if (event as InputEventKey).physical_keycode == KEY_H and _tracker_panel != null \
-				and _tracker_panel.visible \
+		if (event as InputEventKey).physical_keycode == KEY_H and _tracker_view != null \
+				and _tracker_view.visible \
 				and not GameManager.ui_blocking_input and not _journal_open and not _choice_open:
 			_toggle_tracker_compact()
 			get_viewport().set_input_as_handled()

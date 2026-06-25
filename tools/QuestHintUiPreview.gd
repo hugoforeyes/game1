@@ -65,29 +65,26 @@ func _ready() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	await get_tree().process_frame
-	assert(QuestManager._tracker_panel.position == Vector2(304, 6))
-	assert(QuestManager._tracker_panel.size.x == 170.0)
-	assert(QuestManager._tracker_objective.get_line_count() >= 2)
-	assert(QuestManager._tracker_progress.text == "2 / 3")
-	assert(QuestManager._tracker_objective_icon.texture != null)
-	assert(QuestManager._tracker_quest_icon.texture != null)
+	var view = QuestManager._tracker_view
+	assert(view != null)
+	assert(view._data.get("current") == 2 and view._data.get("total") == 3)
+	assert(view.line_count >= 1)
 	assert(QuestManager._hint_available)
-	assert(QuestManager._tracker_hint_rows.size() == 3)
-	assert(QuestManager._tracker_panel.size.y > 100.0)
-	assert(QuestManager._tracker_panel._mid_badges.size() == 4)
-	assert(QuestManager._tracker_panel._mid_badges[0].position.x == 74.0)
-	assert(QuestManager._tracker_panel._mid_badges[2].position.y == roundf((QuestManager._tracker_panel.size.y - 22.0) * 0.5))
-	var output := "res://assets/ui/quest_tracker_v2/preview_expanded.png"
+	assert(view.hint_row_count == 3)
+	assert(view._panel_height > 150.0)
+	assert(not view.is_compact)
+	view.visible = true
+	var output := "res://assets/ui/quest_tracker_v3/preview_expanded.png"
 	get_viewport().get_texture().get_image().save_png(ProjectSettings.globalize_path(output))
 	print("[QuestHintUiPreview] wrote %s" % output)
 
 	QuestManager._toggle_tracker_compact()
 	await get_tree().process_frame
-	assert(QuestManager._tracker_panel.position == Vector2(444, 6))
-	assert(QuestManager._tracker_panel.size == Vector2(30, 30))
-	assert(not QuestManager._tracker_objective.visible)
-	assert(QuestManager._tracker_collapse_icon.visible)
-	var compact_output := "res://assets/ui/quest_tracker_v2/preview_compact.png"
+	await get_tree().process_frame
+	assert(view.is_compact)
+	assert(view.size == Vector2(64, 64))
+	view.visible = true
+	var compact_output := "res://assets/ui/quest_tracker_v3/preview_compact.png"
 	get_viewport().get_texture().get_image().save_png(ProjectSettings.globalize_path(compact_output))
 	print("[QuestHintUiPreview] wrote %s" % compact_output)
 	get_tree().quit()
