@@ -5,6 +5,7 @@ const ENEMY_SCENE := preload("res://scenes/enemies/Enemy.tscn")
 const BattleSceneScript := preload("res://scripts/battle/BattleScene.gd")
 const CutscenePlayerScript := preload("res://scripts/cutscene/CutscenePlayer.gd")
 const ItemPickupScript := preload("res://scripts/world/ItemPickup.gd")
+const WorldObjectScript := preload("res://scripts/world/WorldObject.gd")
 
 @onready var background: Sprite2D = $World/Background
 @onready var player: CharacterBody2D = $World/CharacterLayer/GeneratedCharacters/Player
@@ -66,6 +67,7 @@ func _build_imported_world() -> void:
 	_active_interior_exit = {}
 
 	var package_data: Dictionary = GameManager.get_scene_package()
+	ObjectInteractionManager.register_zone_contracts(package_data)
 	var characters: Dictionary = package_data.get("characters", {}) as Dictionary
 	var npcs: Array = characters.get("npcs", []) as Array
 	print("[Main] build imported world definitions=%d instances=%d npcs=%d" % [
@@ -97,6 +99,9 @@ func _build_imported_world() -> void:
 		var tile_position: Vector2i = Vector2i(int(position_tile.get("x", 0)), int(position_tile.get("y", 0)))
 
 		_create_instance_sprite(definition, tile_position)
+
+		if bool(instance.get("interactive", false)):
+			_spawn_world_object(instance, definition)
 
 		if bool(definition.get("solid", false)):
 			# Use the full composite sprite for hull tracing; base_file is only the floor layer
@@ -150,6 +155,15 @@ func _apply_background_limits(texture: Texture2D) -> void:
 		player_camera.limit_top = 0
 		player_camera.limit_right = texture.get_width()
 		player_camera.limit_bottom = texture.get_height()
+
+func _spawn_world_object(instance: Dictionary, definition: Dictionary) -> void:
+	var object_id: String = str(instance.get("interaction_object_id", instance.get("id", "")))
+	var contract: Dictionary = ObjectInteractionManager.contract_for(object_id)
+	if contract.is_empty():
+		return
+	var world_object: Node2D = WorldObjectScript.new() as Node2D
+	generated_characters.add_child(world_object)
+	world_object.setup(contract, instance, definition, {"player": player})
 
 func _create_instance_sprite(definition: Dictionary, tile_position: Vector2i) -> void:
 	if definition.is_empty():
@@ -748,6 +762,10 @@ func _spawn_item_pickups(tile_context: Dictionary) -> void:
 		if not (item is Dictionary):
 			continue
 		var definition: Dictionary = item as Dictionary
+		# Items obtained from a world object in this zone live AT that object — never
+		# scattered on a random tile (so "the letter inside the clock" stays inside it).
+		if ObjectInteractionManager.is_object_sourced_item(str(definition.get("id", "")), zone_id):
+			continue
 		if not (definition.get("found_in", []) as Array).has(zone_id):
 			continue
 		var per_zone: Dictionary = definition.get("world_spawns", {}) as Dictionary

@@ -109,6 +109,7 @@ func notify_zone_entered(zone_id: String) -> void:
 			_skip_unavailable_objectives(quest)
 			_finish_quest_if_exhausted(quest)
 	_progress_reach_objectives()
+	_settle_collect_objectives()
 	quests_changed.emit()
 	_refresh_tracker()
 
@@ -136,8 +137,30 @@ func notify_npc_talked(npc_id: String) -> void:
 					_pending_choices.append({"quest": quest, "objective": objective})
 			"deliver":
 				_try_deliver(quest, objective)
+	_settle_collect_objectives()
 	quests_changed.emit()
 	_refresh_tracker()
+
+
+## Resolve an objective the player closes by interacting with a WORLD OBJECT
+## (the chapter_object_interactions contract's `completes`). Idempotent: only acts
+## when the named objective is the quest's CURRENT active one — `collect` objectives
+## are usually already advanced by the item_obtained signal that the grant fired, so
+## this is a safety net mainly for give/exchange (non-collect) closures. Returns true
+## when it actually advanced the quest.
+func notify_object_objective(quest_id: String, objective_id: String) -> bool:
+	for quest in quests:
+		if str(quest.get("id")) != quest_id:
+			continue
+		var objective: Dictionary = _current_objective(quest)
+		if objective.is_empty() or str(objective.get("id")) != objective_id:
+			return false
+		_complete_current_objective(quest)
+		quests_changed.emit()
+		_refresh_tracker()
+		print("[Quest] %s objective %s closed by object interaction" % [quest_id, objective_id])
+		return true
+	return false
 
 
 func _try_deliver(quest: Dictionary, objective: Dictionary) -> void:
@@ -176,6 +199,43 @@ func _on_item_obtained(item_id: String) -> void:
 	if changed:
 		quests_changed.emit()
 		_refresh_tracker()
+
+
+## Re-evaluate every active quest's CURRENT objective against the inventory the
+## player already holds. `_on_item_obtained` only fires the moment an item arrives,
+## so an item grabbed BEFORE its collect objective became active (e.g. searching a
+## chest before the quest reaches that step) would otherwise never register. Calling
+## this whenever items change or an objective advances makes collect order-independent.
+func notify_items_changed() -> void:
+	if _settle_collect_objectives():
+		quests_changed.emit()
+		_refresh_tracker()
+
+
+func _settle_collect_objectives() -> bool:
+	var changed := false
+	for quest in quests:
+		var guard := 0
+		while guard < 12:
+			guard += 1
+			var objective: Dictionary = _current_objective(quest)
+			if objective.is_empty() or str(objective.get("kind")) != "collect":
+				break
+			var quest_item: Dictionary = InventoryManager.quest_item_by_id(
+				str(objective.get("item_id", objective.get("item_ref", ""))), str(quest.get("id"))
+			)
+			var wanted: String = str(quest_item.get("id", ""))
+			if wanted.is_empty():
+				break
+			var owned: int = InventoryManager.count_of(wanted)
+			var state: Dictionary = _state_of(quest)
+			state["progress"] = owned
+			if owned >= int(objective.get("count", 1)):
+				_complete_current_objective(quest)
+				changed = true
+			else:
+				break
+	return changed
 
 
 func notify_enemy_defeated(enemy_id: String) -> void:
