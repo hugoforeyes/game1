@@ -730,6 +730,7 @@ func _apply_options_layout() -> void:
 	_opt_container.visible  = true
 	_set_choice_frame_visible(true)
 	_chat_scroll.size.y     = max(opt_y - OPT_GAP - _scroll_y, 20.0)
+	_retarget_staged_camera()
 	_scroll_to_bottom()
 
 func _layout_choice_frame(rect: Rect2) -> void:
@@ -915,10 +916,6 @@ func stage_camera_for_conversation(player: Node2D, npc: Node2D) -> void:
 	if camera_parent == null:
 		return
 
-	var midpoint := (player.global_position + npc.global_position) * 0.5
-	var target := midpoint + Vector2(0.0, 96.0)
-	target = _clamp_camera_target(target, _player_camera)
-
 	_staged_camera = Camera2D.new()
 	_staged_camera.position_smoothing_enabled = false
 	_staged_camera.zoom = _player_camera.zoom
@@ -930,10 +927,46 @@ func stage_camera_for_conversation(player: Node2D, npc: Node2D) -> void:
 	camera_parent.add_child(_staged_camera)
 	_staged_camera.make_current()
 
+	_retarget_staged_camera(0.28)
+
+func _retarget_staged_camera(duration: float = 0.22) -> void:
+	if _staged_camera == null or not is_instance_valid(_staged_camera):
+		return
+	if _conversation_player == null or not is_instance_valid(_conversation_player) \
+			or _conversation_npc == null or not is_instance_valid(_conversation_npc):
+		return
+	var target := _conversation_camera_target(_staged_camera)
+	if _staged_camera.global_position.distance_to(target) < 1.0:
+		return
 	var tween := create_tween()
-	tween.tween_property(_staged_camera, "global_position", target, 0.28)\
+	tween.tween_property(_staged_camera, "global_position", target, duration)\
 		.set_trans(Tween.TRANS_CUBIC)\
 		.set_ease(Tween.EASE_OUT)
+
+func _conversation_camera_target(camera: Camera2D) -> Vector2:
+	var midpoint := (_conversation_player.global_position + _conversation_npc.global_position) * 0.5
+	var vp := get_viewport().get_visible_rect().size
+	var anchor := _conversation_actor_screen_anchor()
+	var offset := Vector2(
+		(vp.x * 0.5 - anchor.x) / maxf(camera.zoom.x, 0.001),
+		(vp.y * 0.5 - anchor.y) / maxf(camera.zoom.y, 0.001)
+	)
+	return _clamp_camera_target(midpoint + offset, camera)
+
+func _conversation_actor_screen_anchor() -> Vector2:
+	var vp := get_viewport().get_visible_rect().size
+	var dialogue_top := _panel.position.y * UI_SCALE
+	var top_margin := 28.0
+	var stage_bottom := maxf(top_margin + 120.0, dialogue_top - 34.0)
+	var anchor_y := lerpf(top_margin, stage_bottom, 0.54)
+
+	if _choice_panel_bg != null and _choice_panel_bg.visible and _choice_rect.size.x > 0.0:
+		var choice_left := _choice_rect.position.x * UI_SCALE
+		var open_right := clampf(choice_left - 36.0, vp.x * 0.28, vp.x - 36.0)
+		var anchor_x := clampf(open_right * 0.56, 120.0, vp.x * 0.44)
+		return Vector2(anchor_x, anchor_y)
+
+	return Vector2(vp.x * 0.5, anchor_y)
 
 func _clamp_camera_target(target: Vector2, camera: Camera2D) -> Vector2:
 	var vp := get_viewport().get_visible_rect().size

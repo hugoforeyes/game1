@@ -5,23 +5,23 @@ extends Node2D
 ## exchange. Mirrors the NPC interaction feel — a proximity prompt, a gold "!" when
 ## its objective is current, and a soft glow so the player reads it as interactable.
 
-const InteractionPrompt := preload("res://scripts/npc/InteractionPrompt.gd")
 const ObjectInteractionViewScript := preload("res://scripts/ui/ObjectInteractionView.gd")
+
+const PLAYER_COLLISION_OFFSET := Vector2(0.0, 28.0)
+const PLAYER_COLLISION_HALF := Vector2(10.0, 6.0)
+const TOUCH_GROW_PX := 3.0
 
 var object_id: String = ""
 var contract: Dictionary = {}
 
 var _player: Node2D = null
 var _footprint_center: Vector2 = Vector2.ZERO
-var _prompt: Node2D = null
-var _prompt_layer: CanvasLayer = null
 var _in_range: bool = false
 var _marker: Label = null
 var _glow: Sprite2D = null
 var _glow_time: float = 0.0
 var _view_open: bool = false
 var _footprint_rect: Rect2 = Rect2()
-var _reach_px: float = 0.0
 var _has_affordance_glow: bool = false
 
 
@@ -41,7 +41,6 @@ func setup(p_contract: Dictionary, instance: Dictionary, definition: Dictionary,
 	# reachable from any adjacent tile (a tall clock tower included).
 	_footprint_rect = Rect2(origin, Vector2(w, h) * GameManager.TILE_SIZE)
 	_footprint_center = origin + Vector2(w, h) * GameManager.TILE_SIZE * 0.5
-	_reach_px = 1.45 * GameManager.TILE_SIZE
 	position = _footprint_center
 
 	# A glow only marks objects that reward the player (a hidden item or a quest);
@@ -52,8 +51,11 @@ func setup(p_contract: Dictionary, instance: Dictionary, definition: Dictionary,
 
 	if _has_affordance_glow:
 		_setup_glow(w, h)
-	_setup_prompt()
 	_setup_marker(h)
+
+
+func _exit_tree() -> void:
+	WorldInteractionManager.clear_owner(self)
 
 
 func _setup_glow(w: int, h: int) -> void:
@@ -85,20 +87,6 @@ func _setup_glow(w: int, h: int) -> void:
 	add_child(_glow)
 
 
-func _setup_prompt() -> void:
-	_prompt_layer = CanvasLayer.new()
-	_prompt_layer.layer = 128
-	add_child(_prompt_layer)
-	_prompt = InteractionPrompt.new()
-	_prompt.scale = Vector2(1.78, 1.78)  # prompt art authored for the 480x270 UI space
-	_prompt_layer.add_child(_prompt)
-	var menu_items: Array[String] = [str(contract.get("verb", "Quan sát"))]
-	_prompt.setup_menu("", menu_items)
-	_prompt.track(_player, Vector2(0.0, 0.0))
-	_prompt.item_confirmed.connect(_on_prompt_confirmed)
-	_prompt.hide_prompt()
-
-
 func _setup_marker(h: int) -> void:
 	_marker = Label.new()
 	_marker.text = "!"
@@ -118,31 +106,47 @@ func _process(delta: float) -> void:
 	if GameManager.ui_blocking_input or _player == null or not is_instance_valid(_player):
 		if _in_range:
 			_in_range = false
-			if _prompt != null:
-				_prompt.hide_prompt()
+			WorldInteractionManager.clear_owner(self)
 		return
 
-	# distance from the player to the nearest point of the object's footprint
-	var p := _player.global_position
-	var nearest := Vector2(
-		clampf(p.x, _footprint_rect.position.x, _footprint_rect.end.x),
-		clampf(p.y, _footprint_rect.position.y, _footprint_rect.end.y),
-	)
-	var inside := p.distance_to(nearest) <= _reach_px
-	if inside and not _in_range:
+	var touch_distance := _touch_distance_tiles()
+	var touching := touch_distance <= 0.0
+	if touching:
+		WorldInteractionManager.submit_candidate(
+			self,
+			"object",
+			_current_verb(),
+			1,
+			touch_distance + _player.global_position.distance_to(_footprint_center) / GameManager.TILE_SIZE * 0.001,
+			_player,
+			"_on_prompt_confirmed"
+		)
+
+	var active := WorldInteractionManager.is_active(self, "object")
+	if active and not _in_range:
 		_in_range = true
-		var menu_items: Array[String] = [_current_verb()]
-		_prompt.setup_menu("", menu_items)
-		_prompt.show_prompt()
-	elif not inside and _in_range:
+	elif not active and _in_range:
 		_in_range = false
-		_prompt.hide_prompt()
 
 
 func _current_verb() -> String:
 	if ObjectInteractionManager.is_used(object_id) and bool(contract.get("one_shot", false)):
 		return "Xem lại"
 	return str(contract.get("verb", "Quan sát"))
+
+
+func _touch_distance_tiles() -> float:
+	if _player == null or not is_instance_valid(_player):
+		return INF
+	var foot_center := _player.global_position + PLAYER_COLLISION_OFFSET
+	var player_rect := Rect2(foot_center - PLAYER_COLLISION_HALF, PLAYER_COLLISION_HALF * 2.0).grow(TOUCH_GROW_PX)
+	if player_rect.intersects(_footprint_rect, true):
+		return 0.0
+	var nearest := Vector2(
+		clampf(foot_center.x, _footprint_rect.position.x, _footprint_rect.end.x),
+		clampf(foot_center.y, _footprint_rect.position.y, _footprint_rect.end.y),
+	)
+	return maxf(0.0, foot_center.distance_to(nearest) - PLAYER_COLLISION_HALF.length()) / GameManager.TILE_SIZE
 
 
 func _update_glow(delta: float) -> void:
@@ -177,7 +181,7 @@ func _on_prompt_confirmed(_item: String, _index: int) -> void:
 	if _view_open or GameManager.ui_blocking_input:
 		return
 	_view_open = true
-	_prompt.hide_prompt()
+	WorldInteractionManager.clear_owner(self)
 	var view: CanvasLayer = ObjectInteractionViewScript.new()
 	get_tree().root.add_child(view)
 	view.closed.connect(_on_view_closed)

@@ -1,7 +1,6 @@
 extends CharacterBody2D
 
 const SpeechBubble       := preload("res://scripts/npc/SpeechBubble.gd")
-const InteractionPrompt  := preload("res://scripts/npc/InteractionPrompt.gd")
 const ChatBoxScene       := preload("res://scenes/ui/ChatBox.tscn")
 const LoadingPopupScript := preload("res://scripts/ui/LoadingPopup.gd")
 const FPS := 8.0
@@ -49,10 +48,9 @@ var erratic_returning_to_anchor: bool = false
 var last_facing: String = "down"
 var _lighting_sys: Node = null
 var _bubble: Node2D = null
-var _prompt: Node2D = null
-var _prompt_layer: CanvasLayer = null
 var _player: Node2D = null
 var _bubble_lines: Array = []
+var _interaction_items: Array[String] = []
 var _bubble_showing: bool = false
 var _interaction_enabled: bool = false
 var _interaction_radius: float = 1.5
@@ -87,6 +85,9 @@ func setup(data: Dictionary, world_context: Dictionary) -> void:
 	_setup_bubble()
 	_setup_interaction()
 	_setup_quest_marker()
+
+func _exit_tree() -> void:
+	WorldInteractionManager.clear_owner(self)
 
 func _setup_quest_marker() -> void:
 	_quest_marker = Label.new()
@@ -163,12 +164,6 @@ func _setup_interaction() -> void:
 	if not _interaction_enabled:
 		return
 	_interaction_radius = float(inter.get("proximity_radius_tiles", 1.5))
-	_prompt_layer = CanvasLayer.new()
-	_prompt_layer.layer = 128
-	add_child(_prompt_layer)
-	_prompt = InteractionPrompt.new()
-	_prompt.scale = Vector2(1.78, 1.78)  # prompt art authored for the 480x270 UI space
-	_prompt_layer.add_child(_prompt)
 	var npc_name := str(npc_data.get("name", "NPC"))
 	var raw_opts: Variant = inter.get("options", [])
 	var items: Array[String] = []
@@ -178,9 +173,7 @@ func _setup_interaction() -> void:
 			items.append("Talk to %s" % npc_name if opt_str == "Talk" else opt_str)
 	if items.is_empty():
 		items = ["Talk to %s" % npc_name]
-	_prompt.setup_menu("", items)
-	_prompt.track(_player, Vector2(0.0, 0.0))
-	_prompt.item_confirmed.connect(_on_interaction_item_confirmed)
+	_interaction_items = items
 
 func _has_conversation_tree() -> bool:
 	# True if this NPC has any authored dialogue: the two-layer world/story
@@ -189,7 +182,7 @@ func _has_conversation_tree() -> bool:
 
 func _on_interaction_item_confirmed(item: String, _index: int) -> void:
 	if item.begins_with("Talk"):
-		_prompt.hide_prompt()
+		WorldInteractionManager.clear_owner(self)
 		if _bubble != null:
 			_bubble.target_alpha = 0.0
 			_bubble_showing = false
@@ -218,17 +211,43 @@ func _update_interaction() -> void:
 		return
 	var dist_tiles := global_position.distance_to(_player.global_position) / GameManager.TILE_SIZE
 	var in_range   := dist_tiles <= _interaction_radius
-	if in_range and not _in_interaction_range:
+	var is_facing := _player_is_facing_this_npc()
+	if in_range and is_facing and not _interaction_items.is_empty():
+		WorldInteractionManager.submit_candidate(
+			self,
+			"npc",
+			_interaction_items[0],
+			0,
+			dist_tiles,
+			_player,
+			"_on_interaction_item_confirmed"
+		)
+
+	var is_active := WorldInteractionManager.is_active(self, "npc")
+	if is_active and not _in_interaction_range:
 		_in_interaction_range = true
 		state     = State.IDLE
 		velocity  = Vector2.ZERO
-		_prompt.show_prompt()
-	elif not in_range and _in_interaction_range:
+	elif not is_active and _in_interaction_range:
 		_in_interaction_range = false
 		state = State.CHOOSING_TARGET
-		_prompt.hide_prompt()
 	if _in_interaction_range:
 		_face_player()
+
+func _player_is_facing_this_npc() -> bool:
+	if _player == null or not is_instance_valid(_player):
+		return false
+	var to_npc := global_position - _player.global_position
+	if to_npc.length() <= 1.0:
+		return true
+	var facing := Vector2.ZERO
+	if _player.has_method("get_facing_vector"):
+		facing = _player.call("get_facing_vector") as Vector2
+	if facing == Vector2.ZERO:
+		facing = Input.get_vector("move_left", "move_right", "move_up", "move_down")
+	if facing == Vector2.ZERO:
+		return false
+	return facing.normalized().dot(to_npc.normalized()) >= 0.55
 
 func _face_player() -> void:
 	var diff := _player.global_position - global_position

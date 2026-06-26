@@ -10,6 +10,7 @@ const FPS := 8.0
 
 var _last_anim: String = "walk_down"
 var _lighting_sys: Node = null
+var _facing_vector := Vector2.DOWN
 
 func _ready() -> void:
 	_setup_shadow()
@@ -99,11 +100,16 @@ func _update_animation(direction: Vector2) -> void:
 	var anim: String
 	if abs(direction.x) >= abs(direction.y):
 		anim = "walk_right" if direction.x > 0 else "walk_left"
+		_facing_vector = Vector2.RIGHT if direction.x > 0 else Vector2.LEFT
 	else:
 		anim = "walk_down" if direction.y > 0 else "walk_up"
+		_facing_vector = Vector2.DOWN if direction.y > 0 else Vector2.UP
 
 	if anim != _last_anim:
 		_last_anim = anim
 		anim_sprite.play(anim)
 	elif not anim_sprite.is_playing():
 		anim_sprite.play(anim)
+
+func get_facing_vector() -> Vector2:
+	return _facing_vector

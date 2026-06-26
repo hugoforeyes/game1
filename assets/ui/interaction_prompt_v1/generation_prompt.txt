@@ -1,0 +1,7 @@
+Use case: ui-mockup
+Asset type: transparent-background game UI component for a top-down RPG interaction prompt
+Primary request: Create one premium AAA-quality horizontal interaction prompt panel frame, centered on a perfectly flat solid #00ff00 chroma-key background for background removal. No text, no letters, no icons, no characters, no watermark.
+Style: elegant high-fantasy RPG HUD, dark smoky obsidian interior, fine antique-gold bevels, subtle cyan-blue magical accent at the right edge, restrained angular filigree only at the corners, crisp handcrafted game UI rendering, readable at small size.
+Composition: one long rounded-rectangle panel, about 7:1 aspect ratio, fixed-height single-item prompt frame, generous empty interior space for dynamic text and a keycap drawn by code. Include a small left-side pointer notch/arrow integrated into the frame so it can point to the player.
+Transparency workflow: background must be one perfectly uniform #00ff00 color with no shadows, gradients, texture, reflections, floor plane, glow, antialias contamination, or lighting variation. Keep the panel fully separated from the background with crisp edges and padding. Do not use #00ff00 anywhere in the panel.
+Avoid: words, labels, screenshots, complete menus, multiple panels, characters, scenery, logos, watermarks, heavy clutter, purple-dominant gradients.
