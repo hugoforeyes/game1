@@ -6,6 +6,7 @@ const BattleSceneScript := preload("res://scripts/battle/BattleScene.gd")
 const CutscenePlayerScript := preload("res://scripts/cutscene/CutscenePlayer.gd")
 const ItemPickupScript := preload("res://scripts/world/ItemPickup.gd")
 const WorldObjectScript := preload("res://scripts/world/WorldObject.gd")
+const PartyFollowerScript := preload("res://scripts/world/PartyFollower.gd")
 
 @onready var background: Sprite2D = $World/Background
 @onready var player: CharacterBody2D = $World/CharacterLayer/GeneratedCharacters/Player
@@ -29,6 +30,8 @@ func _ready() -> void:
 	QuestManager.quests_changed.connect(_on_quests_changed)
 	QuestManager.npc_talked.connect(_on_npc_talked_cutscene)
 	InventoryManager.item_obtained.connect(_on_item_obtained_cutscene)
+	PartyManager.member_joined.connect(_on_party_member_joined)
+	PartyManager.member_left.connect(_on_party_member_left)
 	if GameManager.has_scene_package():
 		_build_imported_world()
 		# Register this zone's triggered cutscenes with the director, then play the
@@ -41,6 +44,7 @@ func _ready() -> void:
 		_maybe_start_cutscene.call_deferred()
 		if ChapterFlow.active:
 			QuestManager.notify_zone_entered.call_deferred(str(GameManager.get_scene_context().get("zone_id", "")))
+			PartyManager.notify_zone_entered.call_deferred(str(GameManager.get_scene_context().get("zone_id", "")))
 			_try_trigger_cutscene.call_deferred("zone_enter")
 	else:
 		_apply_background_limits(background.texture)
@@ -119,6 +123,10 @@ func _build_imported_world() -> void:
 	for npc in npcs:
 		if npc is Dictionary:
 			var npc_data: Dictionary = npc as Dictionary
+			# A companion who has joined the party travels as a FOLLOWER, not as a
+			# stationary NPC — skip their authored NPC so there aren't two of them.
+			if PartyManager.is_member(str(npc_data.get("id", ""))):
+				continue
 			_spawn_npc(npc_data, tile_context, npc_occupied_tiles)
 			npc_occupied_tiles[_tile_key(_read_tile_position(npc_data))] = true
 			spawned_count += 1
@@ -140,6 +148,7 @@ func _build_imported_world() -> void:
 	_spawn_enemies(package_data, tile_context, false)
 	_spawn_item_pickups(tile_context)
 	_create_scene_exits(tile_context)
+	_spawn_party_followers()
 
 	var map_pixel_size: Vector2 = GameManager.get_map_pixel_size(package_data, background.texture)
 	lighting_system.initialize($World, package_data, map_pixel_size, generated_props, solid_instances)
@@ -155,6 +164,43 @@ func _apply_background_limits(texture: Texture2D) -> void:
 		player_camera.limit_top = 0
 		player_camera.limit_right = texture.get_width()
 		player_camera.limit_bottom = texture.get_height()
+
+func _spawn_party_followers() -> void:
+	for npc_id in PartyManager.active_member_ids():
+		_spawn_follower(str(npc_id))
+
+func _spawn_follower(npc_id: String) -> void:
+	if _follower_for(npc_id) != null:
+		return
+	var follower: Node2D = PartyFollowerScript.new() as Node2D
+	follower.name = "Follower_%s" % npc_id
+	generated_characters.add_child(follower)
+	# stagger lag per member so multiple companions form a line
+	var lag: int = 26 + PartyManager.active_member_ids().find(npc_id) * 16
+	follower.setup(npc_id, PartyManager.companion_texture(npc_id), player, maxi(26, lag))
+
+func _follower_for(npc_id: String) -> Node2D:
+	for child in generated_characters.get_children():
+		if child is Node2D and str((child as Node2D).get("npc_id")) == npc_id:
+			return child as Node2D
+	return null
+
+func _on_party_member_joined(npc_id: String) -> void:
+	# Replace the just-joined companion's stationary NPC (if present in this zone) with
+	# a follower, so talking to Arlo turns him into a party member who walks with you.
+	_despawn_npc(npc_id)
+	_spawn_follower(npc_id)
+
+func _on_party_member_left(npc_id: String) -> void:
+	var follower := _follower_for(npc_id)
+	if follower != null:
+		follower.queue_free()
+
+func _despawn_npc(npc_id: String) -> void:
+	for child in generated_characters.get_children():
+		var data: Variant = child.get("npc_data")
+		if data is Dictionary and str((data as Dictionary).get("id", "")) == npc_id:
+			child.queue_free()
 
 func _spawn_world_object(instance: Dictionary, definition: Dictionary) -> void:
 	var object_id: String = str(instance.get("interaction_object_id", instance.get("id", "")))
@@ -720,6 +766,7 @@ func _on_battle_finished(result: String, enemy_id: String, enemy: Node) -> void:
 		"victory":
 			GameManager.mark_enemy_defeated(enemy_id)
 			QuestManager.notify_enemy_defeated(enemy_id)
+			PartyManager.notify_enemy_defeated(enemy_id)
 			InventoryManager.grant_linked_items(
 				"enemy_drop", enemy_id,
 				str(GameManager.get_scene_context().get("zone_id", "")),
@@ -731,6 +778,7 @@ func _on_battle_finished(result: String, enemy_id: String, enemy: Node) -> void:
 		"spared":
 			GameManager.mark_enemy_spared(enemy_id)
 			QuestManager.notify_enemy_defeated(enemy_id)
+			PartyManager.notify_enemy_defeated(enemy_id)
 			InventoryManager.grant_linked_items(
 				"enemy_drop", enemy_id,
 				str(GameManager.get_scene_context().get("zone_id", "")),

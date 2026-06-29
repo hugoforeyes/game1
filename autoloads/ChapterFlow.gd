@@ -79,6 +79,7 @@ func start_new_game() -> Error:
 	QuestManager.reset()
 	InventoryManager.reset()
 	ObjectInteractionManager.reset()
+	PartyManager.reset()
 	NarrativeState.reset()
 	CutsceneDirector.reset()
 	print("[ChapterFlow] flow loaded run=%s chapters=%d" % [str(flow.get("run_id", "")), chapters().size()])
@@ -102,6 +103,23 @@ func begin_current_chapter() -> Error:
 			loading_status.emit("Fetching item icons...")
 			icon_texture = await download_image_texture(icon_url)
 		InventoryManager.load_chapter_catalog(items_payload, icon_texture)
+
+	# Companion / party roster — load events then fetch each companion's walk sheet so
+	# they can follow the player in any zone.
+	var party_payload: Dictionary = chapter.get("party", {}) as Dictionary
+	PartyManager.load_chapter_party(party_payload)
+	for raw_companion in party_payload.get("companions", []) as Array:
+		if not (raw_companion is Dictionary):
+			continue
+		var companion := raw_companion as Dictionary
+		var sprite_url := str(companion.get("sprite_url", ""))
+		if not sprite_url.is_empty():
+			var sprite_texture: Texture2D = await download_image_texture(sprite_url)
+			PartyManager.set_companion_texture(str(companion.get("npc_id", "")), sprite_texture)
+		var portrait_url := str(companion.get("portrait_url", ""))
+		if not portrait_url.is_empty():
+			var portrait_texture: Texture2D = await download_image_texture(portrait_url)
+			PartyManager.set_companion_portrait(str(companion.get("npc_id", "")), portrait_texture)
 
 	loading_status.emit("Fetching chapter intro...")
 	var run_id: String = str(flow.get("run_id", ""))

@@ -23,6 +23,10 @@ var quest_states: Dictionary = {}  # quest_id -> {state, objective_index, progre
 var revealed_hints: Dictionary = {} # quest_id:objective_id -> level -> display payload
 var tracked_quest_id: String = ""
 var current_zone_id: String = ""
+# Zones the player has ACTUALLY set foot in. A `reach` objective completes only
+# when its target zone is in here — never via a play-order index comparison (side
+# zones like the hidden bakery sort late, which used to falsely "pass" earlier zones).
+var visited_zones: Dictionary = {}
 
 var _ui: CanvasLayer = null
 var _journal_layer: CanvasLayer = null
@@ -60,6 +64,7 @@ func reset() -> void:
 	tracked_quest_id = ""
 	_tracker_compact = false
 	current_zone_id = ""
+	visited_zones = {}
 	_pending_choices.clear()
 	_toast_queue.clear()
 	_toast_busy = false
@@ -75,6 +80,7 @@ func load_chapter_quests(chapter_quests: Array) -> void:
 	quest_states = {}
 	revealed_hints = {}
 	tracked_quest_id = ""
+	visited_zones = {}
 	for quest in chapter_quests:
 		if not (quest is Dictionary):
 			continue
@@ -94,28 +100,61 @@ func load_chapter_quests(chapter_quests: Array) -> void:
 
 func notify_zone_entered(zone_id: String) -> void:
 	current_zone_id = zone_id
-	var zone_index: int = _zone_play_index(zone_id)
+	visited_zones[zone_id] = true
+	# A quest GIVEN by an NPC stays inactive until the player actually talks to that
+	# giver (see notify_npc_talked) — so the story unfolds through conversation, never
+	# "you reached a zone, here's a quest about people you've never met". Only quests
+	# with no NPC giver (environmental/auto) start on arrival at their start zone.
 	for quest in quests:
 		var state: Dictionary = _state_of(quest)
 		if str(state.get("state")) != "inactive":
 			continue
+		if not _quest_giver_npc(quest).is_empty():
+			continue
 		var start_zone: String = _quest_start_zone(quest)
-		# Start when entering the start zone, or if it was somehow passed.
-		if start_zone == zone_id or _zone_play_index(start_zone) <= zone_index:
-			state["state"] = "active"
-			if tracked_quest_id.is_empty():
-				tracked_quest_id = str(quest.get("id", ""))
-			_push_toast("new_quest", quest)
-			_skip_unavailable_objectives(quest)
-			_finish_quest_if_exhausted(quest)
+		if start_zone == zone_id or visited_zones.has(start_zone):
+			_activate_quest(quest)
 	_progress_reach_objectives()
 	_settle_collect_objectives()
 	quests_changed.emit()
 	_refresh_tracker()
 
 
+func _activate_quest(quest: Dictionary) -> void:
+	var state: Dictionary = _state_of(quest)
+	if str(state.get("state")) != "inactive":
+		return
+	state["state"] = "active"
+	if tracked_quest_id.is_empty():
+		tracked_quest_id = str(quest.get("id", ""))
+	_push_toast("new_quest", quest)
+	_skip_unavailable_objectives(quest)
+	_finish_quest_if_exhausted(quest)
+
+
+func _quest_giver_npc(quest: Dictionary) -> String:
+	var giver: Dictionary = quest.get("giver", {}) as Dictionary
+	if str(giver.get("mode", "npc")) != "npc":
+		return ""
+	return str(giver.get("npc_id", ""))
+
+
+func _quest_giver_zone(quest: Dictionary) -> String:
+	var giver: Dictionary = quest.get("giver", {}) as Dictionary
+	return str(giver.get("zone_id", ""))
+
+
 func notify_npc_talked(npc_id: String) -> void:
 	npc_talked.emit(npc_id)
+	# Talking to a quest giver is how that quest BEGINS — the NPC asks for help, and
+	# only then do its objectives appear. This is what makes the chain feel like a
+	# story ("meet Arlo → he sends you to the field → bring the petals back to him").
+	for quest in quests:
+		if str(_state_of(quest).get("state")) == "inactive" and _quest_giver_npc(quest) == npc_id:
+			_activate_quest(quest)
+	# A just-started quest may have its first step satisfiable right here/now.
+	_progress_reach_objectives()
+	_settle_collect_objectives()
 	for quest in quests:
 		var objective: Dictionary = _current_objective(quest)
 		if objective.is_empty():
@@ -287,6 +326,12 @@ func is_quest_npc(npc_id: String) -> bool:
 
 func marker_for_npc(npc_id: String) -> String:
 	for quest in quests:
+		# A giver with a quest still to offer (here, in this zone) gets a "!" so the
+		# player knows conversation will start something.
+		if str(_state_of(quest).get("state")) == "inactive" \
+				and _quest_giver_npc(quest) == npc_id \
+				and _quest_giver_zone(quest) == current_zone_id:
+			return "!"
 		var objective: Dictionary = _current_objective(quest)
 		if objective.is_empty():
 			continue
@@ -439,8 +484,9 @@ func _progress_reach_objectives() -> void:
 			var objective: Dictionary = _current_objective(quest)
 			if objective.is_empty() or str(objective.get("kind")) != "reach":
 				continue
-			# Reaching the zone — or already being past it — completes it.
-			if _zone_play_index(str(objective.get("zone_id"))) <= _zone_play_index(current_zone_id):
+			# Completes only once the player has genuinely set foot in the target zone
+			# (exact match against visited zones), never via a play-order shortcut.
+			if visited_zones.has(str(objective.get("zone_id"))):
 				_complete_current_objective(quest)
 				advanced = true
 

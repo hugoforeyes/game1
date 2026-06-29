@@ -163,6 +163,8 @@ func _test_memory_garden(run_id: String) -> void:
 	_check(pkg.has("object_interactions"), "zone_04 package carries object_interactions")
 	ObjectInteractionManager.register_zone_contracts(pkg)
 	QuestManager.notify_zone_entered("zone_04")
+	# quest_02 is given by Milo (npc_04) — it only begins once the player meets him.
+	QuestManager.notify_npc_talked("npc_04")
 
 	_check(ObjectInteractionManager.has_interaction("object_memory_garden"), "garden contract registered")
 	_check(ObjectInteractionManager.is_object_sourced_item("item_milo_pinwheel", "zone_04"), "pinwheel is object-sourced (no random scatter)")
@@ -189,17 +191,20 @@ func _test_sugar_clock(run_id: String) -> void:
 	QuestManager.notify_zone_entered("zone_03")
 
 	_check(ObjectInteractionManager.has_interaction("object_sugar_clock"), "clock contract registered")
-	_check(_objective_kind("quest_03") == "talk", "quest_03 starts on the talk objective")
+	# quest_03 is Tilda's — it has NOT started just by entering her zone.
+	_check(_quest_state("quest_03") == "inactive", "quest_03 not started before meeting Tilda")
 
-	# search the clock BEFORE talking to Tilda
+	# search the clock BEFORE talking to Tilda — you still find the letter...
 	var before_letter := InventoryManager.count_of("item_hidden_letter")
 	var result: Dictionary = ObjectInteractionManager.run_interaction("object_sugar_clock")
 	_check(str(result.get("status")) == "success", "clock interaction succeeded")
 	_check(InventoryManager.count_of("item_hidden_letter") == before_letter + 1, "found the hidden letter")
-	_check(_objective_kind("quest_03") == "talk", "collect objective NOT yet active — still on talk")
+	_check(_quest_state("quest_03") == "inactive", "...but the quest still hasn't started (no NPC met)")
 
-	# now talk to Tilda: completes talk -> advances to collect -> settles from inventory
+	# meeting Tilda starts the quest, closes its 'talk to Tilda' step, and settles the
+	# already-found letter — fast-forwarding straight to the deliver step.
 	QuestManager.notify_npc_talked("npc_03")
+	_check(_quest_state("quest_03") == "active", "talking to Tilda started quest_03")
 	var kind_after := _objective_kind("quest_03")
 	_check(kind_after == "deliver" or _objective_index("quest_03") >= 2,
 		"collect objective auto-settled after talk (now '%s', idx=%d)" % [kind_after, _objective_index("quest_03")])
@@ -210,6 +215,10 @@ func _test_sugar_clock(run_id: String) -> void:
 
 func _objective_index(quest_id: String) -> int:
 	return int((QuestManager.quest_states.get(quest_id, {}) as Dictionary).get("objective_index", -1))
+
+
+func _quest_state(quest_id: String) -> String:
+	return str((QuestManager.quest_states.get(quest_id, {}) as Dictionary).get("state", "?"))
 
 
 func _objective_kind(quest_id: String) -> String:

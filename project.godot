@@ -30,6 +30,7 @@ QuestManager="*res://autoloads/QuestManager.gd"
 InventoryManager="*res://autoloads/InventoryManager.gd"
 ObjectInteractionManager="*res://autoloads/ObjectInteractionManager.gd"
 WorldInteractionManager="*res://autoloads/WorldInteractionManager.gd"
+PartyManager="*res://autoloads/PartyManager.gd"
 NarrativeState="*res://autoloads/NarrativeState.gd"
 CutsceneDirector="*res://autoloads/CutsceneDirector.gd"
 
