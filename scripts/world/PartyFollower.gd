@@ -9,6 +9,7 @@ const HISTORY_MAX := 360
 const FOLLOW_DISTANCE := 58.0
 const MIN_PLAYER_SEPARATION := 44.0
 const CATCHUP_LERP := 0.35
+const IDLE_COMFORT_RADIUS := 18.0
 
 var npc_id: String = ""
 
@@ -19,6 +20,7 @@ var _history: Array[Vector2] = []
 var _lag_frames: int = 26
 var _facing: String = "down"
 var _prev_position: Vector2 = Vector2.ZERO
+var _last_player_position: Vector2 = Vector2.ZERO
 
 
 func setup(p_npc_id: String, texture: Texture2D, player: Node2D, lag_frames: int = 26) -> void:
@@ -28,6 +30,7 @@ func setup(p_npc_id: String, texture: Texture2D, player: Node2D, lag_frames: int
 	z_index = 0
 	global_position = _offset_behind_player(FOLLOW_DISTANCE)
 	_prev_position = global_position
+	_last_player_position = player.global_position if player != null else global_position
 	_seed_history()
 	_setup_shadow()
 	_setup_sprite(texture)
@@ -92,7 +95,11 @@ func _physics_process(_delta: float) -> void:
 			_anim.pause()
 		return
 
-	_history.append(_player.global_position)
+	var player_position := _player.global_position
+	var player_is_moving := player_position.distance_to(_last_player_position) > 0.35
+	_last_player_position = player_position
+
+	_history.append(player_position)
 	if _history.size() > HISTORY_MAX:
 		_history.pop_front()
 
@@ -100,6 +107,9 @@ func _physics_process(_delta: float) -> void:
 	var target: Vector2 = _history[idx] if idx >= 0 else _offset_behind_player(FOLLOW_DISTANCE)
 	target = _separated_from_player(target)
 	_prev_position = global_position
+	if not player_is_moving and _is_idle_close_enough():
+		_face_player_direction()
+		return
 	global_position = global_position.lerp(target, CATCHUP_LERP)
 	global_position = _separated_from_player(global_position)
 	_update_animation(global_position - _prev_position)
@@ -123,6 +133,13 @@ func _offset_behind_player(distance: float) -> Vector2:
 	if _player == null or not is_instance_valid(_player):
 		return global_position
 	return _player.global_position - _player_facing_vector() * distance
+
+
+func _is_idle_close_enough() -> bool:
+	if _player == null or not is_instance_valid(_player):
+		return false
+	var distance_to_player := global_position.distance_to(_player.global_position)
+	return distance_to_player >= MIN_PLAYER_SEPARATION and distance_to_player <= FOLLOW_DISTANCE + IDLE_COMFORT_RADIUS
 
 
 func _player_facing_vector() -> Vector2:
@@ -154,3 +171,17 @@ func _update_animation(motion: Vector2) -> void:
 		if _anim.animation != "walk_%s" % _facing:
 			_anim.play("walk_%s" % _facing)
 		_anim.pause()
+
+
+func _face_player_direction() -> void:
+	if _anim == null:
+		return
+	var facing_vector := _player_facing_vector()
+	if abs(facing_vector.x) >= abs(facing_vector.y):
+		_facing = "right" if facing_vector.x > 0.0 else "left"
+	else:
+		_facing = "down" if facing_vector.y > 0.0 else "up"
+	var anim_name := "walk_%s" % _facing
+	if _anim.animation != anim_name:
+		_anim.play(anim_name)
+	_anim.pause()

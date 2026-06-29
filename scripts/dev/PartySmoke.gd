@@ -74,10 +74,12 @@ func _test_follower_spawn(arlo: String) -> void:
 	var follower: Node2D = PartyFollowerScript.new()
 	add_child(follower)
 	follower.setup(arlo, PartyManager.companion_texture(arlo), player, 26)
+	var start_pos := follower.global_position
 	_check(follower.global_position.distance_to(player.global_position) >= 44.0, "follower starts separated from the player")
 	for idle_frame in range(40):
 		follower._physics_process(1.0 / 60.0)
 	_check(follower.global_position.distance_to(player.global_position) >= 44.0, "idle follower does NOT stand on top of the player")
+	_check(follower.global_position.distance_to(start_pos) < 2.0, "idle follower stands still when already close enough")
 	# drive a few frames of player movement; follower should trail toward it
 	for i in range(100):
 		player.global_position += Vector2(6, 0)
