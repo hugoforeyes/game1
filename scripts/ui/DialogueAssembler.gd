@@ -37,8 +37,10 @@ static func build_active_tree(npc_data: Dictionary) -> Dictionary:
 
 # ── quest hints ─────────────────────────────────────────────────────────────────
 ## Append this NPC's hint options (from the packaged `hint_dialogue`) to the tree's
-## start node, but ONLY the hints whose objective is the player's active one. Each
-## becomes a leaf node where the NPC speaks the hint, tagged reveals:"hint".
+## start node, but ONLY the hints whose objective belongs to the quest the player
+## is currently TRACKING (not just any active quest — an NPC holding a hint for a
+## different active-but-untracked quest stays silent). Each becomes a leaf node
+## where the NPC speaks the hint, tagged reveals:"hint".
 static func _inject_hints(tree: Dictionary, npc_data: Dictionary) -> Dictionary:
 	if tree.is_empty():
 		return tree
@@ -55,7 +57,7 @@ static func _inject_hints(tree: Dictionary, npc_data: Dictionary) -> Dictionary:
 			continue
 		var od: Dictionary = opt as Dictionary
 		var hint: Dictionary = od.get("hint", {}) as Dictionary if od.get("hint") is Dictionary else {}
-		if not QuestManager.is_objective_active(str(hint.get("quest_id", "")), str(hint.get("objective_id", ""))):
+		if not QuestManager.is_tracked_objective_active(str(hint.get("quest_id", "")), str(hint.get("objective_id", ""))):
 			continue
 		var node_id := "hint:" + str(od.get("id", hint_nodes.size()))
 		hint_root_options.append({

@@ -184,6 +184,8 @@ func _refresh_menu_state() -> void:
 	_style_menu_button(new_game_button)
 	_style_menu_button(continue_button)
 	_style_menu_button(settings_button)
+	# Continue is only meaningful when a saved run exists.
+	continue_button.disabled = not SaveManager.has_save()
 
 func _style_menu_button(button: Button) -> void:
 	var active: bool = button.has_focus()
@@ -216,6 +218,7 @@ func _open_importer() -> void:
 	scene_zip_path = ""
 	character_sprite_path = ""
 	GameManager.reset_runtime_imports(true)
+	GameManager.reset_combat_progress()
 	_refresh_import_ui()
 	_set_status("Choose a new scene zip and optional character sprite.")
 	importer_overlay.show()
@@ -274,7 +277,30 @@ func _set_loading_status(message: String) -> void:
 
 
 func _on_continue_pressed() -> void:
-	_show_flash("- NO SAVE FOUND -")
+	if is_loading_new_game:
+		return
+	if not SaveManager.has_save():
+		_show_flash("- NO SAVE FOUND -")
+		return
+
+	print("[StartScene] Continue pressed — resuming saved run")
+	is_loading_new_game = true
+	new_game_button.disabled = true
+	continue_button.disabled = true
+	_show_loading("Đang tải bản lưu...")
+	if not ChapterFlow.loading_status.is_connected(_on_flow_status):
+		ChapterFlow.loading_status.connect(_on_flow_status)
+
+	var flow_error: Error = await ChapterFlow.continue_saved_game()
+	if flow_error != OK:
+		print("[StartScene] continue failed err=%d" % flow_error)
+		is_loading_new_game = false
+		new_game_button.disabled = false
+		continue_button.disabled = false
+		_hide_loading()
+		_show_flash("- COULD NOT REACH STORY SERVER -")
+		return
+	# ChapterFlow has switched the scene to the saved zone.
 
 func _on_settings_pressed() -> void:
 	_open_settings()
@@ -341,6 +367,7 @@ func _on_import_button_pressed() -> void:
 		return
 
 	GameManager.reset_runtime_imports(true)
+	GameManager.reset_combat_progress()
 	var import_error: Error = GameManager.import_scene_package_zip(scene_zip_path)
 	if import_error != OK:
 		_set_status("Could not import the scene zip: %s" % error_string(import_error), true)
@@ -356,6 +383,7 @@ func _on_import_button_pressed() -> void:
 
 func _on_use_builtin_pressed() -> void:
 	GameManager.reset_runtime_imports(true)
+	GameManager.reset_combat_progress()
 	get_tree().change_scene_to_file(GameManager.WORLD_SCENE_PATH)
 
 func _open_dialog(dialog: FileDialog) -> void:

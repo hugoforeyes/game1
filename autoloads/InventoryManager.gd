@@ -70,6 +70,24 @@ func reset() -> void:
 	inventory_changed.emit()
 
 
+# ── persistence (SaveManager) ──────────────────────────────────────────────────
+## Only the player's owned counts + acquisition claims are saved; the catalog/icons
+## are re-loaded from the chapter package on load, so they are not stored.
+
+
+func serialize_save() -> Dictionary:
+	return {
+		"counts": counts.duplicate(true),
+		"acquisition_claims": acquisition_claims.duplicate(true),
+	}
+
+
+func apply_save(data: Dictionary) -> void:
+	counts = (data.get("counts", {}) as Dictionary).duplicate(true)
+	acquisition_claims = (data.get("acquisition_claims", {}) as Dictionary).duplicate(true)
+	inventory_changed.emit()
+
+
 func load_chapter_catalog(items_payload: Dictionary, icon_sheet: Texture2D) -> void:
 	catalog = items_payload.get("items", []) as Array
 	_icon_grid = int(items_payload.get("icon_grid", 3))

@@ -74,6 +74,7 @@ var player_sp: int = 0
 var focus_active: bool = false
 var hexed: bool = false
 var guarding: bool = false
+var _companion_levelups: Array = []  # companions that leveled during the last XP grant
 
 var exposed_turns: int = 0
 var finisher_used: bool = false
@@ -159,6 +160,9 @@ func open(enemy_data: Dictionary) -> void:
 	GameManager.ui_blocking_input = true
 	layer = 80
 	transform = Transform2D.IDENTITY
+	# Announce companion level-ups earned from their share of battle XP.
+	if not GameManager.companion_leveled.is_connected(_on_companion_leveled):
+		GameManager.companion_leveled.connect(_on_companion_leveled)
 	_load_ui_kit()
 	_build_ui()
 	_run_battle()
@@ -769,6 +773,7 @@ func _run_battle() -> void:
 		await _enemy_turn()
 
 	while not _battle_over:
+		_apply_party_regen()  # a healer companion mends you a little each turn
 		await _player_turn()
 		if _battle_over:
 			break
@@ -846,7 +851,9 @@ func _skill_menu() -> void:
 		return
 	player_sp -= int(skill["sp_cost"])
 	_refresh_player_panel()
-	match str(skill.get("id", "")):
+	# Dispatch on the skill's `effect` (data-driven in GameManager.SKILL_LIBRARY) so
+	# new skills can be added without touching the battle code.
+	match str(skill.get("effect", "attack")):
 		"focus":
 			focus_active = true
 			_spawn_particles(PLAYER_FX_CENTER, Color(0.45, 0.65, 1.0), 18)
@@ -854,16 +861,31 @@ func _skill_menu() -> void:
 			aura.tween_property(_player_panel, "modulate", Color(0.7, 0.85, 1.3), 0.2)
 			aura.tween_property(_player_panel, "modulate", Color.WHITE, 0.5)
 			await _say("You center yourself. Your next attack will hit twice as hard.")
-		"power_strike":
+		"heal":
+			var heal_amount: int = int(round(float(skill["power"]))) + GameManager.player_level * 2
+			GameManager.set_player_hp(GameManager.get_player_hp() + heal_amount)
+			_animate_player_hp()
+			_refresh_player_panel()
+			_spawn_particles(PLAYER_FX_CENTER, COLOR_HEAL, 18)
+			_spawn_damage_number(PLAYER_FX_CENTER + Vector2(0, -18), "+%d" % heal_amount, COLOR_HEAL)
+			var glow := create_tween()
+			glow.tween_property(_player_panel, "modulate", Color(0.75, 1.25, 0.85), 0.2)
+			glow.tween_property(_player_panel, "modulate", Color.WHITE, 0.5)
+			await _say("You use %s and restore %d HP." % [skill["name"], heal_amount])
+		"multi":
+			var hits: int = clampi(int(round(float(skill["power"]))), 2, 4)
+			var per_hit: float = 0.7
+			for hit_index in range(hits):
+				if _battle_over or enemy_hp <= 0:
+					break
+				_spawn_slash(_portrait_center() + Vector2(randf_range(-14, 14), randf_range(-10, 10)), Color(0.7, 0.9, 1.0), 1.4, hit_index % 2 == 0)
+				await _player_attack(per_hit, "%s — hit %d!" % [skill["name"], hit_index + 1], Color(0.7, 0.9, 1.0))
+		"pierce":
+			_spawn_slash(_portrait_center(), Color(1.0, 0.55, 0.85), 1.7)
+			await _player_attack(float(skill["power"]), "You unleash %s — it pierces the guard!" % skill["name"], Color(1.0, 0.55, 0.85), true)
+		_:  # "attack" and any unknown effect → a single power strike
 			_spawn_slash(_portrait_center(), Color(1.0, 0.62, 0.2), 1.6)
 			await _player_attack(float(skill["power"]), "You unleash %s!" % skill["name"], Color(1.0, 0.62, 0.2))
-		"crush":
-			_spawn_slash(_portrait_center() + Vector2(-10, -8), Color(1.0, 0.5, 0.3), 1.7)
-			await get_tree().create_timer(0.12).timeout
-			_spawn_slash(_portrait_center() + Vector2(12, 8), Color(1.0, 0.7, 0.3), 1.7, true)
-			await _player_attack(float(skill["power"]), "You unleash %s!" % skill["name"], Color(1.0, 0.5, 0.3))
-		_:
-			await _player_attack(float(skill["power"]), "You unleash %s!" % skill["name"], COLOR_ACCENT)
 
 
 func _item_menu() -> void:
@@ -960,7 +982,7 @@ func _probe_menu() -> void:
 		await _enemy_strike(0.8, "")
 
 
-func _player_attack(power: float, flavor: String, fx_color: Color = COLOR_ACCENT) -> void:
+func _player_attack(power: float, flavor: String, fx_color: Color = COLOR_ACCENT, ignore_defense: bool = false) -> void:
 	var base: float = float(player_stats.get("attack", 12)) * power
 	if focus_active:
 		base *= 2.0
@@ -974,7 +996,9 @@ func _player_attack(power: float, flavor: String, fx_color: Color = COLOR_ACCENT
 		base *= float(weakness.get("damage_multiplier", 2.0))
 	var variance: float = randf_range(0.85, 1.15)
 	var crit: bool = randf() < 0.1
-	var damage: int = maxi(int(round(base * variance * (1.5 if crit else 1.0) - enemy_defense * phase_defense_factor * 0.5)), 1)
+	# Pierce skills shrug off most of the enemy's defense.
+	var defense_cut: float = 0.0 if ignore_defense else enemy_defense * phase_defense_factor * 0.5
+	var damage: int = maxi(int(round(base * variance * (1.5 if crit else 1.0) - defense_cut)), 1)
 	enemy_hp = maxi(enemy_hp - damage, 0)
 
 	_spawn_slash(_portrait_center(), fx_color, 1.5 if power > 1.2 else 1.25)
@@ -1199,9 +1223,31 @@ func _show_victory_banner() -> void:
 		_spawn_particles(Vector2(randf_range(300, 660), randf_range(110, 230)), COLOR_ACCENT, 12)
 
 
+func _apply_party_regen() -> void:
+	# Healer companions in the party mend the protagonist a little at the top of each
+	# player turn — a passive, purely-visual heal (no extra confirm prompt).
+	var regen: int = int(player_stats.get("party_regen", 0))
+	if regen <= 0:
+		return
+	var max_hp: int = int(player_stats.get("max_hp", 80))
+	if GameManager.get_player_hp() >= max_hp:
+		return
+	GameManager.set_player_hp(GameManager.get_player_hp() + regen)
+	_animate_player_hp()
+	_refresh_player_panel()
+	_spawn_particles(PLAYER_FX_CENTER, COLOR_HEAL, 8)
+	_spawn_damage_number(PLAYER_FX_CENTER + Vector2(-6, -18), "+%d" % regen, COLOR_HEAL)
+
+
+func _on_companion_leveled(npc_id: String, level: int) -> void:
+	_companion_levelups.append({"npc_id": npc_id, "level": level})
+
+
 func _grant_xp(xp: int, message: String) -> void:
-	var before_level: int = GameManager.player_level
-	var levels: int = GameManager.gain_xp(xp)
+	# Support companions boost XP gain; the whole party shares the reward.
+	var boosted: int = int(round(float(xp) * float(player_stats.get("party_xp_mult", 1.0))))
+	_companion_levelups.clear()
+	var levels: int = GameManager.grant_party_xp(boosted)
 	player_stats = GameManager.player_battle_stats()
 	var xp_tween := create_tween()
 	xp_tween.tween_property(
@@ -1219,6 +1265,12 @@ func _grant_xp(xp: int, message: String) -> void:
 		glow.tween_property(_player_panel, "modulate", Color(1.4, 1.3, 0.9), 0.25)
 		glow.tween_property(_player_panel, "modulate", Color.WHITE, 0.6)
 		await _say("LEVEL UP! You are now level %d. You feel restored and stronger." % GameManager.player_level)
+	# Companions who leveled from their share of the XP get a shout-out too.
+	for entry in _companion_levelups:
+		var npc_id: String = str((entry as Dictionary).get("npc_id", ""))
+		var comp_name: String = PartyManager.companion_name(npc_id) if PartyManager.has_method("companion_name") else npc_id
+		await _say("%s reached level %d!" % [comp_name, int((entry as Dictionary).get("level", 1))])
+	_companion_levelups.clear()
 
 
 func _defeat() -> void:

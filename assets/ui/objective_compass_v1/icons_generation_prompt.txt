@@ -1,0 +1,10 @@
+Use case: ui-mockup.
+Asset type: production sprite sheet of 4 standalone pixel-art icons for a fantasy RPG "objective compass" HUD element (a small directional indicator that points the player toward a quest target once they have learned enough about it).
+Primary request: create exactly 4 icons arranged in a spacious 2-column by 2-row grid, one icon centered per cell:
+Cell 1 (top-left): a slim glowing chevron/arrowhead pointing straight UP, luminous warm gold (#f5c463) core fading to a soft outward radial light bloom, like a magical compass needle tip — this is the main directional pointer, drawn pointing up so it can be rotated freely at runtime.
+Cell 2 (top-right): a small simple silhouette of a cloaked person's head-and-shoulders bust (an NPC marker glyph), antique gold fill with dark warm-brown pixel shading, no glow.
+Cell 3 (bottom-left): a small simple silhouette of a closed wooden treasure chest (a world-object marker glyph), antique gold fill with dark warm-brown pixel shading, no glow.
+Cell 4 (bottom-right): a small simple silhouette of a round gem/pouch shape (an item marker glyph), antique gold fill with dark warm-brown pixel shading, no glow.
+Style: crisp clean pixel art icon, matching a AAA fantasy RPG UI kit (same family as an ornate gold-filigree dark-glass quest journal), readable at small size (40x40), consistent icon scale across all 4 cells except the glowing arrow which may bloom slightly past its cell.
+Background: perfectly flat solid #00ff00 chroma key.
+Constraints: icons only, no circular frame, no ring, no border, no plaque, no text, no drop shadow, isolated and centered per cell.

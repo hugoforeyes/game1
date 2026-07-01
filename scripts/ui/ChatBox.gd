@@ -818,13 +818,15 @@ func _update_option_highlight() -> void:
 
 # True if this option leads to a content node the player already explored — used
 # to grey it out + tick it so the player can see which topics they've covered.
+# Checks BOTH this session's navigation and QuestManager's cross-session history,
+# so a topic picked in an earlier conversation still shows as already seen here.
 func _option_leads_to_seen(index: int) -> bool:
 	if not _tree_mode or index >= _tree_options.size():
 		return false
 	var goto := str((_tree_options[index] as Dictionary).get("goto", ""))
 	if goto.is_empty() or goto == "root" or goto == "__end__":
 		return false
-	return _visited_nodes.has(goto)
+	return _visited_nodes.has(goto) or QuestManager.is_dialogue_node_visited(_npc_id, goto)
 
 func _format_option_label(index: int) -> String:
 	if index < 0 or index >= _options.size():
@@ -1077,8 +1079,11 @@ func _enter_tree_node(node_id: String) -> void:
 	if node.is_empty():
 		close()
 		return
-	var revisit: bool = _visited_nodes.has(node_id)  # been here before → instant, no re-speak
+	# "Seen before" survives across conversation sessions (QuestManager, per NPC),
+	# not just navigation within the currently-open one.
+	var revisit: bool = _visited_nodes.has(node_id) or QuestManager.is_dialogue_node_visited(_npc_id, node_id)
 	_visited_nodes[node_id] = true
+	QuestManager.mark_dialogue_node_visited(_npc_id, node_id)
 	_apply_dialogue_effects(node.get("effects"))  # node effects fire on arrival
 	# Phase 3: a "talk" objective completes the moment the player reaches a node
 	# that reveals quest information (the quest beat) — not only at conversation end.
@@ -1087,6 +1092,9 @@ func _enter_tree_node(node_id: String) -> void:
 		QuestManager.notify_npc_talked(_npc_id)
 	_set_portrait_for_emotion(str(node.get("emotion", "neutral")))
 	var line := str(node.get("npc_line", "")).strip_edges()
+	# Talking earns XP for the whole party — a story beat is worth more than a piece
+	# of world lore, and each line pays out only the first time it is ever reached.
+	_award_talk_xp(node_id, node, line)
 	if not revisit and str(node.get("reveals", "")) == "hint" and node.get("hint") is Dictionary:
 		QuestManager.reveal_hint(_npc_name, node.get("hint") as Dictionary, line, _npc_portrait.texture)
 
@@ -1098,6 +1106,52 @@ func _enter_tree_node(node_id: String) -> void:
 			labels.append(str((opt as Dictionary).get("player_text", "...")))
 	_clear_options()
 	_set_dialogue_text(line, labels, labels.is_empty(), revisit)
+
+# Award talk-XP for reaching a dialogue node. Quest beats (reveals == "quest") pay
+# the larger reward; world-layer lore nodes (w:* in the merged tree, or any node the
+# author tagged reveals == "world"/"lore"/etc.) pay the smaller one. GameManager
+# dedupes per (npc, node) so re-reading a line never farms XP.
+func _award_talk_xp(node_id: String, node: Dictionary, line: String) -> void:
+	if _npc_id.is_empty():
+		return
+	var reveals := str(node.get("reveals", ""))
+	var category := ""
+	if reveals == "quest":
+		category = "quest"
+	elif reveals in ["world", "lore", "personal", "scene"] \
+			or (node_id.begins_with("w:") and node_id != "w:root"):
+		if not line.is_empty():
+			category = "world"
+	if category.is_empty():
+		return
+	var result: Dictionary = GameManager.award_talk_xp(_npc_id, node_id, category)
+	if bool(result.get("awarded", false)):
+		_show_talk_xp_popup(category, int(result.get("amount", 0)), result.get("recipients", []) as Array)
+
+# A small floating "+XP" cue over the conversation. Authored in the ChatBox's
+# ~480x270 space (the layer carries a UI_SCALE transform).
+func _show_talk_xp_popup(category: String, amount: int, recipients: Array) -> void:
+	var label := Label.new()
+	var tag := "Nhiệm vụ" if category == "quest" else "Thế giới"
+	var who := "" if recipients.size() <= 1 else "  (cả đội)"
+	label.text = "+%d KN · %s%s" % [amount, tag, who]
+	label.add_theme_font_size_override("font_size", 11)
+	var col := Color(1.0, 0.85, 0.45) if category == "quest" else Color(0.55, 0.85, 1.0)
+	label.add_theme_color_override("font_color", col)
+	label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
+	label.add_theme_constant_override("shadow_offset_x", 1)
+	label.add_theme_constant_override("shadow_offset_y", 1)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.position = Vector2(170.0, 54.0)
+	label.size = Vector2(140.0, 16.0)
+	label.z_index = 50
+	add_child(label)
+	label.modulate.a = 0.0
+	var tween := create_tween()
+	tween.tween_property(label, "modulate:a", 1.0, 0.18)
+	tween.parallel().tween_property(label, "position:y", 40.0, 1.2).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tween.tween_property(label, "modulate:a", 0.0, 0.5).set_delay(0.4)
+	tween.tween_callback(label.queue_free)
 
 func _tree_select(index: int) -> void:
 	if index < 0 or index >= _tree_options.size():
@@ -1152,7 +1206,9 @@ func _apply_item_effect(eff: Dictionary, give: bool) -> void:
 	if give:
 		InventoryManager.add_item(item_id, count)
 	else:
-		InventoryManager.remove_item(item_id, count)
+		if not InventoryManager.remove_item(item_id, count):
+			var item_name := str(InventoryManager.item_def(item_id).get("name", item_id))
+			InventoryManager._push_toast("Cần: %s" % item_name)
 
 func _confirm_option() -> void:
 	if _options.is_empty() or _selected_opt >= _options.size():
@@ -1174,6 +1230,13 @@ func _scroll_to_bottom() -> void:
 func _input(event: InputEvent) -> void:
 	if not visible:
 		return
+	if _tree_mode and _dialogue_revealing and event is InputEventKey and event.pressed and not event.echo:
+		match event.keycode:
+			KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
+				# Fast-forward the current line's typewriter instead of waiting it out.
+				_finish_dialogue_reveal()
+				get_viewport().set_input_as_handled()
+				return
 	if _tree_mode and _leaf_waiting and event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:

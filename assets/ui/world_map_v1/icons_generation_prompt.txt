@@ -1,0 +1,6 @@
+Use case: ui-mockup.
+Asset type: one standalone pixel-art icon badge for a fantasy RPG "world map" chapter-select screen — marks a story chapter as fully completed.
+Primary request: a small circular wax-seal medallion badge with a bold checkmark centered inside it, luminous warm gold (#f5c463) with a soft outward radial glow, rim lit like a glowing seal stamp, viewed face-on.
+Style: crisp clean pixel art icon, matching a AAA fantasy RPG UI kit (same family as an ornate gold-filigree dark-glass quest journal), readable at small size (40x40).
+Background: fully transparent (no backdrop of any kind, real alpha channel).
+Constraints: icon only, centered, no outer frame beyond the medallion's own rim, no text, no other elements, no drop shadow outside the glow.

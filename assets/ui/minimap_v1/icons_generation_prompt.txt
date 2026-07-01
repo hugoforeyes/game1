@@ -1,0 +1,9 @@
+Use case: ui-mockup.
+Asset type: production sprite sheet of 7 standalone pixel-art icon silhouettes for a fantasy RPG chapter-map/minimap zone marker.
+Primary request: create exactly 7 icons arranged in a spacious 3-column by 3-row grid (2 bottom-right cells left empty), one icon centered per cell:
+Row 1: a cluster of cottage rooftops with a small spire (town), a dark cave archway with jagged stalactites (dungeon), a single lone twisted bare tree (wilderness).
+Row 2: a horned skull with two crossed blades beneath it (boss lair), a round shield with a small leaf emblem (safe zone / sanctuary), an eye centered inside an ornate keyhole (secret hidden zone).
+Row 3: a closed padlock wrapped in a faint swirling mist with a small "?" above it (undiscovered / locked zone ward).
+Style: crisp clean pixel art icon, antique gold fill with dark warm-brown pixel shading, matching a AAA fantasy RPG UI kit, readable at small size (48x48).
+Background: perfectly flat solid #00ff00 chroma key.
+Constraints: icons only, no circular frame, no ring, no border, no plaque, no text, no drop shadow, isolated and centered per cell, consistent icon scale across all 7.

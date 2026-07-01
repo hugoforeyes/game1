@@ -16,6 +16,24 @@ func reset() -> void:
 	narrative_changed.emit()
 
 
+# ── persistence (SaveManager) ──────────────────────────────────────────────────
+
+
+func serialize_save() -> Dictionary:
+	return {
+		"choices": choices.duplicate(true),
+		"flags": flags.duplicate(true),
+		"relationships": relationships.duplicate(true),
+	}
+
+
+func apply_save(data: Dictionary) -> void:
+	choices = (data.get("choices", {}) as Dictionary).duplicate(true)
+	flags = (data.get("flags", {}) as Dictionary).duplicate(true)
+	relationships = (data.get("relationships", {}) as Dictionary).duplicate(true)
+	narrative_changed.emit()
+
+
 func record_choice(
 		choice_key: String,
 		quest_id: String,

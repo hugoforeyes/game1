@@ -1,0 +1,15 @@
+Use case: ui-mockup for a 2D pixel-art fantasy RPG chapter map / minimap panel.
+
+Create one full illustrative mockup screenshot of an in-game "Chapter Map" HUD panel, matching an ornate gold-filigree dark-glass fantasy RPG UI (same family as Genshin Impact / a AAA fantasy RPG quest journal): a large rounded dark navy glass panel bordered in antique gold with baroque filigree corner flourishes, and a small jewelled gold medallion header reading "BẢN ĐỒ CHƯƠNG" in an elegant serif fantasy font.
+
+Inside the panel, render a stylized world/region map background: faded parchment-and-ink cartography texture in muted sage green and brown, with a winding dotted gold path connecting 5 zone nodes laid out left to right across gently rolling terrain. Each zone node is a small circular gold-framed medallion (like a wax seal) containing a simple icon silhouette:
+1. leftmost node: a cluster of cottage rooftops (town), fully lit, gold and warm-lit — this is the discovered starting village
+2. next node: a shield with a small leaf (safe zone / sanctuary), fully lit gold
+3. next node: a lone twisted tree (wilderness path), lit but slightly dimmer, half-explored
+4. a small side-branch node just above the third, connected by a thin dotted line: a single eye inside a keyhole (secret hidden zone), dim and slightly desaturated, marked with a small "?" ward glyph overlay
+5. rightmost node: a horned skull over crossed blades (boss lair), rendered as a dark unlit silhouette with a faint red glow at its core — clearly NOT yet discovered/fogged
+
+A glowing cyan diamond player marker with a soft outward pulse ring sits exactly on node 2, indicating "you are here". A thin translucent gold compass rose sits in the panel's top-right corner. The undiscovered boss node and its connecting path segment are rendered under a subtle dark violet fog/mist overlay to show they are unexplored.
+
+Style: crisp painterly fantasy game UI illustration, warm amber and gold lighting, dark navy-black negative space background outside the panel (pure black, not scenery), sharp readable icon silhouettes, no blur, no watermark, no extraneous text besides the header title.
+Aspect: landscape UI panel, roughly 3:2.

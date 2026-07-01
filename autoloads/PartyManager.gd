@@ -98,6 +98,18 @@ func companion_name(npc_id: String) -> String:
 	return str((companions.get(npc_id, {}) as Dictionary).get("name", npc_id))
 
 
+## Combat role drives the party passive bonus in GameManager. Values authored by the
+## SceneBuilder party step: attacker / support / healer / tank / none.
+func companion_combat_role(npc_id: String) -> String:
+	var data: Dictionary = companions.get(npc_id, {}) as Dictionary
+	var role := str(data.get("combat_role", "")).strip_edges().to_lower()
+	if role.is_empty():
+		# Some payloads nest it under a `companion` block; fall back to that.
+		var nested: Dictionary = data.get("companion", {}) as Dictionary
+		role = str(nested.get("combat_role", "support")).strip_edges().to_lower()
+	return role if role in ["attacker", "support", "healer", "tank", "none"] else "support"
+
+
 # ── event intake ────────────────────────────────────────────────────────────────
 
 
@@ -176,6 +188,8 @@ func _apply(event: Dictionary) -> void:
 			if active_members.has(npc_id):
 				return
 			active_members[npc_id] = true
+			# Begin tracking this companion's XP/level the moment they join the party.
+			GameManager.ensure_companion(npc_id)
 			member_joined.emit(npc_id)
 			_show_join_popup(npc_id)
 			print("[Party] %s joined" % npc_id)
@@ -206,3 +220,22 @@ func _toast(text: String) -> void:
 	# reuse the inventory toast channel for a quick, consistent notification
 	if InventoryManager.has_method("_push_toast"):
 		InventoryManager._push_toast("✦ %s" % text)
+
+
+# ── persistence (SaveManager) ──────────────────────────────────────────────────
+
+
+func serialize_save() -> Dictionary:
+	return {
+		"active_members": active_members.duplicate(true),
+		"fired": _fired.duplicate(true),
+	}
+
+
+## Restore party membership from a save. Does NOT re-emit member_joined (no join
+## popup on load); Main spawns followers for active_member_ids() when the world builds.
+func apply_save(data: Dictionary) -> void:
+	active_members = (data.get("active_members", {}) as Dictionary).duplicate(true)
+	_fired = (data.get("fired", {}) as Dictionary).duplicate(true)
+	for npc_id in active_members.keys():
+		GameManager.ensure_companion(str(npc_id))

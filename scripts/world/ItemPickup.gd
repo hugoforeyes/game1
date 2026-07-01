@@ -3,13 +3,15 @@ extends Area2D
 ## Visual: the item's AI icon bobbing over a glow, with a sparkle pulse.
 
 var item_id: String = ""
+var pickup_id: String = ""
 
 var _icon_rect: Sprite2D
 var _glow: Sprite2D
 
 
-func setup(definition: Dictionary, tile: Vector2i) -> void:
+func setup(definition: Dictionary, tile: Vector2i, p_pickup_id: String = "") -> void:
 	item_id = str(definition.get("id", ""))
+	pickup_id = p_pickup_id
 	global_position = Vector2(tile) * GameManager.TILE_SIZE + Vector2.ONE * (GameManager.TILE_SIZE * 0.5)
 
 	var shape := CollisionShape2D.new()
@@ -50,6 +52,7 @@ func _on_body_entered(body: Node2D) -> void:
 		return  # only the player carries a camera
 	set_deferred("monitoring", false)
 	InventoryManager.add_item(item_id)
+	GameManager.mark_item_pickup_collected(pickup_id)
 	var sparkle := create_tween()
 	sparkle.tween_property(self, "scale", Vector2(1.5, 1.5), 0.18)
 	sparkle.parallel().tween_property(self, "modulate:a", 0.0, 0.2)

@@ -7,6 +7,8 @@ const CutscenePlayerScript := preload("res://scripts/cutscene/CutscenePlayer.gd"
 const ItemPickupScript := preload("res://scripts/world/ItemPickup.gd")
 const WorldObjectScript := preload("res://scripts/world/WorldObject.gd")
 const PartyFollowerScript := preload("res://scripts/world/PartyFollower.gd")
+const PartyHudViewScript := preload("res://scripts/ui/PartyHudView.gd")
+const QuestCompassViewScript := preload("res://scripts/ui/QuestCompassView.gd")
 
 @onready var background: Sprite2D = $World/Background
 @onready var player: CharacterBody2D = $World/CharacterLayer/GeneratedCharacters/Player
@@ -26,6 +28,8 @@ var _pending_triggered_cutscenes: Array = []  # queued cutscene dicts waiting to
 
 func _ready() -> void:
 	NPCConversationManager._start_prewarm()
+	_mount_party_hud()
+	_mount_quest_compass()
 	print("[Main] ready has_scene_package=%s root='%s'" % [GameManager.has_scene_package(), GameManager.imported_scene_root_dir])
 	QuestManager.quests_changed.connect(_on_quests_changed)
 	QuestManager.npc_talked.connect(_on_npc_talked_cutscene)
@@ -164,6 +168,23 @@ func _apply_background_limits(texture: Texture2D) -> void:
 		player_camera.limit_top = 0
 		player_camera.limit_right = texture.get_width()
 		player_camera.limit_bottom = texture.get_height()
+
+func _mount_party_hud() -> void:
+	# Overworld level/party readout (top-left). Self-contained; reads GameManager.
+	var hud: CanvasLayer = PartyHudViewScript.new()
+	hud.name = "PartyHud"
+	add_child(hud)
+
+
+func _mount_quest_compass() -> void:
+	# Screen-edge pointer toward the tracked objective's exact target, once fully
+	# hinted. Needs Main's live entity lookups + the player node, unlike the
+	# self-contained HUD views above.
+	var compass: QuestCompassView = QuestCompassViewScript.new()
+	compass.name = "QuestCompass"
+	add_child(compass)
+	compass.setup(self, player)
+
 
 func _spawn_party_followers() -> void:
 	for npc_id in PartyManager.active_member_ids():
@@ -446,12 +467,15 @@ func _create_scene_exits(tile_context: Dictionary) -> void:
 		var leads_to: String = str(data.get("leads_to", ""))
 		if leads_to.is_empty():
 			continue
-		var tile: Vector2i = _interior_exit_tile(
-			float(data.get("x_normalized", 0.5)),
-			float(data.get("y_normalized", 0.5)),
-			map_tile_size
-		)
-		tile = _nearest_free_tile(tile, map_tile_size, tile_context.get("blocked_tiles", {}) as Dictionary)
+		var package_data: Dictionary = GameManager.get_scene_package()
+		var tile: Vector2i = _interior_exit_object_tile(package_data, data)
+		if tile == Vector2i(-1, -1):
+			tile = _interior_exit_tile(
+				float(data.get("x_normalized", 0.5)),
+				float(data.get("y_normalized", 0.5)),
+				map_tile_size
+			)
+			tile = _nearest_free_tile(tile, map_tile_size, tile_context.get("blocked_tiles", {}) as Dictionary)
 		_spawn_interior_exit(tile, data, _zone_display_name(leads_to))
 
 func _spawn_scene_exit(tile: Vector2i, edge: String, leads_to: String, label_text: String) -> void:
@@ -632,6 +656,33 @@ func _interior_exit_tile(x_normalized: float, y_normalized: float, map_tile_size
 	var ny: int = clampi(int(round(y_normalized * float(map_tile_size.y - 1))), 1, max(map_tile_size.y - 2, 1))
 	return Vector2i(nx, ny)
 
+func _interior_exit_object_tile(package_data: Dictionary, exit_data: Dictionary) -> Vector2i:
+	var object_id: String = str(exit_data.get("object_id", ""))
+	if object_id.is_empty():
+		return Vector2i(-1, -1)
+	var definitions: Dictionary = _definitions_by_id(package_data)
+	for instance in package_data.get("instances", []):
+		if not (instance is Dictionary):
+			continue
+		var data: Dictionary = instance as Dictionary
+		var instance_id: String = str(data.get("id", ""))
+		var interaction_id: String = str(data.get("interaction_object_id", ""))
+		var transition_id: String = str(data.get("transition_object_id", ""))
+		if object_id != instance_id and object_id != interaction_id and object_id != transition_id:
+			continue
+		var position_tile: Dictionary = data.get("position_tile", {}) as Dictionary
+		var base_tile := Vector2i(int(position_tile.get("x", 0)), int(position_tile.get("y", 0)))
+		var definition: Dictionary = definitions.get(str(data.get("definition_id", instance_id)), {}) as Dictionary
+		var size_tiles: Dictionary = definition.get("size_tiles", {}) as Dictionary
+		var width: int = max(int(size_tiles.get("w", 1)), 1)
+		var height: int = max(int(size_tiles.get("h", 1)), 1)
+		var center_offset := Vector2i(
+			int(round(float(max(width - 1, 0)) / 2.0)),
+			int(round(float(max(height - 1, 0)) / 2.0))
+		)
+		return base_tile + center_offset
+	return Vector2i(-1, -1)
+
 func _entry_spawn_tile(edge: String, tile_context: Dictionary) -> Vector2i:
 	var map_tile_size: Vector2i = tile_context.get("map_tile_size", Vector2i(12, 12))
 	var blocked: Dictionary = tile_context.get("blocked_tiles", {})
@@ -681,6 +732,104 @@ func _zone_display_name(zone_id: String) -> String:
 		if zone is Dictionary and str((zone as Dictionary).get("zone_id", "")) == zone_id:
 			return str((zone as Dictionary).get("name", zone_id))
 	return zone_id
+
+
+## Public: the live global_position of a currently-spawned entity in THIS zone,
+## or Vector2.INF if it isn't here (different zone, not yet spawned, or already
+## consumed/defeated). Queried by QuestCompassView every frame it needs a fresh
+## target — cheap since a zone has at most a few dozen children.
+## kind: "npc" | "object" | "item" | "enemy"
+func find_entity_global_position(kind: String, entity_id: String) -> Vector2:
+	if entity_id.is_empty():
+		return Vector2.INF
+	match kind:
+		"npc":
+			for child in generated_characters.get_children():
+				var npc: Variant = child.get("npc_data")
+				if npc is Dictionary and str((npc as Dictionary).get("id", "")) == entity_id:
+					return (child as Node2D).global_position
+		"object":
+			for child in generated_characters.get_children():
+				var object_id: Variant = child.get("object_id")
+				if object_id != null and str(object_id) == entity_id:
+					return (child as Node2D).global_position
+		"enemy":
+			for child in generated_characters.get_children():
+				var enemy_data: Variant = child.get("enemy_data")
+				if enemy_data is Dictionary and str((enemy_data as Dictionary).get("id", "")) == entity_id:
+					return (child as Node2D).global_position
+		"item":
+			for child in generated_props.get_children():
+				var item_id: Variant = child.get("item_id")
+				if item_id != null and str(item_id) == entity_id:
+					return (child as Node2D).global_position
+	return Vector2.INF
+
+
+## Public: the global_position of the exit door in THIS zone that leads (directly,
+## or via the fewest hops through the chapter's zone graph) toward target_zone_id.
+## Returns Vector2.INF if there is no route (or no exit data) to point at.
+func find_exit_toward_zone(target_zone_id: String) -> Vector2:
+	if not ChapterFlow.active or target_zone_id.is_empty():
+		return Vector2.INF
+	var zone: Dictionary = ChapterFlow.current_zone()
+	var current_zone_id := str(zone.get("zone_id", ""))
+	if current_zone_id == target_zone_id:
+		return Vector2.INF
+	var edge_exits: Array = zone.get("edge_exits", []) as Array
+	if edge_exits.is_empty():
+		return Vector2.INF
+	var next_hop := _next_hop_zone_id(current_zone_id, target_zone_id)
+	if next_hop.is_empty():
+		return Vector2.INF
+	var map_tile_size: Vector2i = GameManager.get_map_tile_size(GameManager.get_scene_package(), background.texture)
+	if map_tile_size == Vector2i.ZERO:
+		return Vector2.INF
+	for exit_data in edge_exits:
+		if not (exit_data is Dictionary):
+			continue
+		var data: Dictionary = exit_data as Dictionary
+		if str(data.get("leads_to", "")) != next_hop:
+			continue
+		var edge: String = str(data.get("edge", ""))
+		var normalized: float = float(data.get("normalized", 0.5))
+		if edge.is_empty():
+			continue
+		return _tile_to_pixel_center(_edge_exit_tile(edge, normalized, map_tile_size))
+	return Vector2.INF
+
+
+## BFS over the chapter's zone `connections` graph (the same topology the minimap
+## draws) for the first hop from `from_zone_id` toward `target_zone_id`. Returns
+## "" if unreachable or already adjacent-less.
+func _next_hop_zone_id(from_zone_id: String, target_zone_id: String) -> String:
+	var zones: Array = ChapterFlow.current_chapter_zones()
+	var connections_by_id: Dictionary = {}
+	for entry in zones:
+		if entry is Dictionary:
+			connections_by_id[str((entry as Dictionary).get("zone_id", ""))] = (entry as Dictionary).get("connections", []) as Array
+	if not connections_by_id.has(from_zone_id) or not connections_by_id.has(target_zone_id):
+		return ""
+	if (connections_by_id[from_zone_id] as Array).has(target_zone_id):
+		return target_zone_id
+	var visited: Dictionary = {from_zone_id: true}
+	var queue: Array = [[from_zone_id, ""]]  # [zone_id, first_hop_from_start]
+	var head := 0
+	while head < queue.size():
+		var pair: Array = queue[head]
+		head += 1
+		var zone_id: String = pair[0]
+		var first_hop: String = pair[1]
+		for neighbor in (connections_by_id.get(zone_id, []) as Array):
+			var neighbor_id := str(neighbor)
+			if visited.has(neighbor_id):
+				continue
+			visited[neighbor_id] = true
+			var hop: String = first_hop if not first_hop.is_empty() else neighbor_id
+			if neighbor_id == target_zone_id:
+				return hop
+			queue.append([neighbor_id, hop])
+	return ""
 
 func _tile_from_key(key: String) -> Vector2i:
 	var parts: PackedStringArray = key.split(":")
@@ -818,14 +967,20 @@ func _spawn_item_pickups(tile_context: Dictionary) -> void:
 			continue
 		var per_zone: Dictionary = definition.get("world_spawns", {}) as Dictionary
 		var spawn_count := int(per_zone.get(zone_id, definition.get("world_spawn_count", 1)))
-		for _n in range(spawn_count):
+		for n in range(spawn_count):
+			# Always draw a tile (even for an already-collected pickup) so the RNG
+			# sequence — and therefore every OTHER pickup's position — stays
+			# identical across reloads; only whether we actually SPAWN it differs.
 			var tile: Vector2i = _find_pickup_tile(rng, map_size, blocked, used)
 			if tile == Vector2i(-1, -1):
 				continue
 			used["%s:%s" % [tile.x, tile.y]] = true
+			var pickup_id := "%s:%s:%d" % [zone_id, str(definition.get("id", "")), n]
+			if GameManager.is_item_pickup_collected(pickup_id):
+				continue
 			var pickup: Area2D = ItemPickupScript.new() as Area2D
 			generated_props.add_child(pickup)
-			pickup.setup(definition, tile)
+			pickup.setup(definition, tile, pickup_id)
 			spawned += 1
 	print("[Main] spawned_item_pickups=%d" % spawned)
 

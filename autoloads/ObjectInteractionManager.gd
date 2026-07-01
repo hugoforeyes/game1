@@ -76,6 +76,21 @@ func is_used(object_id: String) -> bool:
 	return bool(_used.get(object_id, false))
 
 
+func object_id_for_objective(quest_id: String, objective_id: String) -> String:
+	## The object whose interaction closes this exact objective, if any — used by
+	## QuestCompassView to point at a "collect" objective's world object (search
+	## archetype) rather than the item itself, since that's where it actually lives.
+	for object_id in _contracts:
+		var contract: Dictionary = _contracts[object_id] as Dictionary
+		for comp in contract.get("completes", []) as Array:
+			if not (comp is Dictionary):
+				continue
+			if str((comp as Dictionary).get("quest_id", "")) == quest_id \
+					and str((comp as Dictionary).get("objective_id", "")) == objective_id:
+				return str(object_id)
+	return ""
+
+
 func is_object_sourced_item(item_id: String, zone_id: String) -> bool:
 	## True when the item is provided by interacting with an object in this zone —
 	## the random-scatter spawner must skip it so it lives only at its object.

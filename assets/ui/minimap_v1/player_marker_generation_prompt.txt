@@ -1,0 +1,6 @@
+Use case: ui-mockup.
+Asset type: one standalone pixel-art icon: a glowing player-position marker for a fantasy RPG minimap.
+Primary request: a bright cyan-white four-pointed diamond/compass-needle shape, glowing with a soft outward radial light bloom and one thin pulse ring around it, viewed face-on, pointing up.
+Style: crisp clean pixel art, luminous cyan (#7fe8ff) core fading to white at the center, matching a AAA fantasy RPG UI kit, readable at small size (32x32).
+Background: perfectly flat solid #00ff00 chroma key.
+Constraints: icon only, centered, no frame, no border, no text, no other elements.

@@ -12,6 +12,9 @@ signal quests_changed
 ## Emitted whenever the player talks to an NPC (the quest "talk" beat). Used by the
 ## CutsceneDirector to fire npc_talked-triggered cutscenes.
 signal npc_talked(npc_id: String)
+## Emitted the moment a player has now heard all 3 hint levels for one objective —
+## QuestCompassView listens for this to start pointing toward the exact target.
+signal objective_fully_hinted(quest_id: String, objective_id: String)
 
 const TOAST_SECONDS := 2.4
 const QuestTrackerViewScript = preload("res://scripts/ui/QuestTrackerView.gd")
@@ -27,6 +30,19 @@ var current_zone_id: String = ""
 # when its target zone is in here — never via a play-order index comparison (side
 # zones like the hidden bakery sort late, which used to falsely "pass" earlier zones).
 var visited_zones: Dictionary = {}
+# "npc_id:node_id" -> true for every dialogue-tree node ever reached, across every
+# conversation session (not just the currently-open one). ChatBox seeds its
+# per-session _visited_nodes from this on open, and writes back to it as the
+# conversation progresses — so "already picked this topic before" survives
+# closing and reopening the chat, not just navigating within one open session.
+var visited_dialogue_nodes: Dictionary = {}
+# Per-chapter quest-progress snapshots, keyed by String(chapter_number). Captured just
+# before load_chapter_quests() wipes the live state for a DIFFERENT chapter (world map
+# travel), and re-applied the next time that chapter's quests are loaded — so revisiting
+# an already-completed (or partially played) chapter doesn't reset its quest journal back
+# to "inactive". World state (visited_zones is chapter-scoped and lives here too;
+# defeated_enemy_ids/collected_item_pickup_ids are separate GameManager dicts, untouched).
+var _chapter_snapshots: Dictionary = {}
 
 var _ui: CanvasLayer = null
 var _journal_layer: CanvasLayer = null
@@ -65,6 +81,8 @@ func reset() -> void:
 	_tracker_compact = false
 	current_zone_id = ""
 	visited_zones = {}
+	visited_dialogue_nodes = {}
+	_chapter_snapshots = {}
 	_pending_choices.clear()
 	_toast_queue.clear()
 	_toast_busy = false
@@ -73,6 +91,71 @@ func reset() -> void:
 			child.queue_free()
 	quests_changed.emit()
 	_refresh_tracker()
+
+
+# ── persistence (SaveManager) ──────────────────────────────────────────────────
+
+
+func serialize_save() -> Dictionary:
+	return {
+		"quest_states": quest_states.duplicate(true),
+		"tracked_quest_id": tracked_quest_id,
+		"visited_zones": visited_zones.duplicate(true),
+		"revealed_hints": revealed_hints.duplicate(true),
+		"visited_dialogue_nodes": visited_dialogue_nodes.duplicate(true),
+		"chapter_snapshots": _chapter_snapshots.duplicate(true),
+	}
+
+
+## Restore quest progress onto the CURRENTLY loaded chapter quests (call after
+## load_chapter_quests so the quest definitions already exist).
+func apply_save(data: Dictionary) -> void:
+	var saved_states: Dictionary = data.get("quest_states", {}) as Dictionary
+	for quest_id in saved_states.keys():
+		if quest_states.has(quest_id):
+			quest_states[quest_id] = (saved_states[quest_id] as Dictionary).duplicate(true)
+	tracked_quest_id = str(data.get("tracked_quest_id", ""))
+	visited_zones = (data.get("visited_zones", {}) as Dictionary).duplicate(true)
+	revealed_hints = (data.get("revealed_hints", {}) as Dictionary).duplicate(true)
+	visited_dialogue_nodes = (data.get("visited_dialogue_nodes", {}) as Dictionary).duplicate(true)
+	_chapter_snapshots = (data.get("chapter_snapshots", {}) as Dictionary).duplicate(true)
+	quests_changed.emit()
+	_refresh_tracker()
+
+
+## Capture the CURRENTLY loaded chapter's live quest progress before it gets wiped by a
+## load_chapter_quests() call for a different chapter (ChapterFlow.goto_chapter). No-op if
+## no chapter is loaded yet (chapter_number <= 0, e.g. very first chapter of a new game).
+func snapshot_current_chapter(chapter_number: int) -> void:
+	if chapter_number <= 0:
+		return
+	_chapter_snapshots[str(chapter_number)] = {
+		"quest_states": quest_states.duplicate(true),
+		"revealed_hints": revealed_hints.duplicate(true),
+		"tracked_quest_id": tracked_quest_id,
+		"visited_zones": visited_zones.duplicate(true),
+	}
+
+
+## Re-apply a previously snapshotted chapter's quest progress onto its freshly loaded
+## quest definitions (call right after load_chapter_quests). No-op, returns false, on a
+## chapter's first-ever visit (nothing snapshotted yet) — its quests simply start fresh.
+func restore_chapter_snapshot(chapter_number: int) -> bool:
+	var key := str(chapter_number)
+	if not _chapter_snapshots.has(key):
+		return false
+	var snapshot: Dictionary = _chapter_snapshots[key] as Dictionary
+	var saved_states: Dictionary = snapshot.get("quest_states", {}) as Dictionary
+	for quest_id in saved_states.keys():
+		if quest_states.has(quest_id):
+			quest_states[quest_id] = (saved_states[quest_id] as Dictionary).duplicate(true)
+	revealed_hints = (snapshot.get("revealed_hints", {}) as Dictionary).duplicate(true)
+	tracked_quest_id = str(snapshot.get("tracked_quest_id", ""))
+	visited_zones = (snapshot.get("visited_zones", {}) as Dictionary).duplicate(true)
+	quests_changed.emit()
+	_refresh_tracker()
+	print("[Quest] restored chapter %d quest snapshot" % chapter_number)
+	return true
 
 
 func load_chapter_quests(chapter_quests: Array) -> void:
@@ -416,8 +499,73 @@ func reveal_hint(
 	revealed_hints[key] = hints_by_level
 	if is_new:
 		_toast_queue.append({"kind": "hint", "hint": payload})
+		if hints_by_level.size() >= 3:
+			objective_fully_hinted.emit(quest_id, objective_id)
 	_refresh_tracker()
 	_refresh_open_journal()
+
+
+func is_objective_fully_hinted(quest_id: String, objective_id: String) -> bool:
+	## True once the player has heard all 3 hint levels (L1 vague -> L3 exact) for
+	## this objective — QuestCompassView's gate for showing a precise pointer.
+	var key := "%s:%s" % [quest_id, objective_id]
+	return (revealed_hints.get(key, {}) as Dictionary).size() >= 3
+
+
+func mark_dialogue_node_visited(npc_id: String, node_id: String) -> void:
+	if npc_id.is_empty() or node_id.is_empty():
+		return
+	visited_dialogue_nodes["%s:%s" % [npc_id, node_id]] = true
+
+
+func is_dialogue_node_visited(npc_id: String, node_id: String) -> bool:
+	return visited_dialogue_nodes.has("%s:%s" % [npc_id, node_id])
+
+
+func tracked_quest_and_objective() -> Dictionary:
+	## Public equivalent of _refresh_tracker()'s "which quest/objective is
+	## currently shown on the HUD tracker" selection, for QuestCompassView.
+	## Returns {} if no quest currently has an active objective.
+	var display_quest: Dictionary = {}
+	for quest in quests:
+		var objective: Dictionary = _current_objective(quest)
+		if objective.is_empty():
+			continue
+		if display_quest.is_empty():
+			display_quest = quest
+		if str(quest.get("id", "")) == tracked_quest_id:
+			display_quest = quest
+			break
+	if display_quest.is_empty():
+		return {}
+	return {"quest": display_quest, "objective": _current_objective(display_quest)}
+
+
+func is_tracked_objective_active(quest_id: String, objective_id: String) -> bool:
+	## Like is_objective_active, but ALSO requires this to be the TRACKED quest —
+	## not just any quest that happens to be active. Used to gate NPC hint options
+	## so an NPC only offers hints for whatever the player is currently following;
+	## a hint for a different active-but-untracked quest stays silent until the
+	## player switches their tracked quest (journal) to it.
+	var tracked := tracked_quest_and_objective()
+	if tracked.is_empty():
+		return false
+	var quest: Dictionary = tracked.get("quest", {}) as Dictionary
+	var objective: Dictionary = tracked.get("objective", {}) as Dictionary
+	return str(quest.get("id", "")) == quest_id and str(objective.get("id", "")) == objective_id
+
+
+func are_all_main_quests_completed() -> bool:
+	## The chapter-completion signal ChapterFlow watches: every quest authored as
+	## type=="main" (the story spine) has reached the "completed" state. A chapter
+	## with zero main quests (shouldn't happen in practice) counts as complete —
+	## nothing is blocking it.
+	for quest in quests:
+		if str(quest.get("type", "main")) != "main":
+			continue
+		if str(_state_of(quest).get("state", "")) != "completed":
+			return false
+	return true
 
 
 func stage_unlocked(unlock: Dictionary) -> bool:
@@ -567,7 +715,7 @@ func _apply_choice_outcome(outcome: Dictionary) -> void:
 			InventoryManager.add_item(item_id, maxi(1, int((grant as Dictionary).get("count", 1))))
 	var xp := maxi(0, int(outcome.get("xp", 0)))
 	if xp > 0:
-		GameManager.gain_xp(xp)
+		GameManager.grant_party_xp(xp)
 
 
 func _skip_unavailable_objectives(quest: Dictionary) -> void:
@@ -597,7 +745,7 @@ func _finish_quest(quest: Dictionary) -> void:
 	if tracked_quest_id == str(quest.get("id", "")):
 		tracked_quest_id = ""
 	var xp: int = int((quest.get("reward", {}) as Dictionary).get("xp", 50))
-	GameManager.gain_xp(xp)
+	GameManager.grant_party_xp(xp)
 	var reward_item: Dictionary = InventoryManager.reward_item_for(str(quest.get("id")))
 	if not reward_item.is_empty():
 		InventoryManager.add_item(str(reward_item.get("id")))

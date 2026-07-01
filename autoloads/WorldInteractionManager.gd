@@ -82,9 +82,14 @@ func _ensure_prompt() -> void:
 func _select_candidate() -> Dictionary:
 	var live: Array[Dictionary] = []
 	for candidate in _candidates:
-		var owner: Node = candidate.get("owner") as Node
-		var player: Node2D = candidate.get("player") as Node2D
-		if owner != null and is_instance_valid(owner) and player != null and is_instance_valid(player):
+		# Never `as Node` a Variant that may reference an already-freed object — the
+		# cast itself touches freed memory ("Trying to cast a freed object"). During
+		# a scene transition an NPC/WorldObject can submit itself one frame and be
+		# freed (deferred) before this runs next frame, so check is_instance_valid()
+		# on the raw Variant FIRST; that call is safe even on a freed reference.
+		var owner_ref: Variant = candidate.get("owner")
+		var player_ref: Variant = candidate.get("player")
+		if is_instance_valid(owner_ref) and is_instance_valid(player_ref):
 			live.append(candidate)
 	if live.is_empty():
 		return {}
@@ -113,9 +118,14 @@ func _clear_active() -> void:
 func _on_prompt_confirmed(item: String, index: int) -> void:
 	if _active_candidate.is_empty():
 		return
-	var owner: Node = _active_candidate.get("owner") as Node
+	# Same rule as _select_candidate(): validate the raw Variant before casting.
+	var owner_ref: Variant = _active_candidate.get("owner")
 	var method := str(_active_candidate.get("method", ""))
-	if owner == null or not is_instance_valid(owner) or method.is_empty() or not owner.has_method(method):
+	if not is_instance_valid(owner_ref) or method.is_empty():
+		_clear_active()
+		return
+	var owner: Node = owner_ref
+	if not owner.has_method(method):
 		_clear_active()
 		return
 	_prompt.hide_prompt()

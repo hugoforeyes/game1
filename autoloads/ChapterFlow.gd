@@ -34,6 +34,32 @@ var _suppress_cutscene: bool = false
 var _prefetching_zones: Dictionary = {}
 var _prefetch_all_running: bool = false
 
+
+func _ready() -> void:
+	QuestManager.quests_changed.connect(_check_chapter_completion)
+
+
+## Fires the moment the CURRENT chapter's story is done: every main quest
+## completed and its boss zone reached (see QuestManager.are_all_main_quests_
+## completed / visited_zones). Marks it in GameManager (unlocks the next
+## chapter on the world map) and lets the player know — travel happens on
+## their own schedule, nothing here forces a transition.
+func _check_chapter_completion() -> void:
+	if not active:
+		return
+	var chapter: Dictionary = current_chapter()
+	var chapter_number := int(chapter.get("chapter", 0))
+	if chapter_number <= 0 or GameManager.is_chapter_completed(chapter_number):
+		return
+	if not QuestManager.are_all_main_quests_completed():
+		return
+	var boss_zone_id := str((chapter.get("minimap", {}) as Dictionary).get("boss_zone_id", ""))
+	if not boss_zone_id.is_empty() and not QuestManager.visited_zones.has(boss_zone_id):
+		return
+	GameManager.mark_chapter_completed(chapter_number)
+	InventoryManager._push_toast("Chương %d hoàn thành! Mở Bản Đồ Thế Giới (Tab) để tiếp tục." % chapter_number)
+
+
 func api_url(path: String) -> String:
 	return GameManager.api_base_url() + path
 
@@ -75,6 +101,8 @@ func start_new_game() -> Error:
 	zone_index = 0
 	active = true
 	GameManager.reset_runtime_imports(true)
+	GameManager.reset_combat_progress()  # a brand-new game starts at level 1
+	SaveManager.clear_save()             # discard any previous run's save
 	_clear_zone_cache()
 	QuestManager.reset()
 	InventoryManager.reset()
@@ -82,8 +110,25 @@ func start_new_game() -> Error:
 	PartyManager.reset()
 	NarrativeState.reset()
 	CutsceneDirector.reset()
+	MinimapManager.reset()
 	print("[ChapterFlow] flow loaded run=%s chapters=%d" % [str(flow.get("run_id", "")), chapters().size()])
 	return await begin_current_chapter()
+
+## Public: jump directly to any chapter the world map allows (unlocked or
+## completed) — the player's own choice of when to move on, not a forced
+## advance. Chapter identity is the AUTHORED "chapter" number, not array
+## position (the two can diverge). Returns ERR_DOES_NOT_EXIST if not found.
+func goto_chapter(chapter_number: int) -> Error:
+	var items: Array = chapters()
+	var leaving_number := int(current_chapter().get("chapter", 0))
+	if leaving_number != chapter_number:
+		QuestManager.snapshot_current_chapter(leaving_number)
+	for i in range(items.size()):
+		if int((items[i] as Dictionary).get("chapter", -1)) == chapter_number:
+			chapter_index = i
+			return await begin_current_chapter()
+	return ERR_DOES_NOT_EXIST
+
 
 func begin_current_chapter() -> Error:
 	var chapter: Dictionary = current_chapter()
@@ -93,7 +138,37 @@ func begin_current_chapter() -> Error:
 	pending_intro = {}
 	pending_cutscene_actions = []
 	pending_play_opening = false
+	await _load_chapter_content(chapter)
+
+	loading_status.emit("Fetching chapter intro...")
+	var run_id: String = str(flow.get("run_id", ""))
+	var intro_response: Dictionary = await _http_get_json(
+		"/api/godot/runs/%s/chapters/%d/intro" % [run_id, int(chapter.get("chapter", 0))]
+	)
+	if bool(intro_response.get("ok", false)):
+		pending_intro = intro_response.get("chapter_intro", {}) as Dictionary
+	print("[ChapterFlow] chapter %s intro mode='%s' slides=%d cutscene_actions=%d" % [
+		str(chapter.get("chapter", "?")),
+		str(pending_intro.get("recommended_mode", "none")),
+		(pending_intro.get("slides", []) as Array).size(),
+		((pending_intro.get("cutscene", {}) as Dictionary).get("actions", []) as Array).size(),
+	])
+
+	var mode: String = str(pending_intro.get("recommended_mode", ""))
+	var slides: Array = pending_intro.get("slides", []) as Array
+	if not slides.is_empty() and mode in ["slides", "both"]:
+		get_tree().change_scene_to_file(SLIDES_SCENE_PATH)
+		return OK
+	return await enter_current_zone()
+
+
+## Load a chapter's content catalogs (quests, item catalog + icons, companion roster
+## + sprites). Shared by begin_current_chapter and continue_saved_game.
+func _load_chapter_content(chapter: Dictionary) -> void:
 	QuestManager.load_chapter_quests(chapter.get("quests", []) as Array)
+	# Revisiting a chapter (world map travel) restores its own quest progress instead of
+	# starting fresh — no-op on a chapter's first-ever visit (nothing snapshotted yet).
+	QuestManager.restore_chapter_snapshot(int(chapter.get("chapter", 0)))
 
 	var items_payload: Dictionary = chapter.get("items", {}) as Dictionary
 	if not (items_payload.get("items", []) as Array).is_empty():
@@ -121,25 +196,91 @@ func begin_current_chapter() -> Error:
 			var portrait_texture: Texture2D = await download_image_texture(portrait_url)
 			PartyManager.set_companion_portrait(str(companion.get("npc_id", "")), portrait_texture)
 
-	loading_status.emit("Fetching chapter intro...")
-	var run_id: String = str(flow.get("run_id", ""))
-	var intro_response: Dictionary = await _http_get_json(
-		"/api/godot/runs/%s/chapters/%d/intro" % [run_id, int(chapter.get("chapter", 0))]
-	)
-	if bool(intro_response.get("ok", false)):
-		pending_intro = intro_response.get("chapter_intro", {}) as Dictionary
-	print("[ChapterFlow] chapter %s intro mode='%s' slides=%d cutscene_actions=%d" % [
-		str(chapter.get("chapter", "?")),
-		str(pending_intro.get("recommended_mode", "none")),
-		(pending_intro.get("slides", []) as Array).size(),
-		((pending_intro.get("cutscene", {}) as Dictionary).get("actions", []) as Array).size(),
-	])
+	# Chapter map illustration (optional) — painted region art for the minimap
+	# background. Re-fetched per chapter; null when the BE step hasn't produced
+	# one yet, so MinimapView falls back to its procedural look.
+	var minimap_payload: Dictionary = chapter.get("minimap", {}) as Dictionary
+	var minimap_bg_url := str(minimap_payload.get("background_image_url", ""))
+	if not minimap_bg_url.is_empty():
+		loading_status.emit("Fetching chapter map illustration...")
+		var minimap_bg_texture: Texture2D = await download_image_texture(minimap_bg_url)
+		MinimapManager.set_background_texture(minimap_bg_texture)
+	else:
+		MinimapManager.set_background_texture(null)
 
-	var mode: String = str(pending_intro.get("recommended_mode", ""))
-	var slides: Array = pending_intro.get("slides", []) as Array
-	if not slides.is_empty() and mode in ["slides", "both"]:
-		get_tree().change_scene_to_file(SLIDES_SCENE_PATH)
-		return OK
+	# World map illustration (optional, world-scoped not per-chapter — re-fetched
+	# on each chapter load same as the minimap one above; MinimapManager just
+	# caches whatever it's given, so a redundant re-fetch is harmless).
+	var world_map_payload: Dictionary = flow.get("world_map", {}) as Dictionary
+	var world_bg_url := str(world_map_payload.get("background_image_url", ""))
+	if not world_bg_url.is_empty():
+		loading_status.emit("Fetching world map illustration...")
+		var world_bg_texture: Texture2D = await download_image_texture(world_bg_url)
+		MinimapManager.set_world_background_texture(world_bg_texture)
+	else:
+		MinimapManager.set_world_background_texture(null)
+
+
+## Position snapshot for SaveManager — where the player is in the chapter→zone flow.
+func serialize_position() -> Dictionary:
+	return {
+		"run_id": str(flow.get("run_id", "")),
+		"chapter_index": chapter_index,
+		"zone_index": zone_index,
+		"chapter_number": int(current_chapter().get("chapter", 0)),
+		"zone_id": str(current_zone().get("zone_id", "")),
+	}
+
+
+## Resume a saved run: re-fetch the flow, and if it is the SAME world the save was
+## made in, restore the chapter/zone position + all progression and drop the player
+## straight back into the saved zone (no intro). Falls back to a new game if there is
+## no save or the saved world is no longer the latest one.
+func continue_saved_game() -> Error:
+	var snapshot: Dictionary = SaveManager.peek()
+	var saved_flow: Dictionary = snapshot.get("flow", {}) as Dictionary
+	if snapshot.is_empty() or saved_flow.is_empty():
+		return await start_new_game()
+
+	loading_status.emit("Connecting to story server...")
+	var response: Dictionary = await _http_get_json("/api/godot/runs/latest")
+	if not bool(response.get("ok", false)) or (response.get("chapters", []) as Array).is_empty():
+		return ERR_CANT_CONNECT
+	flow = response
+	if str(saved_flow.get("run_id", "")) != str(flow.get("run_id", "")):
+		# The latest world is a different run than the one saved — the save is stale.
+		print("[ChapterFlow] saved run no longer latest; starting a new game")
+		return await start_new_game()
+
+	active = true
+	GameManager.reset_runtime_imports(true)
+	GameManager.reset_combat_progress()
+	_clear_zone_cache()
+	QuestManager.reset()
+	InventoryManager.reset()
+	ObjectInteractionManager.reset()
+	PartyManager.reset()
+	NarrativeState.reset()
+	CutsceneDirector.reset()
+	MinimapManager.reset()
+
+	chapter_index = clampi(int(saved_flow.get("chapter_index", 0)), 0, maxi(chapters().size() - 1, 0))
+	var chapter: Dictionary = current_chapter()
+	if chapter.is_empty():
+		return await start_new_game()
+	pending_intro = {}
+	pending_cutscene_actions = []
+	pending_play_opening = false
+	await _load_chapter_content(chapter)
+
+	# Restore progression/quests/inventory/party onto the freshly loaded catalogs.
+	SaveManager.apply_to_managers(snapshot)
+
+	zone_index = clampi(int(saved_flow.get("zone_index", 0)), 0, maxi(current_chapter_zones().size() - 1, 0))
+	_suppress_cutscene = true  # do not replay the opening on a resume
+	print("[ChapterFlow] continuing run=%s chapter=%d zone=%d level=%d" % [
+		str(flow.get("run_id", "")), chapter_index, zone_index, GameManager.player_level,
+	])
 	return await enter_current_zone()
 
 func enter_current_zone() -> Error:
@@ -191,6 +332,8 @@ func enter_current_zone() -> Error:
 		loading_status.emit("Loading music...")
 	await MusicManager.load_and_play(GameManager.get_scene_context())
 	get_tree().change_scene_to_file(GameManager.WORLD_SCENE_PATH)
+	# Persist the new position + progression so a later "Continue" resumes here.
+	SaveManager.request_autosave()
 	return OK
 
 
