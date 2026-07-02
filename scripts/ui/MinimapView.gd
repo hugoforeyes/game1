@@ -44,7 +44,8 @@ var _pulse_tweens: Array[Tween] = []
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	clip_contents = false
-	position = Vector2((960.0 - PANEL_W) * 0.5, (540.0 - PANEL_H) * 0.5).round()
+	var vp := get_viewport_rect().size
+	position = Vector2((vp.x - PANEL_W) * 0.5, (vp.y - PANEL_H) * 0.5).round()
 	size = Vector2(PANEL_W, PANEL_H)
 
 

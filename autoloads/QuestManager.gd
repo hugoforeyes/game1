@@ -784,9 +784,9 @@ func _ensure_ui() -> void:
 	_tracker_view.collapse_toggled.connect(_toggle_tracker_compact)
 	_tracker_layer.add_child(_tracker_view)
 
-	# Toast host (top-center)
+	# Toast host (top-center; the layer runs at scale 2 → design width = vp/2)
 	_toast_host = Control.new()
-	_toast_host.position = Vector2(240, 0)
+	_toast_host.position = Vector2(get_viewport().get_visible_rect().size.x / 4.0, 0)
 	_ui.add_child(_toast_host)
 
 	_build_journal()
@@ -818,7 +818,8 @@ func _build_choice_dialog() -> void:
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_choice_root.add_child(dim)
 
-	var panel := UiKit.make_panel(Rect2(70, 60, 340, 150))
+	var design: Vector2 = get_viewport().get_visible_rect().size / 2.0
+	var panel := UiKit.make_panel(Rect2((design.x - 340.0) * 0.5, (design.y - 150.0) * 0.5, 340, 150))
 	_choice_root.add_child(panel)
 
 	var header := UiKit.make_label("LỰA CHỌN", 9, UiKit.COLOR_ACCENT)

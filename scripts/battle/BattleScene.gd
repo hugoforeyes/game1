@@ -106,6 +106,9 @@ var _shake_time: float = 0.0
 var _shake_strength: float = 0.0
 
 var _root: Control
+# Centered 960x540 canvas the battle layout is authored in; the dim/backdrop
+# stay full-screen on _root so wider viewports have no empty side bands.
+var _design: Control
 var _fx_layer: Control
 var _enemy_panel: Panel
 var _enemy_name_label: Label
@@ -291,9 +294,15 @@ func _build_ui() -> void:
 		backdrop.modulate = Color(1, 1, 1, 0.9)
 		_root.add_child(backdrop)
 
+	_design = Control.new()
+	_design.position = ((get_viewport().get_visible_rect().size - Vector2(960, 540)) * 0.5).floor()
+	_design.size = Vector2(960, 540)
+	_design.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_root.add_child(_design)
+
 	# ── enemy panel (slides in from the top) ──
 	_enemy_panel = _make_panel_node(Rect2(24, 24, 260, 104))
-	_root.add_child(_enemy_panel)
+	_design.add_child(_enemy_panel)
 	_add_texture(_enemy_panel, TEX_B2_ENEMY, Rect2(-6, -6, 272, 116), 0.58, true)
 
 	var enemy_kicker := _make_label("ENEMY", 13, COLOR_ACCENT)
@@ -339,7 +348,7 @@ func _build_ui() -> void:
 
 	# ── intent panel ──
 	_intent_panel = _make_panel_node(Rect2(580, 36, 292, 126), true)
-	_root.add_child(_intent_panel)
+	_design.add_child(_intent_panel)
 	_add_texture(_intent_panel, TEX_B2_INTENT, Rect2(-8, -7, 308, 138), 0.58, true)
 
 	_intent_name_label = _make_label("INTENT (NEXT TURN)", 13, COLOR_ACCENT)
@@ -367,7 +376,7 @@ func _build_ui() -> void:
 	_portrait_holder.position = PORTRAIT_HOME + Vector2(120, 0)
 	_portrait_holder.size = PORTRAIT_SIZE
 	_portrait_holder.modulate.a = 0.0
-	_root.add_child(_portrait_holder)
+	_design.add_child(_portrait_holder)
 
 	_portrait = TextureRect.new()
 	_portrait.size = PORTRAIT_SIZE
@@ -393,7 +402,7 @@ func _build_ui() -> void:
 
 	# ── log panel ──
 	_log_panel = _make_panel_node(Rect2(24, 198, 282, 126))
-	_root.add_child(_log_panel)
+	_design.add_child(_log_panel)
 	_add_texture(_log_panel, TEX_B2_LOG, Rect2(-8, -7, 298, 140), 0.48, true)
 
 	var log_kicker := _make_label("BATTLE LOG", 13, COLOR_ACCENT)
@@ -415,7 +424,7 @@ func _build_ui() -> void:
 	# ── menu strip ──
 	_menu_panel = _make_panel_node(Rect2(292, 372, 644, 128))
 	_menu_panel.visible = false
-	_root.add_child(_menu_panel)
+	_design.add_child(_menu_panel)
 
 	_menu_row = HBoxContainer.new()
 	_menu_row.position = Vector2(18, 16)
@@ -433,7 +442,7 @@ func _build_ui() -> void:
 
 	# ── player panel ──
 	_player_panel = _make_panel_node(Rect2(24, 364, 260, 136))
-	_root.add_child(_player_panel)
+	_design.add_child(_player_panel)
 	_add_texture(_player_panel, TEX_B2_ORNAMENT, Rect2(6, -4, 82, 25), 0.88)
 
 	_player_panel_label = _make_label("", 16, COLOR_TEXT)
@@ -497,13 +506,14 @@ func _build_ui() -> void:
 	_hint_label.size = Vector2(420, 20)
 	_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_hint_label.visible = false
-	_root.add_child(_hint_label)
+	_design.add_child(_hint_label)
 
 	# ── FX layer on top of everything ──
 	_fx_layer = Control.new()
-	_fx_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_fx_layer.position = Vector2.ZERO
+	_fx_layer.size = Vector2(960, 540)
 	_fx_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_root.add_child(_fx_layer)
+	_design.add_child(_fx_layer)
 
 	_refresh_enemy_panel()
 	_refresh_player_panel()
@@ -515,7 +525,7 @@ func _build_turn_order_strip() -> void:
 	title.position = Vector2(858, 176)
 	title.size = Vector2(82, 18)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_root.add_child(title)
+	_design.add_child(title)
 
 	var entries := [
 		{"path": TEX_B2_TURN_ORDER_ENEMY, "label": "EN", "color": Color(1.0, 0.38, 0.34, 1.0)},
@@ -526,13 +536,13 @@ func _build_turn_order_strip() -> void:
 	for index in range(entries.size()):
 		var entry: Dictionary = entries[index]
 		var y := 200 + index * 46
-		_add_texture(_root, str(entry["path"]), Rect2(854, y, 86, 36), 0.88)
+		_add_texture(_design, str(entry["path"]), Rect2(854, y, 86, 36), 0.88)
 		var entry_color: Color = entry["color"]
 		var label := _make_label(str(entry["label"]), 14, entry_color)
 		label.position = Vector2(874, y + 7)
 		label.size = Vector2(48, 20)
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		_root.add_child(label)
+		_design.add_child(label)
 
 
 func _build_sp_pips() -> void:
@@ -561,16 +571,19 @@ func _play_intro_animation() -> void:
 	var flash := ColorRect.new()
 	flash.color = Color(1, 1, 1, 0.85)
 	flash.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_fx_layer.add_child(flash)
+	_root.add_child(flash)
 	var flash_tween := create_tween()
 	flash_tween.tween_property(flash, "color:a", 0.0, 0.45)
 	flash_tween.tween_callback(flash.queue_free)
 
-	_enemy_panel.position.y = -150
-	_intent_panel.position.y = -150
-	_log_panel.position.x = -320
-	_menu_panel.position.y = 560
-	_player_panel.position.x = -320
+	# Slide-in start positions are in _design coordinates; push them past the
+	# design canvas' margins so they start fully off-SCREEN, not just off-canvas.
+	var off: Vector2 = _design.position
+	_enemy_panel.position.y = -150 - off.y
+	_intent_panel.position.y = -150 - off.y
+	_log_panel.position.x = -320 - off.x
+	_menu_panel.position.y = 560 + off.y
+	_player_panel.position.x = -320 - off.x
 
 	var slide := create_tween().set_parallel(true)
 	slide.tween_property(_enemy_panel, "position:y", 24.0, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)

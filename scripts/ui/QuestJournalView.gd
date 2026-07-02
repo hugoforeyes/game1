@@ -98,6 +98,11 @@ var _track_button_label: Label
 var _hero_host: Control
 var _detail_meta_host: Control
 
+# All content is authored for a 960x540 canvas (480x270 design units x 2).
+# _canvas centers that composition inside wider viewports; only the dim
+# backdrop stays truly full-screen.
+var _canvas: Control
+
 
 func _scaled_vec(value: Vector2) -> Vector2:
 	return (value * CANVAS_SCALE).round()
@@ -118,6 +123,10 @@ func _scaled_int(value: float) -> int:
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_STOP
+	_canvas = Control.new()
+	_canvas.position = ((get_viewport_rect().size - Vector2(960, 540)) * 0.5).floor()
+	_canvas.size = Vector2(960, 540)
+	_canvas.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_build_static_ui()
 
 
@@ -183,18 +192,19 @@ func _build_backdrop() -> void:
 	dim.color = Color(0.004, 0.006, 0.010, 0.97)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(dim)
+	add_child(_canvas)
 	# Vertical depth gradient across the whole canvas.
-	_add_gradient(self, Rect2(0, 0, 480, 270),
+	_add_gradient(_canvas, Rect2(0, 0, 480, 270),
 			Color(0.045, 0.058, 0.080, 1.0), Color(0.012, 0.016, 0.026, 1.0), true)
 	# Soft warm glow behind the frame centre for depth.
-	_add_radial(self, Rect2(40, 20, 400, 230),
+	_add_radial(_canvas, Rect2(40, 20, 400, 230),
 			Color(0.22, 0.18, 0.12, 0.30), Color(0.0, 0.0, 0.0, 0.0))
 
 
 func _build_master_frame() -> void:
 	var frame := Rect2(5, 5, 470, 260)
 	# Drop shadow halo.
-	_add_rect(self, Rect2(frame.position.x - 2, frame.position.y - 2, frame.size.x + 4, frame.size.y + 4),
+	_add_rect(_canvas, Rect2(frame.position.x - 2, frame.position.y - 2, frame.size.x + 4, frame.size.y + 4),
 			Color(0.0, 0.0, 0.0, 0.55))
 	# Panel body.
 	var panel := Panel.new()
@@ -210,54 +220,54 @@ func _build_master_frame() -> void:
 	style.shadow_color = Color(0.0, 0.0, 0.0, 0.5)
 	style.shadow_size = _scaled_int(3)
 	panel.add_theme_stylebox_override("panel", style)
-	add_child(panel)
+	_canvas.add_child(panel)
 	# Inner bevel lines.
-	_add_rect(self, Rect2(frame.position.x + 3, frame.position.y + 3, frame.size.x - 6, 1), Color(1.0, 0.82, 0.40, 0.22))
-	_add_rect(self, Rect2(frame.position.x + 3, frame.end.y - 4, frame.size.x - 6, 1), Color(0.0, 0.0, 0.0, 0.30))
-	_add_rect(self, Rect2(frame.position.x + 3, frame.position.y + 4, 1, frame.size.y - 8), Color(1.0, 0.82, 0.40, 0.10))
+	_add_rect(_canvas, Rect2(frame.position.x + 3, frame.position.y + 3, frame.size.x - 6, 1), Color(1.0, 0.82, 0.40, 0.22))
+	_add_rect(_canvas, Rect2(frame.position.x + 3, frame.end.y - 4, frame.size.x - 6, 1), Color(0.0, 0.0, 0.0, 0.30))
+	_add_rect(_canvas, Rect2(frame.position.x + 3, frame.position.y + 4, 1, frame.size.y - 8), Color(1.0, 0.82, 0.40, 0.10))
 	# Ornate filigree corners.
 	if _has_ornament("corner_tl.png"):
 		var cs := Vector2(21, 20)
-		add_child(_make_ornament("corner_tl.png", Rect2(frame.position.x - 3, frame.position.y - 3, cs.x, cs.y)))
-		add_child(_make_ornament("corner_tr.png", Rect2(frame.end.x - cs.x + 3, frame.position.y - 3, cs.x, cs.y)))
-		add_child(_make_ornament("corner_bl.png", Rect2(frame.position.x - 3, frame.end.y - cs.y + 3, cs.x, cs.y)))
-		add_child(_make_ornament("corner_br.png", Rect2(frame.end.x - cs.x + 3, frame.end.y - cs.y + 3, cs.x, cs.y)))
+		_canvas.add_child(_make_ornament("corner_tl.png", Rect2(frame.position.x - 3, frame.position.y - 3, cs.x, cs.y)))
+		_canvas.add_child(_make_ornament("corner_tr.png", Rect2(frame.end.x - cs.x + 3, frame.position.y - 3, cs.x, cs.y)))
+		_canvas.add_child(_make_ornament("corner_bl.png", Rect2(frame.position.x - 3, frame.end.y - cs.y + 3, cs.x, cs.y)))
+		_canvas.add_child(_make_ornament("corner_br.png", Rect2(frame.end.x - cs.x + 3, frame.end.y - cs.y + 3, cs.x, cs.y)))
 	else:
-		add_child(_make_art("corner_tl.png", Rect2(frame.position.x - 1, frame.position.y - 1, 15, 15)))
-		add_child(_make_art("corner_tr.png", Rect2(frame.end.x - 14, frame.position.y - 1, 15, 15)))
-		add_child(_make_art("corner_bl.png", Rect2(frame.position.x - 1, frame.end.y - 14, 15, 15)))
-		add_child(_make_art("corner_br.png", Rect2(frame.end.x - 14, frame.end.y - 14, 15, 15)))
+		_canvas.add_child(_make_art("corner_tl.png", Rect2(frame.position.x - 1, frame.position.y - 1, 15, 15)))
+		_canvas.add_child(_make_art("corner_tr.png", Rect2(frame.end.x - 14, frame.position.y - 1, 15, 15)))
+		_canvas.add_child(_make_art("corner_bl.png", Rect2(frame.position.x - 1, frame.end.y - 14, 15, 15)))
+		_canvas.add_child(_make_art("corner_br.png", Rect2(frame.end.x - 14, frame.end.y - 14, 15, 15)))
 
 
 func _build_header() -> void:
 	# Header band fill with a subtle warm sheen.
-	_add_rect(self, Rect2(9, 9, 462, 31), Color(0.12, 0.095, 0.050, 0.55))
-	_add_gradient(self, Rect2(9, 9, 462, 16), Color(0.22, 0.16, 0.07, 0.55), Color(0.10, 0.08, 0.04, 0.0), true)
+	_add_rect(_canvas, Rect2(9, 9, 462, 31), Color(0.12, 0.095, 0.050, 0.55))
+	_add_gradient(_canvas, Rect2(9, 9, 462, 16), Color(0.22, 0.16, 0.07, 0.55), Color(0.10, 0.08, 0.04, 0.0), true)
 	# Title medallion.
 	_build_medallion(Rect2(12, 10, 26, 26), "icon_journal.png")
 	# Title + subtitle.
 	var title := _place_label(UiKit.make_label("NHẬT KÝ NHIỆM VỤ", FONT_HEADER, C_GOLD), Rect2(46, 8, 220, 20))
-	add_child(title)
-	add_child(_place_label(UiKit.make_label("HỒ SƠ HÀNH TRÌNH", FONT_HEADER_SUB, C_TEXT_DIM), Rect2(47, 27, 140, 9)))
+	_canvas.add_child(title)
+	_canvas.add_child(_place_label(UiKit.make_label("HỒ SƠ HÀNH TRÌNH", FONT_HEADER_SUB, C_TEXT_DIM), Rect2(47, 27, 140, 9)))
 	# Chapter context (right aligned, before the close button).
 	_context_label = _place_label(UiKit.make_label("", FONT_CONTEXT, C_TEXT_DIM), Rect2(250, 16, 192, 12))
 	_context_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	add_child(_context_label)
+	_canvas.add_child(_context_label)
 	# Close button.
 	var close_button := _make_button_shell(Rect2(450, 11, 21, 21), false)
-	add_child(close_button)
+	_canvas.add_child(close_button)
 	var close_glyph := _place_label(UiKit.make_label("X", FONT_CLOSE, C_TEXT), Rect2(0, -1, 21, 21))
 	close_glyph.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	close_button.add_child(close_glyph)
 	# Header underline with a centred jewelled divider ornament.
-	_add_rect(self, Rect2(10, 40, 461, 1), Color(0.97, 0.74, 0.30, 0.42))
-	_add_rect(self, Rect2(10, 41, 461, 1), Color(0.0, 0.0, 0.0, 0.35))
+	_add_rect(_canvas, Rect2(10, 40, 461, 1), Color(0.97, 0.74, 0.30, 0.42))
+	_add_rect(_canvas, Rect2(10, 41, 461, 1), Color(0.0, 0.0, 0.0, 0.35))
 	if _has_ornament("divider.png"):
 		var divider := _make_ornament("divider.png", Rect2(170, 31, 140, 20), TextureRect.STRETCH_KEEP_ASPECT_CENTERED)
 		divider.z_index = 30
-		add_child(divider)
+		_canvas.add_child(divider)
 	else:
-		_add_diamond(self, Vector2(240, 40.5), 3.0, C_GOLD)
+		_add_diamond(_canvas, Vector2(240, 40.5), 3.0, C_GOLD)
 
 
 # ── Left list panel ──────────────────────────────────────────────────────────
@@ -270,12 +280,12 @@ func _build_list_panel() -> void:
 	_section_label(Rect2(15, 96, 90, 10), "DANH SÁCH")
 	_list_count_label = _place_label(UiKit.make_label("", FONT_META, C_GOLD), Rect2(95, 96, 47, 10))
 	_list_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	add_child(_list_count_label)
-	_add_rect(self, Rect2(15, 107, 127, 1), C_LINE)
+	_canvas.add_child(_list_count_label)
+	_add_rect(_canvas, Rect2(15, 107, 127, 1), C_LINE)
 	_list_host = _spawn_host(Rect2(13, 110, 130, 132))
 	_page_label = _place_label(UiKit.make_label("", FONT_META, C_TEXT_DIM), Rect2(14, 245, 128, 9))
 	_page_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	add_child(_page_label)
+	_canvas.add_child(_page_label)
 
 
 # ── Center detail panel ──────────────────────────────────────────────────────
@@ -319,9 +329,9 @@ func _build_detail_panel() -> void:
 	_detail_summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_detail_summary.max_lines_visible = 2
 	_detail_summary.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	add_child(_detail_summary)
+	_canvas.add_child(_detail_summary)
 
-	_add_rect(self, Rect2(156, 135, 198, 1), C_LINE)
+	_add_rect(_canvas, Rect2(156, 135, 198, 1), C_LINE)
 
 	# Objectives.
 	_section_label(Rect2(157, 139, 120, 11), "MỤC TIÊU")
@@ -349,7 +359,7 @@ func _build_rewards_panel() -> void:
 	_track_button.position = track_rect.position
 	_track_button.size = track_rect.size
 	_track_button.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(_track_button)
+	_canvas.add_child(_track_button)
 	if _has_ornament("button_plate.png"):
 		_add_radial(_track_button, Rect2(6, 0, 86, 26), Color(1.0, 0.80, 0.34, 0.22), Color(0, 0, 0, 0))
 		_track_button.add_child(_make_ornament("button_plate.png", Rect2(0, 3, 98, 21)))
@@ -842,26 +852,26 @@ func _build_panel(rect: Rect2) -> void:
 	style.shadow_size = _scaled_int(2)
 	style.shadow_offset = _scaled_vec(Vector2(0, 1))
 	panel.add_theme_stylebox_override("panel", style)
-	add_child(panel)
+	_canvas.add_child(panel)
 	# Top inner sheen + bottom shade for depth.
-	_add_gradient(self, Rect2(rect.position.x + 1, rect.position.y + 1, rect.size.x - 2, 10),
+	_add_gradient(_canvas, Rect2(rect.position.x + 1, rect.position.y + 1, rect.size.x - 2, 10),
 			Color(0.16, 0.13, 0.08, 0.45), Color(0.05, 0.06, 0.08, 0.0), true)
-	_add_rect(self, Rect2(rect.position.x + 1, rect.position.y + 1, rect.size.x - 2, 1), Color(1.0, 0.82, 0.40, 0.16))
+	_add_rect(_canvas, Rect2(rect.position.x + 1, rect.position.y + 1, rect.size.x - 2, 1), Color(1.0, 0.82, 0.40, 0.16))
 
 
 func _build_medallion(rect: Rect2, icon_file: String) -> void:
 	if _has_ornament("medallion.png"):
 		# Soft glow halo behind the medallion.
-		_add_radial(self, Rect2(rect.position.x - 4, rect.position.y - 4, rect.size.x + 8, rect.size.y + 8),
+		_add_radial(_canvas, Rect2(rect.position.x - 4, rect.position.y - 4, rect.size.x + 8, rect.size.y + 8),
 				Color(1.0, 0.78, 0.34, 0.28), Color(0, 0, 0, 0))
-		add_child(_make_ornament("medallion.png", rect, TextureRect.STRETCH_KEEP_ASPECT_CENTERED))
+		_canvas.add_child(_make_ornament("medallion.png", rect, TextureRect.STRETCH_KEEP_ASPECT_CENTERED))
 		return
 	var plate := Control.new()
 	var plate_rect := _scaled_rect(rect)
 	plate.position = plate_rect.position
 	plate.size = plate_rect.size
 	plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(plate)
+	_canvas.add_child(plate)
 	_add_rect(plate, Rect2(Vector2.ZERO, rect.size), Color(0.05, 0.045, 0.030, 0.95))
 	_add_gradient(plate, Rect2(1, 1, rect.size.x - 2, rect.size.y * 0.5), Color(0.30, 0.22, 0.10, 0.6), Color(0.05, 0.04, 0.02, 0.0), true)
 	# Double border.
@@ -871,20 +881,20 @@ func _build_medallion(rect: Rect2, icon_file: String) -> void:
 
 
 func _panel_caption(rect: Rect2, title: String) -> void:
-	_add_rect(self, rect, Color(0.10, 0.085, 0.05, 0.75))
-	_add_rect(self, Rect2(rect.position.x, rect.position.y, rect.size.x, 1), Color(C_GOLD, 0.30))
-	_add_rect(self, Rect2(rect.position.x, rect.end.y - 1, rect.size.x, 1), Color(0.0, 0.0, 0.0, 0.40))
-	_add_rect(self, Rect2(rect.position.x, rect.position.y, 2, rect.size.y), C_GOLD)
-	add_child(_place_label(UiKit.make_label(title, FONT_PANEL_TITLE, C_GOLD), Rect2(rect.position.x + 6, rect.position.y, rect.size.x - 10, rect.size.y)))
+	_add_rect(_canvas, rect, Color(0.10, 0.085, 0.05, 0.75))
+	_add_rect(_canvas, Rect2(rect.position.x, rect.position.y, rect.size.x, 1), Color(C_GOLD, 0.30))
+	_add_rect(_canvas, Rect2(rect.position.x, rect.end.y - 1, rect.size.x, 1), Color(0.0, 0.0, 0.0, 0.40))
+	_add_rect(_canvas, Rect2(rect.position.x, rect.position.y, 2, rect.size.y), C_GOLD)
+	_canvas.add_child(_place_label(UiKit.make_label(title, FONT_PANEL_TITLE, C_GOLD), Rect2(rect.position.x + 6, rect.position.y, rect.size.x - 10, rect.size.y)))
 
 
 func _section_label(rect: Rect2, text: String) -> void:
 	# Expand the text box so tall Vietnamese diacritics are never clipped.
 	var lr := Rect2(rect.position.x, rect.position.y - 3, rect.size.x, rect.size.y + 6)
-	add_child(_place_label(UiKit.make_label(text, FONT_SECTION, Color(C_GOLD, 0.92)), lr))
+	_canvas.add_child(_place_label(UiKit.make_label(text, FONT_SECTION, Color(C_GOLD, 0.92)), lr))
 	# Decorative leading ticks.
-	_add_rect(self, Rect2(rect.position.x - 6, rect.position.y + 5, 3, 1), Color(C_GOLD_DIM, 0.8))
-	_add_diamond(self, Vector2(rect.position.x - 8, rect.position.y + 5.5), 1.5, Color(C_GOLD, 0.7))
+	_add_rect(_canvas, Rect2(rect.position.x - 6, rect.position.y + 5, 3, 1), Color(C_GOLD_DIM, 0.8))
+	_add_diamond(_canvas, Vector2(rect.position.x - 8, rect.position.y + 5.5), 1.5, Color(C_GOLD, 0.7))
 
 
 ## A progress fill that reveals a fixed-width gradient by clipping — robust to any
@@ -898,7 +908,7 @@ func _make_clipped_fill(rect: Rect2, top: Color, bottom: Color) -> Control:
 	fill.clip_contents = true
 	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	fill.set_meta("full_w", _scaled_value(inner_w))
-	add_child(fill)
+	_canvas.add_child(fill)
 	_add_gradient(fill, Rect2(0, 0, inner_w, inner_h), top, bottom, true)
 	_add_rect(fill, Rect2(0, 0, inner_w, 1), Color(1.0, 1.0, 1.0, 0.40))
 	return fill
@@ -1078,7 +1088,7 @@ func _spawn_host(rect: Rect2) -> Control:
 	host.position = host_rect.position
 	host.size = host_rect.size
 	host.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(host)
+	_canvas.add_child(host)
 	return host
 
 

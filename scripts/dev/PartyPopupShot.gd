@@ -22,7 +22,7 @@ func _ready() -> void:
 	# soft world backdrop so the card reads in context
 	var bg := ColorRect.new()
 	bg.color = Color(0.07, 0.06, 0.11, 1.0)
-	bg.size = Vector2(960, 540)
+	bg.size = get_viewport().get_visible_rect().size
 	add_child(bg)
 
 	var popup: CanvasLayer = PartyJoinPopupScript.new()

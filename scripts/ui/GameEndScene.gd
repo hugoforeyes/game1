@@ -5,8 +5,11 @@ func _ready() -> void:
 	GameManager.ui_blocking_input = false
 	anchors_preset = Control.PRESET_TOP_LEFT
 	position = Vector2.ZERO
-	size = Vector2(480, 270)
+	size = get_viewport_rect().size / 2.0
 	scale = Vector2(2, 2)
+	var content_w := size.x - 40.0
+	# Labels are authored for a 270-tall canvas — keep the block vertically centered.
+	var oy := (size.y - 270.0) * 0.5
 
 	var background := ColorRect.new()
 	background.color = Color(0.01, 0.01, 0.03, 1.0)
@@ -18,8 +21,8 @@ func _ready() -> void:
 	title.add_theme_font_size_override("font_size", 18)
 	title.add_theme_color_override("font_color", Color(0.96, 0.88, 0.50, 1.0))
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.position = Vector2(20, 100)
-	title.size = Vector2(440, 30)
+	title.position = Vector2(20, 100 + oy)
+	title.size = Vector2(content_w, 30)
 	add_child(title)
 
 	var subtitle := Label.new()
@@ -27,8 +30,8 @@ func _ready() -> void:
 	subtitle.add_theme_font_size_override("font_size", 9)
 	subtitle.add_theme_color_override("font_color", Color(0.93, 0.88, 0.75, 0.85))
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	subtitle.position = Vector2(20, 140)
-	subtitle.size = Vector2(440, 40)
+	subtitle.position = Vector2(20, 140 + oy)
+	subtitle.size = Vector2(content_w, 40)
 	add_child(subtitle)
 
 	var hint := Label.new()
@@ -36,8 +39,8 @@ func _ready() -> void:
 	hint.add_theme_font_size_override("font_size", 8)
 	hint.add_theme_color_override("font_color", Color(0.82, 0.73, 0.51, 0.7))
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint.position = Vector2(20, 210)
-	hint.size = Vector2(440, 20)
+	hint.position = Vector2(20, 210 + oy)
+	hint.size = Vector2(content_w, 20)
 	add_child(hint)
 
 func _unhandled_input(event: InputEvent) -> void:

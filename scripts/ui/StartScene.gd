@@ -45,11 +45,21 @@ const SPINNER_FRAMES := ["* . . .", ". * . .", ". . * .", ". . . *"]
 @onready var loading_spinner_label: Label = $LoadingOverlay/Center/Content/SpinnerLabel
 
 func _ready() -> void:
-	# Authored in 480x270 design space, scaled 2x to the 960x540 viewport.
+	# Authored in a 270-tall design space, scaled 2x to the viewport. The design
+	# width follows the real viewport (512 at 1024x540) so the scene stays
+	# full-bleed on wider resolutions; anchored children adapt automatically.
 	set_anchors_preset(Control.PRESET_TOP_LEFT)
 	position = Vector2.ZERO
-	size = Vector2(480, 270)
+	size = get_viewport_rect().size / 2.0
 	scale = Vector2(2, 2)
+	# The background art (480x270) bakes the menu banners into the painting and
+	# is drawn keep-aspect-COVERED. Mirror that exact mapping (scale + centered
+	# crop offset) so the clickable menu stays glued to its painted banners on
+	# any viewport aspect.
+	var art_scale := maxf(size.x / 480.0, size.y / 270.0)
+	var art_offset := (size - Vector2(480.0, 270.0) * art_scale) * 0.5
+	menu.position = art_offset + Vector2(187.0, 138.0) * art_scale
+	menu.scale = Vector2(art_scale, art_scale)
 	mouse_filter = Control.MOUSE_FILTER_PASS
 	package_dialog.filters = PackedStringArray(["*.zip ; Zip archives"])
 	sprite_dialog.filters = PackedStringArray(["*.png,*.jpg,*.jpeg,*.webp ; Image files"])

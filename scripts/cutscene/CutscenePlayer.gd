@@ -55,6 +55,11 @@ var _blocked_tiles: Dictionary = {}
 var _astar: AStarGrid2D = null  # walkable-grid pathfinding for cutscene moves
 var _collision_state: Dictionary = {}  # actor -> {layer, mask}: restored on finish
 
+# Design-space size of this scale-2 layer (512x288 at a 1024x576 viewport).
+# The dialogue/title blocks are authored for a 480x270 canvas and anchored
+# against this at runtime. Set in _build_ui.
+var _design_size := Vector2(480, 270)
+
 var _top_bar: ColorRect
 var _bottom_bar: ColorRect
 var _dialogue_root: Control
@@ -376,7 +381,15 @@ func _clamp_tile_near_player(target_tile: Vector2i, max_tiles: int) -> Vector2i:
 
 
 func _build_ui() -> void:
+	# Design units: the layer runs at scale 2, so the design canvas is half the
+	# real viewport (512x270 at 1024x540). Width-dependent placements below use
+	# this instead of the historical fixed 480.
 	var viewport_size: Vector2 = Vector2(480, 270)
+	if get_viewport() != null:
+		viewport_size = get_viewport().get_visible_rect().size / 2.0
+	_design_size = viewport_size
+	var design_w := viewport_size.x
+	var design_h := viewport_size.y
 
 	_top_bar = ColorRect.new()
 	_top_bar.color = Color(0, 0, 0, 1)
@@ -395,14 +408,17 @@ func _build_ui() -> void:
 	bars.parallel().tween_property(_bottom_bar, "position:y", viewport_size.y - LETTERBOX_H, 0.6).set_trans(Tween.TRANS_CUBIC)
 
 	_skip_hint = UiKit.make_label("ESC  Bỏ qua  ›", 7, Color(0.93, 0.88, 0.75, 0.72))
-	_skip_hint.position = Vector2(350, 8)
+	_skip_hint.position = Vector2(design_w - 130.0, 8)
 	_skip_hint.size = Vector2(120, 12)
 	_skip_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	add_child(_skip_hint)
 
 	# ── cinematic dialogue block: large portrait + modular ornate frame ──
+	# The block is authored for a 480x270 canvas; keep it horizontally centered
+	# and bottom-anchored on wider/taller design spaces (repositioned per line
+	# in _say as well, for the narrator variant).
 	_dialogue_root = Control.new()
-	_dialogue_root.position = Vector2(0, 0)
+	_dialogue_root.position = Vector2((design_w - 480.0) * 0.5, design_h - 270.0)
 	_dialogue_root.visible = false
 	add_child(_dialogue_root)
 
@@ -477,15 +493,15 @@ func _build_ui() -> void:
 
 	_title_banner = UiKit.make_banner_rect(180.0)
 	if _title_banner != null:
-		_title_banner.position = Vector2(150, 78)
+		_title_banner.position = Vector2((design_w - 180.0) * 0.5, design_h * 0.5 - 57.0)
 		_title_banner.modulate.a = 0.0
 		add_child(_title_banner)
 
 	_title_label = UiKit.make_label("", 17, COLOR_SPEAKER)
 	_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_title_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_title_label.position = Vector2(20, 124)
-	_title_label.size = Vector2(440, 60)
+	_title_label.position = Vector2(20, design_h * 0.5 - 11.0)
+	_title_label.size = Vector2(design_w - 40.0, 60)
 	_title_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_title_label.modulate.a = 0.0
 	add_child(_title_label)
@@ -754,9 +770,9 @@ func _do_title(text: String, seconds: float) -> void:
 	tween.tween_property(_title_dim, "color:a", 0.7, 0.5)
 	tween.parallel().tween_property(_title_label, "modulate:a", 1.0, 0.9)
 	if _title_banner != null:
-		_title_banner.position.y = 84
+		_title_banner.position.y = _design_size.y * 0.5 - 51.0
 		tween.parallel().tween_property(_title_banner, "modulate:a", 1.0, 0.9)
-		tween.parallel().tween_property(_title_banner, "position:y", 78.0, 0.9).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		tween.parallel().tween_property(_title_banner, "position:y", _design_size.y * 0.5 - 57.0, 0.9).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	await tween.finished
 	await _do_wait(seconds)
 	var out := create_tween()
@@ -891,10 +907,12 @@ func _do_say(action: Dictionary) -> void:
 		_portrait_rect.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 
 	var has_named_speaker := actor_id not in ["", "narrator"]
-	var target_position := Vector2.ZERO
+	# Named speakers: the 480x270-authored block sits bottom-anchored and
+	# horizontally centered. Narrator: the panel floats near the top, centered.
+	var target_position := Vector2((_design_size.x - 480.0) * 0.5, _design_size.y - 270.0)
 	if not has_named_speaker:
 		target_position = Vector2(
-			240.0 - DIALOGUE_PANEL_RECT.get_center().x,
+			_design_size.x * 0.5 - DIALOGUE_PANEL_RECT.get_center().x,
 			NARRATOR_PANEL_TOP - DIALOGUE_PANEL_RECT.position.y,
 		)
 	_dialogue_root.position = target_position
@@ -984,7 +1002,7 @@ func _finish() -> void:
 
 	var bars := create_tween()
 	bars.tween_property(_top_bar, "position:y", -LETTERBOX_H, 0.5)
-	bars.parallel().tween_property(_bottom_bar, "position:y", 270.0, 0.5)
+	bars.parallel().tween_property(_bottom_bar, "position:y", _design_size.y, 0.5)
 	await bars.finished
 
 	if _camera != null:

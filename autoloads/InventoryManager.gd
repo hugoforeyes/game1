@@ -488,8 +488,9 @@ func _ensure_ui() -> void:
 	_ui.transform = Transform2D.IDENTITY
 	add_child(_ui)
 
+	var vp: Vector2 = get_viewport().get_visible_rect().size
 	_toast_host = Control.new()
-	_toast_host.position = Vector2(480, 60)
+	_toast_host.position = Vector2(vp.x * 0.5, 60)
 	_ui.add_child(_toast_host)
 
 	_screen_root = Control.new()
@@ -502,30 +503,37 @@ func _ensure_ui() -> void:
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_screen_root.add_child(dim)
 
-	var embers := UiKit.make_ember_particles(Vector2(960, 540))
+	var embers := UiKit.make_ember_particles(vp)
 	embers.amount = 28
 	embers.color = Color(1.0, 0.78, 0.35, 0.32)
 	_screen_root.add_child(embers)
+
+	# The inventory layout is authored for a 960x540 canvas; keep that composition
+	# and center it inside wider viewports (dim + embers above stay full-screen).
+	var canvas := Control.new()
+	canvas.position = ((vp - Vector2(960, 540)) * 0.5).floor()
+	canvas.size = Vector2(960, 540)
+	_screen_root.add_child(canvas)
 
 	var header_line := ColorRect.new()
 	header_line.color = Color(0.76, 0.58, 0.27, 0.72)
 	header_line.position = Vector2(272, 61)
 	header_line.size = Vector2(594, 2)
-	_screen_root.add_child(header_line)
+	canvas.add_child(header_line)
 	var header_gem := _make_texture_rect(INV_TEX_GEM, Rect2(454, 22, 72, 40))
 	header_gem.modulate = Color(1, 1, 1, 0.78)
-	_screen_root.add_child(header_gem)
+	canvas.add_child(header_gem)
 
 	var header := UiKit.make_label("HÀNH TRANG", 30, UiKit.COLOR_ACCENT)
 	header.position = Vector2(48, 34)
 	header.size = Vector2(280, 36)
-	_screen_root.add_child(header)
+	canvas.add_child(header)
 
 	_top_stats = UiKit.make_label("", 14, UiKit.COLOR_TEXT)
 	_top_stats.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_top_stats.position = Vector2(550, 36)
 	_top_stats.size = Vector2(340, 28)
-	_screen_root.add_child(_top_stats)
+	canvas.add_child(_top_stats)
 
 	var close_badge := _make_texture_panel(Rect2(900, 30, 40, 40), INV_TEX_SLOT, 18.0)
 	close_badge.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -535,7 +543,7 @@ func _ensure_ui() -> void:
 			_toggle_screen()
 			get_viewport().set_input_as_handled()
 	)
-	_screen_root.add_child(close_badge)
+	canvas.add_child(close_badge)
 	var close_label := UiKit.make_label("X", 18, UiKit.COLOR_ACCENT)
 	close_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	close_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -547,7 +555,7 @@ func _ensure_ui() -> void:
 	tab_bar.position = Vector2(48, 84)
 	tab_bar.size = Vector2(576, 48)
 	tab_bar.add_theme_stylebox_override("panel", _filter_bar_style())
-	_screen_root.add_child(tab_bar)
+	canvas.add_child(tab_bar)
 	_tab_nodes.clear()
 	for i in range(INV_FILTER_IDS.size()):
 		var tab := Panel.new()
@@ -572,7 +580,7 @@ func _ensure_ui() -> void:
 		tab.add_child(tab_label)
 
 	var grid_panel := _make_glass_panel(Rect2(48, 136, 576, 332))
-	_screen_root.add_child(grid_panel)
+	canvas.add_child(grid_panel)
 	_slot_nodes.clear()
 	for index in range(INV_SLOT_VISIBLE):
 		var slot := Panel.new()
@@ -594,10 +602,10 @@ func _ensure_ui() -> void:
 	_page_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_page_label.position = Vector2(278, 478)
 	_page_label.size = Vector2(116, 20)
-	_screen_root.add_child(_page_label)
+	canvas.add_child(_page_label)
 
 	var detail_panel := _make_glass_panel(Rect2(644, 96, 288, 372))
-	_screen_root.add_child(detail_panel)
+	canvas.add_child(detail_panel)
 	var detail_gem_top := _make_texture_rect(INV_TEX_GEM, Rect2(126, -18, 36, 21))
 	detail_gem_top.modulate = Color(1, 1, 1, 0.58)
 	detail_panel.add_child(detail_gem_top)
@@ -662,18 +670,18 @@ func _ensure_ui() -> void:
 	_action_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	_action_hint.position = Vector2(438, 480)
 	_action_hint.size = Vector2(250, 18)
-	_screen_root.add_child(_action_hint)
+	canvas.add_child(_action_hint)
 
 	var footer_frame := Panel.new()
 	footer_frame.position = Vector2(280, 502)
 	footer_frame.size = Vector2(400, 26)
 	footer_frame.add_theme_stylebox_override("panel", _footer_panel_style())
-	_screen_root.add_child(footer_frame)
+	canvas.add_child(footer_frame)
 	var footer := UiKit.make_label("Arrows Move     Enter Use     1-5 Filter     I / Esc Back", 10, Color(0.93, 0.88, 0.75, 0.72))
 	footer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	footer.position = Vector2(292, 508)
 	footer.size = Vector2(376, 16)
-	_screen_root.add_child(footer)
+	canvas.add_child(footer)
 
 
 func _toggle_screen() -> void:

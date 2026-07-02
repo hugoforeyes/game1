@@ -38,10 +38,10 @@ CutsceneDirector="*res://autoloads/CutsceneDirector.gd"
 
 [display]
 
-window/size/viewport_width=960
-window/size/viewport_height=540
-window/size/window_width_override=1920
-window/size/window_height_override=1080
+window/size/viewport_width=1024
+window/size/viewport_height=576
+window/size/window_width_override=2048
+window/size/window_height_override=1152
 window/stretch/mode="canvas_items"
 window/stretch/scale_mode="integer"
 

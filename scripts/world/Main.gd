@@ -610,19 +610,22 @@ func _show_scene_loading_overlay() -> void:
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	overlay.add_child(dim)
 
+	# Design space = half the real viewport (the overlay layer runs at scale 2).
+	var design: Vector2 = get_viewport().get_visible_rect().size / 2.0
+
 	var title := Label.new()
 	title.text = "Đang tải cảnh..."
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 18)
 	title.add_theme_color_override("font_color", Color(0.92, 0.96, 1.0, 0.95))
-	title.position = Vector2(40, 120)
+	title.position = Vector2((design.x - 400.0) * 0.5, design.y * 0.5 - 15.0)
 	title.size = Vector2(400, 22)
 	overlay.add_child(title)
 
 	var status := Label.new()
 	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	status.add_theme_color_override("font_color", Color(0.72, 0.8, 0.92, 0.9))
-	status.position = Vector2(40, 146)
+	status.position = Vector2((design.x - 400.0) * 0.5, design.y * 0.5 + 11.0)
 	status.size = Vector2(400, 16)
 	overlay.add_child(status)
 

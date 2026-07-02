@@ -18,9 +18,7 @@ const TEX_PROGRESS_ACTIVE := "res://assets/ui/chapter_intro/progress_active.png"
 const TEX_PROGRESS_INACTIVE := "res://assets/ui/chapter_intro/progress_inactive.png"
 const TEX_HINT_BADGE := "res://assets/ui/chapter_intro/hint_badge.png"
 
-const DESIGN_SIZE := Vector2(480, 270)
 const IMAGE_LAYER_SCALE := 0.5
-const IMAGE_LAYER_SIZE := DESIGN_SIZE / IMAGE_LAYER_SCALE
 const KEN_BURNS_DURATION := 34.0
 const KEN_BURNS_OVERSCAN := 1.06
 const KEN_BURNS_DRIFT_STRENGTH := 0.60
@@ -50,6 +48,11 @@ var _ken_active: bool = false
 var _ken_elapsed: float = 0.0
 var _ken_start_pos: Vector2 = Vector2.ZERO
 var _ken_end_pos: Vector2 = Vector2.ZERO
+
+# Design canvas: 270 tall, width follows the viewport (512 at 1024x540) so the
+# slides stay full-bleed on wider resolutions. Set in _build_ui.
+var _design_size: Vector2 = Vector2(480, 270)
+var _image_layer_size: Vector2 = _design_size / IMAGE_LAYER_SCALE
 
 var _image_front: TextureRect
 var _image_back: TextureRect
@@ -86,12 +89,16 @@ func _ready() -> void:
 	_play_slide(0)
 
 func _build_ui() -> void:
-	# Authored in 480x270 design space, scaled 2x to the 960x540 viewport.
+	# Authored in a 270-tall design space, scaled 2x to the viewport.
 	anchors_preset = Control.PRESET_TOP_LEFT
 	position = Vector2.ZERO
-	size = Vector2(480, 270)
+	_design_size = get_viewport_rect().size / 2.0
+	_image_layer_size = _design_size / IMAGE_LAYER_SCALE
+	size = _design_size
 	scale = Vector2(2, 2)
-	var viewport_size := DESIGN_SIZE
+	var viewport_size := _design_size
+	var design_w := _design_size.x
+	var design_h := _design_size.y
 
 	var background := ColorRect.new()
 	background.color = Color(0.01, 0.01, 0.03, 1.0)
@@ -101,7 +108,7 @@ func _build_ui() -> void:
 	# Two stacked image rects allow true crossfades between slides.
 	_image_holder = Control.new()
 	_image_holder.position = Vector2.ZERO
-	_image_holder.size = IMAGE_LAYER_SIZE
+	_image_holder.size = _image_layer_size
 	_image_holder.scale = Vector2(IMAGE_LAYER_SCALE, IMAGE_LAYER_SCALE)
 	_image_holder.clip_contents = true
 	add_child(_image_holder)
@@ -114,8 +121,8 @@ func _build_ui() -> void:
 	# Soft bottom gradient so panel text always reads over bright art.
 	var gradient := TextureRect.new()
 	gradient.texture = _make_gradient_texture()
-	gradient.position = Vector2(0, 150)
-	gradient.size = Vector2(480, 120)
+	gradient.position = Vector2(0, design_h - 120.0)
+	gradient.size = Vector2(design_w, 120)
 	gradient.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	add_child(gradient)
 
@@ -123,17 +130,17 @@ func _build_ui() -> void:
 
 	_title_group = Control.new()
 	_title_group.position = Vector2(0, 16)
-	_title_group.size = Vector2(480, 94)
+	_title_group.size = Vector2(design_w, 94)
 	add_child(_title_group)
 
-	_title_plaque = _make_ui_texture(TEX_TITLE_PLAQUE, Rect2(169, 0, 142, 25))
+	_title_plaque = _make_ui_texture(TEX_TITLE_PLAQUE, Rect2((design_w - 142.0) * 0.5, 0, 142, 25))
 	_title_group.add_child(_title_plaque)
 
 	_eyebrow_label = UiKit.make_label("", 8, Color(0.85, 0.75, 0.55, 0.9))
 	_eyebrow_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_eyebrow_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_eyebrow_label.add_theme_constant_override("shadow_offset_y", 1)
-	_eyebrow_label.position = Vector2(169, 1)
+	_eyebrow_label.position = Vector2((design_w - 142.0) * 0.5, 1)
 	_eyebrow_label.size = Vector2(142, 25)
 	_title_group.add_child(_eyebrow_label)
 
@@ -143,22 +150,22 @@ func _build_ui() -> void:
 	_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_title_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_title_label.position = Vector2(10, 28)
-	_title_label.size = Vector2(460, 38)
+	_title_label.size = Vector2(design_w - 20.0, 38)
 	_title_group.add_child(_title_label)
 
-	_title_line_left = _make_line(Rect2(50, 48, 80, 1), COLOR_GOLD_LINE)
+	_title_line_left = _make_line(Rect2(design_w * 0.5 - 190.0, 48, 80, 1), COLOR_GOLD_LINE)
 	_title_line_left.visible = false
 	_title_group.add_child(_title_line_left)
-	_title_line_right = _make_line(Rect2(350, 48, 80, 1), COLOR_GOLD_LINE)
+	_title_line_right = _make_line(Rect2(design_w * 0.5 + 110.0, 48, 80, 1), COLOR_GOLD_LINE)
 	_title_line_right.visible = false
 	_title_group.add_child(_title_line_right)
-	_title_center_ornament = _make_ui_texture(TEX_PROGRESS_INACTIVE, Rect2(234, 65, 12, 12))
+	_title_center_ornament = _make_ui_texture(TEX_PROGRESS_INACTIVE, Rect2((design_w - 12.0) * 0.5, 65, 12, 12))
 	_title_center_ornament.modulate = Color(1.0, 0.83, 0.42, 0.9)
 	_title_group.add_child(_title_center_ornament)
 	_title_group.move_child(_title_label, _title_group.get_child_count() - 1)
 
 	_text_panel = Control.new()
-	_text_panel.position = Vector2(76, 176)
+	_text_panel.position = Vector2((design_w - 328.0) * 0.5, design_h - 94.0)
 	_text_panel.size = Vector2(328, 72)
 	add_child(_text_panel)
 
@@ -192,7 +199,7 @@ func _build_ui() -> void:
 	_text_panel.add_child(_continue_marker)
 
 	_hint_panel = Control.new()
-	_hint_panel.position = Vector2(394, 238)
+	_hint_panel.position = Vector2(design_w - 86.0, design_h - 32.0)
 	_hint_panel.size = Vector2(70, 31)
 	var hint_badge := _make_ui_texture(TEX_HINT_BADGE, Rect2(0, 0, 70, 31))
 	_hint_panel.add_child(hint_badge)
@@ -205,13 +212,13 @@ func _build_ui() -> void:
 	add_child(_hint_panel)
 
 	_progress_root = Control.new()
-	_progress_root.position = Vector2(240, 255)
+	_progress_root.position = Vector2(design_w * 0.5, design_h - 15.0)
 	add_child(_progress_root)
 
 	_loading_label = UiKit.make_label("", 9, COLOR_TEXT)
 	_loading_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_loading_label.position = Vector2(20, 130)
-	_loading_label.size = Vector2(440, 20)
+	_loading_label.position = Vector2(20, (design_h - 20.0) * 0.5)
+	_loading_label.size = Vector2(design_w - 40.0, 20)
 	_loading_label.visible = false
 	add_child(_loading_label)
 
@@ -246,7 +253,7 @@ func _make_image_rect() -> TextureRect:
 	rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	rect.modulate.a = 0.0
-	rect.size = IMAGE_LAYER_SIZE
+	rect.size = _image_layer_size
 	return rect
 
 func _make_gradient_texture() -> GradientTexture2D:
@@ -340,10 +347,10 @@ func _play_slide(index: int) -> void:
 		titles.tween_property(_title_group, "modulate:a", 1.0, 1.1)
 
 	# Text panel rises in with the typewriter.
-	_text_panel.position.y = 183
+	_text_panel.position.y = _design_size.y - 87.0
 	_text_panel.modulate.a = 0.0
 	var panel_in := create_tween()
-	panel_in.tween_property(_text_panel, "position:y", 172.0, 0.4).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	panel_in.tween_property(_text_panel, "position:y", _design_size.y - 98.0, 0.4).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	panel_in.parallel().tween_property(_text_panel, "modulate:a", 1.0, 0.4)
 
 	_begin_text(str(slide.get("text", "")))
@@ -424,8 +431,8 @@ func _make_smooth_slide_texture(texture: Texture2D) -> Texture2D:
 	return texture
 
 func _ken_burns_points(index: int) -> Array[Vector2]:
-	var overscan_size := IMAGE_LAYER_SIZE * KEN_BURNS_OVERSCAN
-	var margin := overscan_size - IMAGE_LAYER_SIZE
+	var overscan_size := _image_layer_size * KEN_BURNS_OVERSCAN
+	var margin := overscan_size - _image_layer_size
 	var center := -margin * 0.5
 	var drift := margin * KEN_BURNS_DRIFT_STRENGTH * 0.5
 	var directions := [
@@ -438,14 +445,14 @@ func _ken_burns_points(index: int) -> Array[Vector2]:
 	return [center - drift * direction, center + drift * direction]
 
 func _configure_ken_burns_rect(rect: TextureRect, index: int, t: float) -> void:
-	rect.size = IMAGE_LAYER_SIZE * KEN_BURNS_OVERSCAN
+	rect.size = _image_layer_size * KEN_BURNS_OVERSCAN
 	var points := _ken_burns_points(index)
 	rect.position = points[0].lerp(points[1], _smootherstep(clampf(t, 0.0, 1.0)))
 
 func _start_ken_burns(index: int) -> void:
 	_ken_active = true
 	_ken_elapsed = 0.0
-	_image_front.size = IMAGE_LAYER_SIZE * KEN_BURNS_OVERSCAN
+	_image_front.size = _image_layer_size * KEN_BURNS_OVERSCAN
 	var points := _ken_burns_points(index)
 	_ken_start_pos = points[0]
 	_ken_end_pos = points[1]

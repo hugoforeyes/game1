@@ -39,7 +39,7 @@ var is_compact := false
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	clip_contents = false
-	position = Vector2(960.0 - RIGHT_MARGIN - WIDTH, TOP)
+	position = Vector2(get_viewport_rect().size.x - RIGHT_MARGIN - WIDTH, TOP)
 	size = Vector2(WIDTH, _panel_height)
 
 
@@ -60,7 +60,7 @@ func _rebuild() -> void:
 
 
 func _build_compact() -> void:
-	position = Vector2(960.0 - RIGHT_MARGIN - COMPACT, TOP)
+	position = Vector2(get_viewport_rect().size.x - RIGHT_MARGIN - COMPACT, TOP)
 	size = Vector2(COMPACT, COMPACT)
 	_glass_panel(Rect2(0, 0, COMPACT, COMPACT))
 	_corners(Rect2(0, 0, COMPACT, COMPACT))
@@ -103,7 +103,7 @@ func _build_expanded() -> void:
 	var bottom := hints_top + hints_total + 8.0 if has_hints else obj_text_y + obj_h + 10.0
 	_panel_height = bottom
 
-	position = Vector2(960.0 - RIGHT_MARGIN - WIDTH, TOP)
+	position = Vector2(get_viewport_rect().size.x - RIGHT_MARGIN - WIDTH, TOP)
 	size = Vector2(WIDTH, _panel_height)
 
 	# ── Frame ──────────────────────────────────────────────────────────────────

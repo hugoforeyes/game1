@@ -19,7 +19,7 @@ func _ready() -> void:
 	# a soft world backdrop so the panel reads in context
 	var bg := ColorRect.new()
 	bg.color = Color(0.06, 0.05, 0.10, 1.0)
-	bg.size = Vector2(960, 540)
+	bg.size = get_viewport().get_visible_rect().size
 	add_child(bg)
 
 	var view: CanvasLayer = ObjectInteractionViewScript.new()
