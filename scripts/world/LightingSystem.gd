@@ -2,6 +2,9 @@ extends Node
 
 const TILE_SIZE := 72
 const TEX_SIZE  := 128
+const MIN_BACKGROUND_BRIGHTNESS := 0.50
+const MAX_BACKGROUND_BRIGHTNESS := 1.00
+const LIGHT_DISABLED_EPSILON := 0.001
 
 var _canvas_mod:    CanvasModulate  = null
 var _lights:        Array[PointLight2D] = []
@@ -9,6 +12,8 @@ var _light_data:    Array[Dictionary]   = []
 var _dynamic_nodes: Array[Node]         = []
 var _shared_tex:    ImageTexture        = null
 var _time:          float               = 0.0
+var _background_brightness: float       = 1.0
+var _light_energy_scale: float          = 0.0
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
@@ -54,6 +59,8 @@ func cleanup() -> void:
 	_lights.clear()
 	_light_data.clear()
 	_canvas_mod = null
+	_background_brightness = 1.0
+	_light_energy_scale = 0.0
 
 # ── Process (flicker / pulse animation) ──────────────────────────────────────
 
@@ -86,10 +93,16 @@ func _animate_light(light: PointLight2D, cfg: Dictionary, idx: int) -> void:
 
 func _setup_ambient(world: Node2D, package_data: Dictionary) -> void:
 	var lighting: Dictionary = package_data.get("lighting", {}) as Dictionary
-	var level: float = maxf(float(lighting.get("base_light_level", 0.5)), 0.35)
+	var level_percent: float = clampf(float(lighting.get("base_light_level", 0.5)), 0.0, 1.0)
 
-	var dim     := level * 0.75
-	var ambient := Color(dim * 0.82, dim * 0.90, dim * 1.0)
+	_background_brightness = lerpf(MIN_BACKGROUND_BRIGHTNESS, MAX_BACKGROUND_BRIGHTNESS, level_percent)
+	_light_energy_scale = clampf(
+		(MAX_BACKGROUND_BRIGHTNESS - _background_brightness) /
+		(MAX_BACKGROUND_BRIGHTNESS - MIN_BACKGROUND_BRIGHTNESS),
+		0.0,
+		1.0
+	)
+	var ambient := Color(_background_brightness, _background_brightness, _background_brightness)
 
 	_canvas_mod       = CanvasModulate.new()
 	_canvas_mod.color = ambient
@@ -99,6 +112,9 @@ func _setup_ambient(world: Node2D, package_data: Dictionary) -> void:
 # ── Lights from placed instances ──────────────────────────────────────────────
 
 func _spawn_instance_lights(world: Node2D, package_data: Dictionary, map_px: Vector2) -> void:
+	if _light_energy_scale <= LIGHT_DISABLED_EPSILON:
+		return
+
 	# Build definition lookup
 	var defs: Dictionary = {}
 	for d in package_data.get("definitions", []):
@@ -203,7 +219,7 @@ func _build_light(cfg: Dictionary, pixel_pos: Vector2) -> PointLight2D:
 	var intensity := float(cfg.get("intensity", 0.6))
 	light.color   = _color_for_hint(hint)
 
-	var base_e        := intensity * 1.2
+	var base_e        := intensity * 1.2 * _light_energy_scale
 	light.energy      = base_e
 
 	var radius_tiles  := float(cfg.get("radius_tiles", 4))

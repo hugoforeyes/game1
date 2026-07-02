@@ -9,6 +9,10 @@ const WorldObjectScript := preload("res://scripts/world/WorldObject.gd")
 const PartyFollowerScript := preload("res://scripts/world/PartyFollower.gd")
 const PartyHudViewScript := preload("res://scripts/ui/PartyHudView.gd")
 const QuestCompassViewScript := preload("res://scripts/ui/QuestCompassView.gd")
+const ZONE_TRANSITION_OVERLAY_NAME := "ZoneTransitionOverlay"
+const ZONE_TRANSITION_FADE_SECONDS := 0.35
+const ZONE_TRANSITION_CAMERA_SETTLE_FRAMES := 3
+const ENTRY_SPAWN_INSET_TILES := 2
 
 @onready var background: Sprite2D = $World/Background
 @onready var player: CharacterBody2D = $World/CharacterLayer/GeneratedCharacters/Player
@@ -50,9 +54,11 @@ func _ready() -> void:
 			QuestManager.notify_zone_entered.call_deferred(str(GameManager.get_scene_context().get("zone_id", "")))
 			PartyManager.notify_zone_entered.call_deferred(str(GameManager.get_scene_context().get("zone_id", "")))
 			_try_trigger_cutscene.call_deferred("zone_enter")
+		_fade_in_pending_zone_transition.call_deferred()
 	else:
 		_apply_background_limits(background.texture)
 		_spawn_enemies_for_builtin_world()
+		_fade_in_pending_zone_transition.call_deferred()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not event.is_action_pressed("ui_accept"):
@@ -68,10 +74,9 @@ func _unhandled_input(event: InputEvent) -> void:
 func _build_imported_world() -> void:
 	_clear_generated_content()
 
-	# A freshly loaded world always starts movable; an intro cutscene (started
-	# deferred right after this) re-blocks input itself when needed. This also
-	# clears any blocking flag left over from a scene-to-scene exit transition.
-	GameManager.ui_blocking_input = false
+	# A freshly loaded world starts movable unless it is still under the persistent
+	# zone fade overlay; fade-in clears the block once the new scene is visible.
+	GameManager.ui_blocking_input = get_tree().root.get_node_or_null(ZONE_TRANSITION_OVERLAY_NAME) != null
 	_active_interior_exit = {}
 
 	var package_data: Dictionary = GameManager.get_scene_package()
@@ -168,6 +173,17 @@ func _apply_background_limits(texture: Texture2D) -> void:
 		player_camera.limit_top = 0
 		player_camera.limit_right = texture.get_width()
 		player_camera.limit_bottom = texture.get_height()
+		_snap_player_camera()
+
+func _snap_player_camera() -> void:
+	var player_camera: Camera2D = player.get("camera") as Camera2D
+	if player_camera == null:
+		return
+	player_camera.make_current()
+	if player_camera.has_method("reset_smoothing"):
+		player_camera.call("reset_smoothing")
+	if player_camera.has_method("force_update_scroll"):
+		player_camera.call("force_update_scroll")
 
 func _mount_party_hud() -> void:
 	# Overworld level/party readout (top-left). Self-contained; reads GameManager.
@@ -435,7 +451,9 @@ func _resolve_player_spawn_tile(package_data: Dictionary, tile_context: Dictiona
 	if ChapterFlow.active:
 		var entry_edge: String = ChapterFlow.take_pending_entry_edge()
 		if entry_edge != "":
-			return _entry_spawn_tile(entry_edge, tile_context)
+			var entry_normalized: float = ChapterFlow.take_pending_entry_normalized()
+			var from_zone_id: String = ChapterFlow.take_pending_entry_from_zone()
+			return _entry_spawn_tile(entry_edge, entry_normalized, from_zone_id, tile_context)
 	return _find_player_spawn_tile(package_data)
 
 func _create_scene_exits(tile_context: Dictionary) -> void:
@@ -459,7 +477,7 @@ func _create_scene_exits(tile_context: Dictionary) -> void:
 			continue
 		var normalized: float = float(data.get("normalized", 0.5))
 		var tile: Vector2i = _edge_exit_tile(edge, normalized, map_tile_size)
-		_spawn_scene_exit(tile, edge, leads_to, _zone_display_name(leads_to))
+		_spawn_scene_exit(tile, edge, leads_to, normalized, _zone_display_name(leads_to))
 	for exit_data in interior_exits:
 		if not (exit_data is Dictionary):
 			continue
@@ -478,7 +496,7 @@ func _create_scene_exits(tile_context: Dictionary) -> void:
 			tile = _nearest_free_tile(tile, map_tile_size, tile_context.get("blocked_tiles", {}) as Dictionary)
 		_spawn_interior_exit(tile, data, _zone_display_name(leads_to))
 
-func _spawn_scene_exit(tile: Vector2i, edge: String, leads_to: String, label_text: String) -> void:
+func _spawn_scene_exit(tile: Vector2i, edge: String, leads_to: String, normalized: float, label_text: String) -> void:
 	var area := Area2D.new()
 	area.global_position = _tile_to_pixel_center(tile)
 
@@ -522,7 +540,7 @@ func _spawn_scene_exit(tile: Vector2i, edge: String, leads_to: String, label_tex
 		if body.get("camera") == null:
 			return  # only the player carries a camera
 		triggered[0] = true
-		_use_scene_exit(leads_to, _opposite_edge(edge))
+		_use_scene_exit(leads_to, _opposite_edge(edge), normalized)
 	)
 	$World.add_child(area)
 
@@ -585,19 +603,95 @@ func _spawn_interior_exit(tile: Vector2i, exit_data: Dictionary, label_text: Str
 	)
 	$World.add_child(area)
 
-func _use_scene_exit(leads_to: String, arrival_edge: String) -> void:
-	# _zone_advancing + the per-area triggered guard stop double-entry. We do NOT
-	# raise ui_blocking_input here: it lives on the GameManager autoload and would
-	# persist into the freshly loaded scene, freezing the player there.
+func _use_scene_exit(leads_to: String, arrival_edge: String, arrival_normalized: float = -1.0) -> void:
+	# _zone_advancing + the per-area triggered guard stop double-entry.
 	_zone_advancing = true
-	# Already-downloaded scenes load instantly; otherwise show a download page
-	# over the world while ChapterFlow fetches the package.
+	GameManager.ui_blocking_input = true
+	var overlay: CanvasLayer = _ensure_zone_transition_overlay()
+	await _fade_zone_transition_overlay(overlay, 1.0, ZONE_TRANSITION_FADE_SECONDS)
+
 	if not ChapterFlow.is_zone_cached_by_id(leads_to):
-		_show_scene_loading_overlay()
-	var err: Error = await ChapterFlow.goto_zone_by_id(leads_to, arrival_edge)
+		_set_zone_transition_status("Đang tải cảnh...")
+	var err: Error = await ChapterFlow.goto_zone_by_id(leads_to, arrival_edge, arrival_normalized)
 	if err != OK:
 		_zone_advancing = false
+		GameManager.ui_blocking_input = false
+		await _fade_zone_transition_overlay(overlay, 0.0, ZONE_TRANSITION_FADE_SECONDS)
+		overlay.queue_free()
 		print("[Main] scene exit to '%s' failed err=%d" % [leads_to, err])
+
+func _ensure_zone_transition_overlay() -> CanvasLayer:
+	var root: Window = get_tree().root
+	var existing: Node = root.get_node_or_null(ZONE_TRANSITION_OVERLAY_NAME)
+	if existing is CanvasLayer:
+		return existing as CanvasLayer
+
+	var overlay := CanvasLayer.new()
+	overlay.name = ZONE_TRANSITION_OVERLAY_NAME
+	overlay.layer = 120
+	root.add_child(overlay)
+
+	var dim := ColorRect.new()
+	dim.name = "Dim"
+	dim.color = Color(0.0, 0.0, 0.0, 0.0)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.add_child(dim)
+
+	var status := Label.new()
+	status.name = "Status"
+	status.text = ""
+	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	status.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	status.add_theme_font_size_override("font_size", 18)
+	status.add_theme_color_override("font_color", Color(0.92, 0.96, 1.0, 0.95))
+	status.modulate.a = 0.0
+	status.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(status)
+
+	return overlay
+
+func _fade_zone_transition_overlay(overlay: CanvasLayer, target_alpha: float, seconds: float) -> void:
+	if overlay == null or not is_instance_valid(overlay):
+		return
+	var dim := overlay.get_node_or_null("Dim") as ColorRect
+	if dim == null:
+		return
+	var tween := create_tween()
+	tween.tween_property(dim, "color:a", target_alpha, seconds).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	var status := overlay.get_node_or_null("Status") as Label
+	if status != null and not status.text.is_empty():
+		tween.parallel().tween_property(status, "modulate:a", target_alpha, seconds * 0.8)
+	await tween.finished
+
+func _fade_in_pending_zone_transition() -> void:
+	var root: Window = get_tree().root
+	var overlay := root.get_node_or_null(ZONE_TRANSITION_OVERLAY_NAME) as CanvasLayer
+	if overlay == null:
+		return
+	_set_zone_transition_status("")
+	await _settle_player_camera_for_transition()
+	await _fade_zone_transition_overlay(overlay, 0.0, ZONE_TRANSITION_FADE_SECONDS)
+	if is_instance_valid(overlay):
+		overlay.queue_free()
+	GameManager.ui_blocking_input = false
+
+func _settle_player_camera_for_transition() -> void:
+	_snap_player_camera()
+	for _i in range(ZONE_TRANSITION_CAMERA_SETTLE_FRAMES):
+		await get_tree().process_frame
+		_snap_player_camera()
+
+func _set_zone_transition_status(message: String) -> void:
+	var root: Window = get_tree().root
+	var overlay := root.get_node_or_null(ZONE_TRANSITION_OVERLAY_NAME) as CanvasLayer
+	if overlay == null:
+		return
+	var status := overlay.get_node_or_null("Status") as Label
+	if status == null:
+		return
+	status.text = message
+	status.modulate.a = 1.0 if not message.is_empty() else 0.0
 
 func _show_scene_loading_overlay() -> void:
 	var overlay := CanvasLayer.new()
@@ -686,25 +780,86 @@ func _interior_exit_object_tile(package_data: Dictionary, exit_data: Dictionary)
 		return base_tile + center_offset
 	return Vector2i(-1, -1)
 
-func _entry_spawn_tile(edge: String, tile_context: Dictionary) -> Vector2i:
+func _entry_spawn_tile(edge: String, fallback_normalized: float, from_zone_id: String, tile_context: Dictionary) -> Vector2i:
 	var map_tile_size: Vector2i = tile_context.get("map_tile_size", Vector2i(12, 12))
 	var blocked: Dictionary = tile_context.get("blocked_tiles", {})
-	var mid_x: int = map_tile_size.x / 2
-	var mid_y: int = map_tile_size.y / 2
-	# Spawn a few tiles inward from the edge so we do not overlap the return exit.
-	var base: Vector2i
+	var normalized: float = _entry_normalized_for(edge, from_zone_id, fallback_normalized)
+	var exit_tile: Vector2i = _edge_exit_tile(edge, normalized, map_tile_size)
+	var spawn_tile: Vector2i = _shortest_walkable_entry_spawn(exit_tile, edge, map_tile_size, blocked)
+	if spawn_tile != Vector2i(-1, -1):
+		return spawn_tile
+	return _nearest_free_tile(_entry_fallback_base(edge, normalized, map_tile_size), map_tile_size, blocked)
+
+func _entry_normalized_for(edge: String, from_zone_id: String, fallback_normalized: float) -> float:
+	if not from_zone_id.is_empty():
+		var zone: Dictionary = ChapterFlow.current_zone()
+		for exit_data in (zone.get("edge_exits", []) as Array):
+			if not (exit_data is Dictionary):
+				continue
+			var data: Dictionary = exit_data as Dictionary
+			if str(data.get("edge", "")) == edge and str(data.get("leads_to", "")) == from_zone_id:
+				return clampf(float(data.get("normalized", 0.5)), 0.0, 1.0)
+	if fallback_normalized >= 0.0:
+		return clampf(fallback_normalized, 0.0, 1.0)
+	return 0.5
+
+func _shortest_walkable_entry_spawn(exit_tile: Vector2i, edge: String, map_tile_size: Vector2i, blocked: Dictionary) -> Vector2i:
+	var queue: Array[Vector2i] = [exit_tile]
+	var visited: Dictionary = {_tile_key(exit_tile): true}
+	var head := 0
+	var directions: Array[Vector2i] = [
+		Vector2i.RIGHT,
+		Vector2i.LEFT,
+		Vector2i.DOWN,
+		Vector2i.UP,
+	]
+	while head < queue.size():
+		var tile: Vector2i = queue[head]
+		head += 1
+		if _is_entry_spawn_candidate(tile, edge, map_tile_size, blocked):
+			return tile
+		for dir in directions:
+			var next: Vector2i = tile + dir
+			var key := _tile_key(next)
+			if visited.has(key):
+				continue
+			if next.x < 0 or next.y < 0 or next.x >= map_tile_size.x or next.y >= map_tile_size.y:
+				continue
+			if blocked.has(key):
+				continue
+			visited[key] = true
+			queue.append(next)
+	return Vector2i(-1, -1)
+
+func _is_entry_spawn_candidate(tile: Vector2i, edge: String, map_tile_size: Vector2i, blocked: Dictionary) -> bool:
+	if blocked.has(_tile_key(tile)):
+		return false
+	if tile.x < 1 or tile.y < 1 or tile.x > map_tile_size.x - 2 or tile.y > map_tile_size.y - 2:
+		return false
 	match edge:
 		"west":
-			base = Vector2i(min(4, map_tile_size.x - 2), mid_y)
+			return tile.x >= min(ENTRY_SPAWN_INSET_TILES, map_tile_size.x - 2)
 		"east":
-			base = Vector2i(max(map_tile_size.x - 5, 1), mid_y)
+			return tile.x <= max(map_tile_size.x - 1 - ENTRY_SPAWN_INSET_TILES, 1)
 		"north":
-			base = Vector2i(mid_x, min(4, map_tile_size.y - 2))
+			return tile.y >= min(ENTRY_SPAWN_INSET_TILES, map_tile_size.y - 2)
 		"south":
-			base = Vector2i(mid_x, max(map_tile_size.y - 5, 1))
-		_:
-			base = Vector2i(mid_x, mid_y)
-	return _nearest_free_tile(base, map_tile_size, blocked)
+			return tile.y <= max(map_tile_size.y - 1 - ENTRY_SPAWN_INSET_TILES, 1)
+	return true
+
+func _entry_fallback_base(edge: String, normalized: float, map_tile_size: Vector2i) -> Vector2i:
+	var edge_x: int = clampi(int(round(normalized * float(map_tile_size.x - 1))), 1, max(map_tile_size.x - 2, 1))
+	var edge_y: int = clampi(int(round(normalized * float(map_tile_size.y - 1))), 1, max(map_tile_size.y - 2, 1))
+	match edge:
+		"west":
+			return Vector2i(min(ENTRY_SPAWN_INSET_TILES, map_tile_size.x - 2), edge_y)
+		"east":
+			return Vector2i(max(map_tile_size.x - 1 - ENTRY_SPAWN_INSET_TILES, 1), edge_y)
+		"north":
+			return Vector2i(edge_x, min(ENTRY_SPAWN_INSET_TILES, map_tile_size.y - 2))
+		"south":
+			return Vector2i(edge_x, max(map_tile_size.y - 1 - ENTRY_SPAWN_INSET_TILES, 1))
+	return Vector2i(map_tile_size.x / 2, map_tile_size.y / 2)
 
 func _nearest_free_tile(start: Vector2i, map_tile_size: Vector2i, blocked: Dictionary) -> Vector2i:
 	var max_radius: int = max(map_tile_size.x, map_tile_size.y)

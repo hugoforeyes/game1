@@ -27,6 +27,8 @@ var pending_play_opening: bool = false
 # When the player walks through an exit, the edge they should arrive at in the
 # next scene (opposite of the exit edge). Consumed by Main on spawn.
 var pending_entry_edge: String = ""
+var pending_entry_normalized: float = -1.0
+var pending_entry_from_zone: String = ""
 var _suppress_cutscene: bool = false
 # Per-zone package cache. Each zone is downloaded to its own file under
 # CACHE_DIR so every zone of a chapter can be cached at once. _prefetching_zones
@@ -359,6 +361,16 @@ func take_pending_entry_edge() -> String:
 	pending_entry_edge = ""
 	return edge
 
+func take_pending_entry_normalized() -> float:
+	var normalized: float = pending_entry_normalized
+	pending_entry_normalized = -1.0
+	return normalized
+
+func take_pending_entry_from_zone() -> String:
+	var zone_id: String = pending_entry_from_zone
+	pending_entry_from_zone = ""
+	return zone_id
+
 func _current_zone_key() -> String:
 	return "%s::%d::%s" % [str(flow.get("run_id", "")), chapter_index, str(current_zone().get("zone_id", ""))]
 
@@ -457,15 +469,18 @@ func zone_index_by_id(zone_id: String) -> int:
 
 ## Walk-through transition: jump to a specific connected zone in this chapter and
 ## spawn the player at arrival_edge. Does NOT replay the chapter intro cutscene.
-func goto_zone_by_id(zone_id: String, arrival_edge: String = "") -> Error:
+func goto_zone_by_id(zone_id: String, arrival_edge: String = "", arrival_normalized: float = -1.0) -> Error:
 	if not active:
 		return ERR_UNCONFIGURED
+	var from_zone_id: String = str(current_zone().get("zone_id", ""))
 	var target_index: int = zone_index_by_id(zone_id)
 	if target_index < 0:
 		print("[ChapterFlow] goto_zone_by_id: unknown zone '%s'" % zone_id)
 		return ERR_DOES_NOT_EXIST
 	zone_index = target_index
 	pending_entry_edge = arrival_edge
+	pending_entry_normalized = arrival_normalized
+	pending_entry_from_zone = from_zone_id
 	_suppress_cutscene = true
 	return await enter_current_zone()
 
