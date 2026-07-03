@@ -45,6 +45,10 @@ window/size/window_height_override=1152
 window/stretch/mode="canvas_items"
 window/stretch/scale_mode="integer"
 
+[gui]
+
+theme/custom_font="res://assets/fonts/BeVietnamPro-Regular.ttf"
+
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/intro_copy/plugin.cfg")

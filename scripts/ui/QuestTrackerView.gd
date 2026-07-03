@@ -115,6 +115,12 @@ func _build_expanded() -> void:
 	# ── Header ───────────────────────────────────────────────────────────────
 	add_child(_make_tex(_quest_crest(str(_data.get("type", "main"))), Rect2(PAD - 2, 9, 34, 34)))
 	var title_label := _label(title, 17, C_GOLD, Rect2(PAD + 38, 12, content_w - 38 - 26, 26))
+	var title_font := UiKit.title_font()
+	if title_font != null:
+		var title_variation := FontVariation.new()
+		title_variation.base_font = title_font
+		title_variation.variation_opentype = {"wght": 640}
+		title_label.add_theme_font_override("font", title_variation)
 	title_label.clip_text = true
 	title_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	add_child(title_label)

@@ -246,7 +246,7 @@ func _build_header() -> void:
 	# Title medallion.
 	_build_medallion(Rect2(12, 10, 26, 26), "icon_journal.png")
 	# Title + subtitle.
-	var title := _place_label(UiKit.make_label("NHẬT KÝ NHIỆM VỤ", FONT_HEADER, C_GOLD), Rect2(46, 8, 220, 20))
+	var title := _place_label(UiKit.make_title("NHẬT KÝ NHIỆM VỤ", FONT_HEADER, C_GOLD), Rect2(46, 8, 220, 20))
 	_canvas.add_child(title)
 	_canvas.add_child(_place_label(UiKit.make_label("HỒ SƠ HÀNH TRÌNH", FONT_HEADER_SUB, C_TEXT_DIM), Rect2(47, 27, 140, 9)))
 	# Chapter context (right aligned, before the close button).
@@ -318,7 +318,7 @@ func _build_detail_panel() -> void:
 	_tracked_badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_hero_host.add_child(_tracked_badge)
 	# Title over the bottom scrim.
-	_detail_title = _place_label(UiKit.make_label("", FONT_DETAIL_TITLE, C_GOLD), Rect2(7, 24, 186, 17))
+	_detail_title = _place_label(UiKit.make_title("", FONT_DETAIL_TITLE, C_GOLD), Rect2(7, 24, 186, 17))
 	_detail_title.clip_text = true
 	_detail_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_hero_host.add_child(_detail_title)

@@ -136,7 +136,7 @@ func _build_ui() -> void:
 	_title_plaque = _make_ui_texture(TEX_TITLE_PLAQUE, Rect2((design_w - 142.0) * 0.5, 0, 142, 25))
 	_title_group.add_child(_title_plaque)
 
-	_eyebrow_label = UiKit.make_label("", 8, Color(0.85, 0.75, 0.55, 0.9))
+	_eyebrow_label = UiKit.make_label_strong("", 8, Color(0.85, 0.75, 0.55, 0.9))
 	_eyebrow_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_eyebrow_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_eyebrow_label.add_theme_constant_override("shadow_offset_y", 1)
@@ -144,7 +144,7 @@ func _build_ui() -> void:
 	_eyebrow_label.size = Vector2(142, 25)
 	_title_group.add_child(_eyebrow_label)
 
-	_title_label = UiKit.make_label("", 19, COLOR_TITLE)
+	_title_label = UiKit.make_title("", 19, COLOR_TITLE)
 	_title_label.add_theme_constant_override("shadow_offset_y", 2)
 	_title_label.add_theme_color_override("font_shadow_color", Color(0.02, 0.01, 0.0, 0.88))
 	_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER

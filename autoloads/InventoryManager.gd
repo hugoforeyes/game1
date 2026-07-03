@@ -348,32 +348,53 @@ func _filter_bar_style() -> StyleBoxFlat:
 	return style
 
 
-func _slot_style(selected: bool, empty: bool = false) -> StyleBoxFlat:
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.015, 0.020, 0.026, 0.88 if not empty else 0.46)
-	style.border_color = Color(1.0, 0.78, 0.28, 1.0) if selected else Color(0.55, 0.43, 0.24, 0.66)
-	style.set_border_width_all(3 if selected else 1)
-	style.set_corner_radius_all(5)
-	style.shadow_color = Color(1.0, 0.74, 0.18, 0.42) if selected else Color(0, 0, 0, 0.22)
-	style.shadow_size = 12 if selected else 3
-	style.shadow_offset = Vector2.ZERO
-	return style
+func _slot_style(selected: bool, empty: bool = false) -> StyleBox:
+	# aaa_kit_v1 slot art baked at the exact 70x68 slot size, so the
+	# StyleBoxTexture margins map 1:1 and nothing deforms.
+	var texture := UiKit.kit_texture("slot_selected_70.png" if selected else "slot_70.png")
+	if texture != null:
+		var style := StyleBoxTexture.new()
+		style.texture = texture
+		style.set_texture_margin_all(10.0)
+		if empty and not selected:
+			style.modulate_color = Color(0.62, 0.64, 0.72, 0.55)
+		return style
+	var flat := StyleBoxFlat.new()
+	flat.bg_color = Color(0.015, 0.020, 0.026, 0.88 if not empty else 0.46)
+	flat.border_color = Color(1.0, 0.78, 0.28, 1.0) if selected else Color(0.55, 0.43, 0.24, 0.66)
+	flat.set_border_width_all(3 if selected else 1)
+	flat.set_corner_radius_all(5)
+	flat.shadow_color = Color(1.0, 0.74, 0.18, 0.42) if selected else Color(0, 0, 0, 0.22)
+	flat.shadow_size = 12 if selected else 3
+	flat.shadow_offset = Vector2.ZERO
+	return flat
 
 
-func _tab_style(active: bool) -> StyleBoxFlat:
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.13, 0.12, 0.09, 0.76) if active else Color(0.015, 0.025, 0.033, 0.36)
-	style.border_color = Color(1.0, 0.78, 0.32, 0.86) if active else Color(0.76, 0.58, 0.27, 0.24)
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(6)
-	return style
+func _tab_style(active: bool) -> StyleBox:
+	var texture := UiKit.kit_texture("tab_96.png")
+	if texture != null:
+		var style := StyleBoxTexture.new()
+		style.texture = texture
+		style.set_texture_margin_all(9.0)
+		style.modulate_color = Color(1.24, 1.12, 0.86, 1.0) if active else Color(0.55, 0.58, 0.68, 0.82)
+		return style
+	var flat := StyleBoxFlat.new()
+	flat.bg_color = Color(0.13, 0.12, 0.09, 0.76) if active else Color(0.015, 0.025, 0.033, 0.36)
+	flat.border_color = Color(1.0, 0.78, 0.32, 0.86) if active else Color(0.76, 0.58, 0.27, 0.24)
+	flat.set_border_width_all(1)
+	flat.set_corner_radius_all(6)
+	return flat
 
 
 func _make_glass_panel(rect: Rect2) -> Panel:
 	var panel := Panel.new()
 	panel.position = rect.position
 	panel.size = rect.size
-	panel.add_theme_stylebox_override("panel", _glass_panel_style())
+	if UiKit.kit_texture("panel_frame.png") != null:
+		panel.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
+		panel.add_child(UiKit.make_ornate_frame(rect.size, "panel_frame.png", 0.16, 26.0))
+	else:
+		panel.add_theme_stylebox_override("panel", _glass_panel_style())
 	return panel
 
 
@@ -524,12 +545,12 @@ func _ensure_ui() -> void:
 	header_gem.modulate = Color(1, 1, 1, 0.78)
 	canvas.add_child(header_gem)
 
-	var header := UiKit.make_label("HÀNH TRANG", 30, UiKit.COLOR_ACCENT)
+	var header := UiKit.make_title("HÀNH TRANG", 30, UiKit.COLOR_ACCENT)
 	header.position = Vector2(48, 34)
 	header.size = Vector2(280, 36)
 	canvas.add_child(header)
 
-	_top_stats = UiKit.make_label("", 14, UiKit.COLOR_TEXT)
+	_top_stats = UiKit.make_label_strong("", 14, UiKit.COLOR_TEXT)
 	_top_stats.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_top_stats.position = Vector2(550, 36)
 	_top_stats.size = Vector2(340, 28)
@@ -610,7 +631,7 @@ func _ensure_ui() -> void:
 	detail_gem_top.modulate = Color(1, 1, 1, 0.58)
 	detail_panel.add_child(detail_gem_top)
 
-	_detail_name = UiKit.make_label("", 16, UiKit.COLOR_ACCENT)
+	_detail_name = UiKit.make_title("", 16, UiKit.COLOR_ACCENT)
 	_detail_name.position = Vector2(30, 40)
 	_detail_name.size = Vector2(228, 26)
 	_detail_name.clip_text = true

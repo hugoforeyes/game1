@@ -462,7 +462,7 @@ func _build_ui() -> void:
 	_dialogue_root.add_child(_nameplate_art_root)
 	_add_nameplate_art(_nameplate_art_root, name_rect)
 
-	_name_label = UiKit.make_label("", 10, Color(0.98, 0.88, 0.63, 1.0))
+	_name_label = UiKit.make_title("", 10, Color(0.98, 0.88, 0.63, 1.0))
 	_name_label.position = Vector2(14, 0)
 	_name_label.size = Vector2(58, 18)
 	_name_label.clip_text = true
@@ -497,7 +497,7 @@ func _build_ui() -> void:
 		_title_banner.modulate.a = 0.0
 		add_child(_title_banner)
 
-	_title_label = UiKit.make_label("", 17, COLOR_SPEAKER)
+	_title_label = UiKit.make_title("", 17, COLOR_SPEAKER)
 	_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_title_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_title_label.position = Vector2(20, design_h * 0.5 - 11.0)

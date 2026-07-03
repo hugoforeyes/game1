@@ -29,7 +29,7 @@ func _ready() -> void:
 		"title": "Cánh Hoa Cuối Mùa",
 		"subtitle": "Một hành trình mới đã bắt đầu",
 	})
-	quest_toast.position = Vector2(153, 14)
+	quest_toast.position = Vector2(132, 14)
 	ui.add_child(quest_toast)
 
 	var objective_toast = ToastScript.new()
@@ -41,14 +41,14 @@ func _ready() -> void:
 		"subtitle": "0 / 3",
 		"title_font_size": 6,
 	})
-	objective_toast.position = Vector2(153, 72)
+	objective_toast.position = Vector2(132, 74)
 	ui.add_child(objective_toast)
 
 	await get_tree().process_frame
 	await get_tree().process_frame
 	await get_tree().process_frame
-	assert(quest_toast.size == Vector2(174, 44))
-	assert(objective_toast.size == Vector2(174, 44))
+	assert(quest_toast.size == Vector2(216, 46))
+	assert(objective_toast.size == Vector2(216, 46))
 	assert(quest_toast.title_label.get_line_count() == 1)
 	assert(objective_toast.title_label.get_line_count() <= 2)
 	assert(quest_toast.header_label.text == "NHIỆM VỤ MỚI")

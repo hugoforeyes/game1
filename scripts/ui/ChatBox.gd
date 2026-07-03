@@ -46,7 +46,7 @@ const COLOR_OPT_BG_LIT     := Color(0.55, 0.43, 0.24, 0.50)
 const COLOR_OPT_BORDER_DIM := Color(0, 0, 0, 0)
 const COLOR_OPT_BORDER_LIT := Color(1.00, 0.77, 0.30, 0.80)
 const COLOR_OPT_TEXT_DIM   := Color(0.84, 0.78, 0.64, 0.88)
-const COLOR_OPT_TEXT_LIT   := Color(0.93, 0.88, 0.75, 1.00)
+const COLOR_OPT_TEXT_LIT := Color(0.10, 0.08, 0.03, 1.0)
 const COLOR_OPT_TEXT_SEEN  := Color(0.55, 0.51, 0.44, 0.70)  # an option already explored
 const COLOR_OPT_ARROW      := Color(1.00, 0.85, 0.45, 1.00)
 
@@ -159,8 +159,12 @@ func _build_dialogue_v2_nodes() -> void:
 	_tex_dialogue_panel = load(TEX_DIALOGUE_PANEL_PATH) as Texture2D
 	_tex_portrait_frame = load(TEX_PORTRAIT_FRAME_PATH) as Texture2D
 	_tex_nameplate = load(TEX_NAMEPLATE_PATH) as Texture2D
-	_tex_choice_cursor = load(TEX_CHOICE_CURSOR_PATH) as Texture2D
-	_tex_choice_hilite = load(TEX_CHOICE_HILITE_PATH) as Texture2D
+	_tex_choice_cursor = UiKit.kit_texture("cursor_gem.png")
+	if _tex_choice_cursor == null:
+		_tex_choice_cursor = load(TEX_CHOICE_CURSOR_PATH) as Texture2D
+	_tex_choice_hilite = UiKit.kit_texture("list_row_selected_22.png")
+	if _tex_choice_hilite == null:
+		_tex_choice_hilite = load(TEX_CHOICE_HILITE_PATH) as Texture2D
 	_tex_choice_anchor = load(TEX_CHOICE_ANCHOR_PATH) as Texture2D
 	_tex_choice_jewel = load(TEX_CHOICE_JEWEL_PATH) as Texture2D
 	_tex_choice_fill = load(TEX_CHOICE_FILL_PATH) as Texture2D
@@ -257,6 +261,7 @@ func _build_dialogue_v2_nodes() -> void:
 	add_child(_choice_jewel)
 
 	_choice_anchor = TextureRect.new()
+	_choice_anchor.visible = false
 	_choice_anchor.texture = _tex_choice_anchor
 	_choice_anchor.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	_choice_anchor.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
@@ -375,7 +380,9 @@ func _apply_nameplate_layout(px: float, py: float, pw: float, pf_pos: Vector2, p
 	if _nameplate == null:
 		return
 
-	var font := ThemeDB.fallback_font
+	var font: Font = UiKit.title_font()
+	if font == null:
+		font = ThemeDB.fallback_font
 	var name_text := _npc_label.text.strip_edges()
 	var font_size := NAME_FONT_SIZE
 	var name_left := pf_pos.x + pf_w - 14.0
@@ -398,6 +405,12 @@ func _apply_nameplate_layout(px: float, py: float, pw: float, pf_pos: Vector2, p
 	_npc_label.clip_text = true
 	_npc_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_npc_label.add_theme_font_size_override("font_size", font_size)
+	var title_font := UiKit.title_font()
+	if title_font != null:
+		var variation := FontVariation.new()
+		variation.base_font = title_font
+		variation.variation_opentype = {"wght": 640}
+		_npc_label.add_theme_font_override("font", variation)
 	_npc_label.add_theme_color_override("font_color", Color(1.00, 0.85, 0.45))
 	_npc_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
 	_npc_label.add_theme_constant_override("shadow_offset_x", 1)
@@ -626,7 +639,7 @@ func _show_options(raw_options: Array) -> void:
 		panel.add_theme_stylebox_override("panel", sbox)
 
 		var highlight := Panel.new()
-		highlight.add_theme_stylebox_override("panel", _make_texture_style(_tex_choice_hilite, 18.0, 8.0, 18.0, 8.0))
+		highlight.add_theme_stylebox_override("panel", _make_texture_style(_tex_choice_hilite, 13.0, 5.0, 13.0, 5.0))
 		highlight.set_anchors_preset(Control.PRESET_FULL_RECT)
 		highlight.offset_left = -3.0
 		highlight.offset_top = -2.0
@@ -779,7 +792,7 @@ func _set_choice_frame_visible(show: bool) -> void:
 	if _choice_jewel != null:
 		_choice_jewel.visible = show
 	if _choice_anchor != null:
-		_choice_anchor.visible = show
+		_choice_anchor.visible = false  # anchor arrow retired in the aaa_kit redesign
 
 func _clear_options() -> void:
 	for row in _opt_rows:
@@ -814,7 +827,7 @@ func _update_option_highlight() -> void:
 			col = COLOR_OPT_TEXT_SEEN if seen else COLOR_OPT_TEXT_DIM
 		_opt_labels[i].add_theme_color_override("font_color", col)
 		_opt_labels[i].add_theme_color_override("font_shadow_color",
-			Color(0, 0, 0, 0.55) if lit else Color(0, 0, 0, 0))
+			Color(1, 0.92, 0.72, 0.35) if lit else Color(0, 0, 0, 0))
 
 # True if this option leads to a content node the player already explored — used
 # to grey it out + tick it so the player can see which topics they've covered.

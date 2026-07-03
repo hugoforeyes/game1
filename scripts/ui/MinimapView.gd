@@ -220,6 +220,12 @@ func _cropped_cover_texture(source: Texture2D, target_size: Vector2) -> Texture2
 func _header() -> void:
 	_thin_divider(Vector2(SIDE_PAD, HEADER_H - 8.0), PANEL_W - SIDE_PAD * 2.0, C_LINE)
 	var title := _label("BẢN ĐỒ CHƯƠNG", 18, C_GOLD, Rect2(0, 10, PANEL_W, 26))
+	var title_font := UiKit.title_font()
+	if title_font != null:
+		var variation := FontVariation.new()
+		variation.base_font = title_font
+		variation.variation_opentype = {"wght": 640}
+		title.add_theme_font_override("font", variation)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	add_child(title)
 	# Close hint, top-right.
