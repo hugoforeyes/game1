@@ -39,7 +39,7 @@ var is_compact := false
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	clip_contents = false
-	position = Vector2(get_viewport_rect().size.x - RIGHT_MARGIN - WIDTH, TOP)
+	position = Vector2(12.0, 104.0)
 	size = Vector2(WIDTH, _panel_height)
 
 
@@ -60,61 +60,50 @@ func _rebuild() -> void:
 
 
 func _build_compact() -> void:
-	position = Vector2(get_viewport_rect().size.x - RIGHT_MARGIN - COMPACT, TOP)
 	size = Vector2(COMPACT, COMPACT)
-	_glass_panel(Rect2(0, 0, COMPACT, COMPACT))
-	_corners(Rect2(0, 0, COMPACT, COMPACT))
+	_panel_height = COMPACT
+	_scrim(Rect2(-10, -10, COMPACT + 20, COMPACT + 20))
 	var crest := _quest_crest(str(_data.get("type", "main")))
-	add_child(_make_tex(crest, Rect2(10, 10, COMPACT - 20, COMPACT - 20)))
+	add_child(_make_tex(crest, Rect2(8, 8, COMPACT - 16, COMPACT - 16)))
 	# Click target to expand.
 	_add_button(Rect2(0, 0, COMPACT, COMPACT))
 	# Tiny "expand" chevron hint, bottom-right.
-	_chevron(Vector2(COMPACT - 13, COMPACT - 13), false)
+	_chevron(Vector2(COMPACT - 11, COMPACT - 11), false)
 
 
 func _build_expanded() -> void:
+	# Frameless: title / objective / hints float straight on the scene over a
+	# soft feathered scrim — no panel, no borders (mockup_hud style).
 	var content_w := WIDTH - PAD * 2.0
 	var title := str(_data.get("title", ""))
 	var objective := str(_data.get("objective", ""))
+	if bool(_data.get("has_count", false)):
+		objective += "  (%d/%d)" % [int(_data.get("current", 0)), int(_data.get("total", 1))]
 	var hints: Array = _data.get("hints", []) as Array
 
 	var font := get_theme_default_font()
-	# Measure wrapped heights.
-	var obj_h: float = clampf(ceilf(font.get_multiline_string_size(objective, HORIZONTAL_ALIGNMENT_LEFT, content_w - 2.0, 14).y) + 6.0, 20.0, 80.0)
+	var obj_h: float = clampf(ceilf(font.get_multiline_string_size(objective, HORIZONTAL_ALIGNMENT_LEFT, content_w - 16.0, 14).y) + 4.0, 18.0, 80.0)
 	var hint_heights: Array[float] = []
 	for h in hints:
-		var t := "%s" % str((h as Dictionary).get("text", ""))
-		var hh: float = clampf(ceilf(font.get_multiline_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, content_w - 16.0, 13).y), 16.0, 54.0)
+		var t := str((h as Dictionary).get("text", ""))
+		var hh: float = clampf(ceilf(font.get_multiline_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, content_w - 16.0, 12).y), 15.0, 54.0)
 		hint_heights.append(hh)
 
-	# ── Vertical layout cursor ────────────────────────────────────────────────
-	var header_bottom := 52.0
-	var y := header_bottom + 10.0           # objective heading baseline
-	var obj_heading_y := y - 4.0
-	var obj_text_y := y + 18.0
-	y = obj_text_y + obj_h + 9.0            # hint divider
-	var has_hints := not hints.is_empty()
-	var hint_div_y := y
-	var hint_heading_y := y + 7.0
-	var hints_top := y + 26.0
+	var title_h := 24.0
+	var obj_y := title_h + 6.0
+	var hints_top := obj_y + obj_h + 6.0
 	var hints_total := 0.0
 	for hh in hint_heights:
-		hints_total += hh + 4.0
-	var bottom := hints_top + hints_total + 8.0 if has_hints else obj_text_y + obj_h + 10.0
-	_panel_height = bottom
-
-	position = Vector2(get_viewport_rect().size.x - RIGHT_MARGIN - WIDTH, TOP)
+		hints_total += hh + 3.0
+	var has_hints := not hints.is_empty()
+	_panel_height = (hints_top + hints_total + 4.0) if has_hints else (obj_y + obj_h + 6.0)
 	size = Vector2(WIDTH, _panel_height)
 
-	# ── Frame ──────────────────────────────────────────────────────────────────
-	_glass_panel(Rect2(0, 0, WIDTH, _panel_height))
-	_corners(Rect2(0, 0, WIDTH, _panel_height))
-	_center_jewel(Vector2(WIDTH * 0.5, 0.0))
-	_center_jewel(Vector2(WIDTH * 0.5, _panel_height))
+	_scrim(Rect2(-24, -16, WIDTH + 60, _panel_height + 40))
 
-	# ── Header ───────────────────────────────────────────────────────────────
-	add_child(_make_tex(_quest_crest(str(_data.get("type", "main"))), Rect2(PAD - 2, 9, 34, 34)))
-	var title_label := _label(title, 17, C_GOLD, Rect2(PAD + 38, 12, content_w - 38 - 26, 26))
+	# ── Title: gold diamond + serif title ──
+	_add_diamond(self, Vector2(PAD - 4, 12), 4.0, C_GOLD)
+	var title_label := _label(title, 16, C_GOLD, Rect2(PAD + 8, 0, content_w - 8 - 24, title_h))
 	var title_font := UiKit.title_font()
 	if title_font != null:
 		var title_variation := FontVariation.new()
@@ -124,47 +113,66 @@ func _build_expanded() -> void:
 	title_label.clip_text = true
 	title_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	add_child(title_label)
-	# Collapse chevron button (top-right).
-	var chev_center := Vector2(WIDTH - PAD - 9, 22)
-	_circle_button(chev_center, 11.0)
+	# Collapse chevron (kept subtle, right of the title).
+	var chev_center := Vector2(WIDTH - PAD - 4, 12)
 	_chevron(chev_center, true)
 	_add_button(Rect2(chev_center.x - 13, chev_center.y - 13, 26, 26))
-	# Header divider.
-	_divider_ornament(Vector2(WIDTH * 0.5, header_bottom - 4.0), content_w + 6.0)
 
-	# ── Objective ──────────────────────────────────────────────────────────────
-	_section_marker(Vector2(PAD + 4, obj_heading_y + 6), C_AMBER)
-	add_child(_label("MỤC TIÊU", 12, C_AMBER, Rect2(PAD + 16, obj_heading_y, 160, 16)))
+	# ── Objective line: small amber diamond + text ──
+	_add_diamond(self, Vector2(PAD + 4, obj_y + 8), 3.2, C_AMBER)
 	var obj_label := UiKit.make_label("", 14, C_TEXT)
 	obj_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	obj_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	obj_label.position = Vector2(PAD + 2, obj_text_y).round()
-	obj_label.size = Vector2(content_w - 2, obj_h + 4).round()
+	obj_label.position = Vector2(PAD + 14, obj_y).round()
+	obj_label.size = Vector2(content_w - 16, obj_h + 3).round()
 	obj_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	add_child(obj_label)
 	obj_label.text = objective
 	line_count = obj_label.get_line_count()
 
-	# ── Hints ────────────────────────────────────────────────────────────────────
+	# ── Hints: dim cyan lines with tiny diamonds ──
 	hint_row_count = 0
 	if has_hints:
-		_thin_divider(Vector2(PAD, hint_div_y), content_w, Color(C_CYAN, 0.40))
-		_section_marker_bulb(Vector2(PAD + 4, hint_heading_y + 6))
-		add_child(_label("GỢI Ý", 12, C_CYAN, Rect2(PAD + 16, hint_heading_y, 120, 16)))
 		var hy := hints_top
 		for i in range(hints.size()):
 			var text := str((hints[i] as Dictionary).get("text", ""))
-			_add_diamond(self, Vector2(PAD + 8, hy + 7), 3.0, Color(C_CYAN, 0.95))
-			var hint_label := UiKit.make_label("", 13, Color(C_CYAN, 0.90))
+			_add_diamond(self, Vector2(PAD + 4, hy + 7), 2.6, Color(C_CYAN, 0.85))
+			var hint_label := UiKit.make_label("", 12, Color(C_CYAN, 0.82))
 			hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			hint_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			hint_label.position = Vector2(PAD + 16, hy).round()
+			hint_label.position = Vector2(PAD + 14, hy).round()
 			hint_label.size = Vector2(content_w - 16, hint_heights[i] + 3).round()
 			hint_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 			add_child(hint_label)
 			hint_label.text = text
-			hy += hint_heights[i] + 4.0
+			hy += hint_heights[i] + 3.0
 			hint_row_count += 1
+
+
+## Soft feathered translucent backing — readability without any frame.
+func _scrim(rect: Rect2) -> void:
+	var scrim := TextureRect.new()
+	var gradient := Gradient.new()
+	gradient.offsets = PackedFloat32Array([0.0, 0.55, 1.0])
+	gradient.colors = PackedColorArray([
+		Color(0.008, 0.012, 0.028, 0.66),
+		Color(0.008, 0.012, 0.028, 0.46),
+		Color(0.008, 0.012, 0.028, 0.0),
+	])
+	var texture := GradientTexture2D.new()
+	texture.gradient = gradient
+	texture.fill = GradientTexture2D.FILL_RADIAL
+	texture.fill_from = Vector2(0.5, 0.5)
+	texture.fill_to = Vector2(0.5, 0.0)
+	texture.width = maxi(int(rect.size.x), 8)
+	texture.height = maxi(int(rect.size.y), 8)
+	scrim.texture = texture
+	scrim.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	scrim.stretch_mode = TextureRect.STRETCH_SCALE
+	scrim.position = rect.position
+	scrim.size = rect.size
+	scrim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(scrim)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

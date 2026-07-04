@@ -51,6 +51,44 @@ const TALK_XP_WORLD := 7
 # Companions share a fraction of whatever XP the protagonist earns (battles + talk).
 const COMPANION_XP_SHARE := 0.7
 
+# Level-gap XP governor ("rubber band"): every XP source is scaled by how far the
+# player has out-leveled the content it comes from (the enemy's own level in battle,
+# the zone's expected player level for conversation — see enemy_balance.py, whose
+# expected_player_level anchor this mirrors). Measured on real chapter-1 data, the
+# raw talk pool alone (~6100 XP) would push a diligent talker past level 20 against
+# a level-6 boss; with this table every engaged playstyle converges to level 7-9
+# instead, while a player 2+ levels BELOW the content catches up 25% faster.
+# Floor XP_GAP_MIN_FACTOR keeps a trickle (never 0 — talking must always feel
+# rewarded), and gain_xp's floor of 1 XP guarantees at least a point.
+const XP_GAP_FACTORS := {1: 0.7, 2: 0.45, 3: 0.25}
+const XP_GAP_MIN_FACTOR := 0.1
+const XP_GAP_CATCHUP_FACTOR := 1.25  # when 2+ levels below the content
+
+
+## The balance anchor conversation XP scales against: the current zone's expected
+## player level from ChapterFlow. Looked up by path (not the global identifier) so
+## GameManager still runs in isolation (scripts/dev/ProgressionSmoke.gd) — with no
+## ChapterFlow the anchor is 1, which at level 1 means full-value talk XP.
+func _talk_reference_level() -> int:
+	if not is_inside_tree():
+		return 1
+	var flow: Node = get_node_or_null("/root/ChapterFlow")
+	if flow != null:
+		return int(flow.expected_level_here())
+	return 1
+
+
+## Multiplier for XP earned from content anchored at `reference_level` (an enemy's
+## level, or a zone's expected player level). Over-leveling the content shrinks the
+## reward toward XP_GAP_MIN_FACTOR; being well under it grants a catch-up bonus.
+func xp_gap_factor(reference_level: int) -> float:
+	var gap: int = player_level - maxi(1, reference_level)
+	if gap <= -2:
+		return XP_GAP_CATCHUP_FACTOR
+	if gap <= 0:
+		return 1.0
+	return float(XP_GAP_FACTORS.get(gap, XP_GAP_MIN_FACTOR))
+
 var player_level: int = 1
 var player_xp: int = 0
 var player_hp: int = -1  # -1 = full (computed lazily from level)
@@ -153,7 +191,10 @@ func award_talk_xp(npc_id: String, node_id: String, category: String) -> Diction
 	if talk_log.has(key):
 		return {"awarded": false}
 	talk_log[key] = category
-	var amount: int = TALK_XP_QUEST if category == "quest" else TALK_XP_WORLD
+	var base_amount: int = TALK_XP_QUEST if category == "quest" else TALK_XP_WORLD
+	# Conversation XP is anchored to the zone the conversation happens in: once the
+	# player out-levels what this zone expects, chatter teaches less and less.
+	var amount: int = maxi(1, int(round(base_amount * xp_gap_factor(_talk_reference_level()))))
 	var recipients: Array = ["Bạn"]
 	for cid in active_companion_ids():
 		recipients.append(_companion_display_name(str(cid)))

@@ -59,7 +59,45 @@ func _check_chapter_completion() -> void:
 	if not boss_zone_id.is_empty() and not QuestManager.visited_zones.has(boss_zone_id):
 		return
 	GameManager.mark_chapter_completed(chapter_number)
-	InventoryManager._push_toast("Chương %d hoàn thành! Mở Bản Đồ Thế Giới (Tab) để tiếp tục." % chapter_number)
+	_queue_chapter_celebration(chapter_number, str(chapter.get("title", "")))
+
+
+const ChapterCompleteViewScript := preload("res://scripts/ui/ChapterCompleteView.gd")
+var _pending_celebration: Dictionary = {}
+
+
+## The completion can fire while another screen (battle wrap-up, dialogue...)
+## still blocks input — hold the celebration until the player is free, then
+## play it. Polled cheaply from _process only while something is pending.
+func _queue_chapter_celebration(chapter_number: int, chapter_title: String) -> void:
+	_pending_celebration = {"chapter": chapter_number, "title": chapter_title}
+	set_process(true)
+
+
+func _process(_delta: float) -> void:
+	if _pending_celebration.is_empty():
+		set_process(false)
+		return
+	if GameManager.ui_blocking_input:
+		return
+	var pending: Dictionary = _pending_celebration
+	_pending_celebration = {}
+	set_process(false)
+	_show_chapter_celebration(int(pending["chapter"]), str(pending["title"]))
+
+
+func _show_chapter_celebration(chapter_number: int, chapter_title: String) -> void:
+	var next_chapter: Dictionary = {}
+	var items: Array = chapters()
+	for i in range(items.size()):
+		if int((items[i] as Dictionary).get("chapter", -1)) == chapter_number and i + 1 < items.size():
+			next_chapter = items[i + 1] as Dictionary
+			break
+	var view := ChapterCompleteViewScript.new()
+	add_child(view)
+	view.travel_confirmed.connect(func(next_number: int) -> void:
+		goto_chapter(next_number))
+	view.show_completion(chapter_number, chapter_title, next_chapter)
 
 
 func api_url(path: String) -> String:
@@ -82,6 +120,68 @@ func current_zone() -> Dictionary:
 	if zone_index >= 0 and zone_index < zones.size() and zones[zone_index] is Dictionary:
 		return zones[zone_index] as Dictionary
 	return {}
+
+# ── balance anchor (mirror of SceneBuilder/utils/enemy_balance.py) ─────────────
+# expected_player_level(chapter, zone_distance) = 1 + (chapter-1)*3 + distance.
+# If you change these, change enemy_balance.py too (same rule as the level curve).
+const CHAPTER_LEVEL_STEP := 3
+const DISTANCE_LEVEL_STEP := 1
+
+
+## The level the balance system expects the player to be in the CURRENT zone —
+## the anchor GameManager.xp_gap_factor scales conversation XP against.
+func expected_level_here() -> int:
+	var chapter_number := maxi(1, int(current_chapter().get("chapter", 1)))
+	return 1 + (chapter_number - 1) * CHAPTER_LEVEL_STEP \
+		+ current_zone_distance() * DISTANCE_LEVEL_STEP
+
+
+## BFS hop-distance of the current zone from the chapter's entrance zone (the
+## first zone of the flow — where begin_current_chapter drops the player).
+## Mirrors enemy_balance.chapter_zone_distances: undirected `connections` graph,
+## unreachable zones fall back to their array order index.
+func current_zone_distance() -> int:
+	var zones: Array = current_chapter_zones()
+	if zones.is_empty() or zone_index <= 0:
+		return 0
+	var current_id := str(current_zone().get("zone_id", ""))
+	var adjacency: Dictionary = {}
+	var order: Array[String] = []
+	for entry in zones:
+		if not (entry is Dictionary):
+			continue
+		var zid := str((entry as Dictionary).get("zone_id", ""))
+		if zid.is_empty():
+			continue
+		order.append(zid)
+		if not adjacency.has(zid):
+			adjacency[zid] = {}
+	for entry in zones:
+		if not (entry is Dictionary):
+			continue
+		var zid := str((entry as Dictionary).get("zone_id", ""))
+		for other in (entry as Dictionary).get("connections", []) as Array:
+			var oid := str(other)
+			if adjacency.has(zid) and adjacency.has(oid):
+				(adjacency[zid] as Dictionary)[oid] = true
+				(adjacency[oid] as Dictionary)[zid] = true
+	if order.is_empty() or not adjacency.has(current_id):
+		return 0
+	var entrance: String = order[0]
+	var distances: Dictionary = {entrance: 0}
+	var queue: Array[String] = [entrance]
+	var head := 0
+	while head < queue.size():
+		var zid: String = queue[head]
+		head += 1
+		for neighbor in (adjacency[zid] as Dictionary).keys():
+			if not distances.has(neighbor):
+				distances[neighbor] = int(distances[zid]) + 1
+				queue.append(str(neighbor))
+	if distances.has(current_id):
+		return int(distances[current_id])
+	return order.find(current_id) if order.has(current_id) else 0
+
 
 func progress_label() -> String:
 	var chapter: Dictionary = current_chapter()

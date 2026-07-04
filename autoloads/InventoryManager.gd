@@ -39,6 +39,16 @@ var _toast_queue: Array = []
 var _toast_busy: bool = false
 var _inventory_texture_cache: Dictionary = {}
 
+# ── item detail view (BE-authored per-item text/image, chapter_item_details) ──
+var _detail_view_root: Control
+var _detail_view_title: Label
+var _detail_view_caption: Label
+var _detail_view_text: Label
+var _detail_view_image: TextureRect
+var _detail_view_open: bool = false
+var _detail_view_current_item_id: String = ""
+var _detail_image_cache: Dictionary = {}   # item_id -> Texture2D, session-lifetime
+
 const INV_SLOT_COLUMNS := 6
 const INV_SLOT_VISIBLE := 24
 const INV_FILTER_IDS := ["all", "use", "battle", "quest", "lore"]
@@ -67,6 +77,8 @@ func reset() -> void:
 	counts = {}
 	acquisition_claims = {}
 	_icon_sheet = null
+	_detail_image_cache.clear()
+	_close_item_detail_view()
 	inventory_changed.emit()
 
 
@@ -401,11 +413,13 @@ func _make_glass_panel(rect: Rect2) -> Panel:
 func _make_texture_rect(texture_path: String, rect: Rect2) -> TextureRect:
 	var texture_rect := TextureRect.new()
 	texture_rect.texture = _inventory_texture(texture_path)
-	texture_rect.position = rect.position
-	texture_rect.size = rect.size
+	# expand_mode must be set before size: with the default EXPAND_KEEP_SIZE the
+	# control clamps to the texture's native size and never shrinks back.
 	texture_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	texture_rect.stretch_mode = TextureRect.STRETCH_SCALE
 	texture_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	texture_rect.position = rect.position
+	texture_rect.size = rect.size
 	return texture_rect
 
 
@@ -698,11 +712,76 @@ func _ensure_ui() -> void:
 	footer_frame.size = Vector2(400, 26)
 	footer_frame.add_theme_stylebox_override("panel", _footer_panel_style())
 	canvas.add_child(footer_frame)
-	var footer := UiKit.make_label("Arrows Move     Enter Use     1-5 Filter     I / Esc Back", 10, Color(0.93, 0.88, 0.75, 0.72))
+	var footer := UiKit.make_label("Arrows Move     Enter Use     V Detail     1-5 Filter     I / Esc Back", 10, Color(0.93, 0.88, 0.75, 0.72))
 	footer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	footer.position = Vector2(292, 508)
 	footer.size = Vector2(376, 16)
 	canvas.add_child(footer)
+
+	# ── item detail view: a modal ON TOP of the inventory screen (added after
+	# _screen_root as a later sibling of _ui, so it renders above it) — shows
+	# the BE-authored per-item text OR full illustration (chapter_item_details).
+	_detail_view_root = Control.new()
+	_detail_view_root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_detail_view_root.visible = false
+	_ui.add_child(_detail_view_root)
+
+	var detail_view_dim := ColorRect.new()
+	detail_view_dim.color = Color(0.0, 0.0, 0.0, 0.72)
+	detail_view_dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_detail_view_root.add_child(detail_view_dim)
+
+	var detail_view_canvas := Control.new()
+	detail_view_canvas.position = ((vp - Vector2(960, 540)) * 0.5).floor()
+	detail_view_canvas.size = Vector2(960, 540)
+	_detail_view_root.add_child(detail_view_canvas)
+
+	var detail_view_panel := _make_glass_panel(Rect2(280, 56, 400, 428))
+	detail_view_canvas.add_child(detail_view_panel)
+	var detail_view_gem := _make_texture_rect(INV_TEX_GEM, Rect2(182, -18, 36, 21))
+	detail_view_gem.modulate = Color(1, 1, 1, 0.58)
+	detail_view_panel.add_child(detail_view_gem)
+
+	_detail_view_title = UiKit.make_title("", 18, UiKit.COLOR_ACCENT)
+	_detail_view_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_detail_view_title.position = Vector2(20, 22)
+	_detail_view_title.size = Vector2(360, 28)
+	_detail_view_title.clip_text = true
+	detail_view_panel.add_child(_detail_view_title)
+
+	_detail_view_caption = UiKit.make_label("", 11, UiKit.COLOR_TEXT_DIM)
+	_detail_view_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_detail_view_caption.position = Vector2(20, 52)
+	_detail_view_caption.size = Vector2(360, 32)
+	_detail_view_caption.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	detail_view_panel.add_child(_detail_view_caption)
+
+	var detail_view_divider := ColorRect.new()
+	detail_view_divider.color = Color(0.76, 0.58, 0.27, 0.48)
+	detail_view_divider.position = Vector2(20, 88)
+	detail_view_divider.size = Vector2(360, 1)
+	detail_view_panel.add_child(detail_view_divider)
+
+	_detail_view_image = TextureRect.new()
+	_detail_view_image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_detail_view_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_detail_view_image.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_detail_view_image.position = Vector2(30, 100)
+	_detail_view_image.size = Vector2(340, 300)
+	detail_view_panel.add_child(_detail_view_image)
+
+	_detail_view_text = UiKit.make_label("", 13, UiKit.COLOR_TEXT)
+	_detail_view_text.position = Vector2(30, 100)
+	_detail_view_text.size = Vector2(340, 300)
+	_detail_view_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_detail_view_text.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	detail_view_panel.add_child(_detail_view_text)
+
+	var detail_view_close_hint := UiKit.make_label("Esc / V để đóng", 10, Color(0.93, 0.88, 0.75, 0.72))
+	detail_view_close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	detail_view_close_hint.position = Vector2(20, 402)
+	detail_view_close_hint.size = Vector2(360, 16)
+	detail_view_panel.add_child(detail_view_close_hint)
 
 
 func _toggle_screen() -> void:
@@ -813,6 +892,8 @@ func _refresh_screen() -> void:
 				"buff": "Usable from battle Item menu.",
 				"quest": "Quest item cannot be discarded.",
 			}.get(kind, "")
+			if not _item_detail(definition).is_empty():
+				_action_hint.text += "   •   V: Xem chi tiết"
 	else:
 		_detail_name.text = ""
 		_detail_kind.text = ""
@@ -836,6 +917,64 @@ func _use_selected() -> void:
 	_refresh_screen()
 	if not message.is_empty() and str(definition.get("kind")) == "heal":
 		_push_toast("✚ %s" % message)
+
+
+# ── item detail view ─────────────────────────────────────────────────────────
+## Not every item has this — only the ones chapter_item_details selected as
+## worth a closer look/read. `detail` rides along on the item definition dict
+## itself: {kind:"text", text, caption} or {kind:"image", image_url, caption}.
+
+
+func _item_detail(definition: Dictionary) -> Dictionary:
+	var detail: Variant = definition.get("detail")
+	return detail if detail is Dictionary else {}
+
+
+func _open_item_detail_view() -> void:
+	var definition := _definition_at_filtered_index(_selected)
+	if definition.is_empty() or count_of(str(definition.get("id"))) <= 0:
+		return
+	var detail := _item_detail(definition)
+	if detail.is_empty():
+		return
+	_ensure_ui()
+	var item_id: String = str(definition.get("id"))
+	_detail_view_current_item_id = item_id
+	_detail_view_title.text = str(definition.get("name", ""))
+	_detail_view_caption.text = str(detail.get("caption", ""))
+	var kind: String = str(detail.get("kind", ""))
+	if kind == "image":
+		_detail_view_text.visible = false
+		_detail_view_image.visible = true
+		_detail_view_image.texture = _detail_image_cache.get(item_id)
+		if not _detail_image_cache.has(item_id):
+			var url: String = str(detail.get("image_url", ""))
+			if not url.is_empty():
+				_load_detail_image(item_id, url)
+	else:
+		_detail_view_image.visible = false
+		_detail_view_text.visible = true
+		_detail_view_text.text = str(detail.get("text", ""))
+	_detail_view_open = true
+	_detail_view_root.visible = true
+
+
+func _load_detail_image(item_id: String, url: String) -> void:
+	var texture: Texture2D = await ChapterFlow.download_image_texture(url)
+	if texture == null:
+		return
+	_detail_image_cache[item_id] = texture
+	# The player may have closed the overlay or moved to a different item while
+	# this download was in flight — only apply if it's still the one showing.
+	if _detail_view_open and _detail_view_current_item_id == item_id:
+		_detail_view_image.texture = texture
+
+
+func _close_item_detail_view() -> void:
+	_detail_view_open = false
+	_detail_view_current_item_id = ""
+	if _detail_view_root != null:
+		_detail_view_root.visible = false
 
 
 # ── toasts ────────────────────────────────────────────────────────────────────
@@ -879,6 +1018,16 @@ func _show_next_toast() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	# The item detail view is a modal ON TOP of the inventory screen — while
+	# open, only Esc/V close it; every other key/click is swallowed so it can
+	# never fall through to grid navigation or close the whole screen.
+	if _detail_view_open:
+		if event is InputEventKey and event.is_pressed() and not event.is_echo():
+			var keycode := (event as InputEventKey).physical_keycode
+			if keycode == KEY_V or event.is_action_pressed("ui_cancel"):
+				_close_item_detail_view()
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventKey and event.is_pressed() and not event.is_echo():
 		if (event as InputEventKey).physical_keycode == KEY_I:
 			_toggle_screen()
@@ -888,6 +1037,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventKey and event.is_pressed() and not event.is_echo():
 		var keycode := (event as InputEventKey).physical_keycode
+		if keycode == KEY_V:
+			_open_item_detail_view()
+			get_viewport().set_input_as_handled()
+			return
 		if keycode >= KEY_1 and keycode <= KEY_5:
 			var filter_index := int(keycode - KEY_1)
 			if filter_index >= 0 and filter_index < INV_FILTER_IDS.size():

@@ -47,7 +47,37 @@ func _ready() -> void:
 
 	_test_leave(arlo)
 	_test_follower_spawn(arlo)
+	_test_carried_over(arlo)
 	_finish()
+
+
+func _test_carried_over(arlo: String) -> void:
+	print("\n--- CARRY-OVER: a world-continuity companion re-joins across chapters ---")
+	# Next-chapter payload: the companion carries over via a chapter_start join.
+	var carried_party := {
+		"companions": [{"npc_id": arlo, "name": "Arlo", "combat_role": "support", "zones": []}],
+		"events": [{
+			"id": "party_join_carried",
+			"companion_id": arlo,
+			"action": "join",
+			"trigger": {"type": "chapter_start"},
+			"carried_over": true,
+		}],
+	}
+	# 1) Player NEVER recruited them earlier → the carried join must NOT force them in.
+	PartyManager.active_members.clear()
+	PartyManager.joined_history.clear()
+	PartyManager.load_chapter_party(carried_party)
+	_check(not PartyManager.is_member(arlo), "carried join is skipped when they never joined before")
+	# 2) They DID join in an earlier chapter → they quietly re-join at chapter start.
+	PartyManager.joined_history[arlo] = true
+	PartyManager.load_chapter_party(carried_party)
+	_check(PartyManager.is_member(arlo), "carried join re-joins when joined_history has them")
+	# 3) joined_history survives a save round-trip.
+	var saved: Dictionary = PartyManager.serialize_save()
+	PartyManager.joined_history.clear()
+	PartyManager.apply_save(saved)
+	_check(PartyManager.joined_history.has(arlo), "joined_history survives serialize/apply_save")
 
 
 func _test_leave(arlo: String) -> void:

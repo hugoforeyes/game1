@@ -19,6 +19,7 @@ signal objective_fully_hinted(quest_id: String, objective_id: String)
 const TOAST_SECONDS := 2.4
 const QuestTrackerViewScript = preload("res://scripts/ui/QuestTrackerView.gd")
 const QuestNotificationToastScript = preload("res://scripts/ui/QuestNotificationToast.gd")
+const PartyHudViewScript = preload("res://scripts/ui/PartyHudView.gd")
 const QuestJournalViewScript = preload("res://scripts/ui/QuestJournalView.gd")
 
 var quests: Array = []
@@ -557,15 +558,22 @@ func is_tracked_objective_active(quest_id: String, objective_id: String) -> bool
 
 func are_all_main_quests_completed() -> bool:
 	## The chapter-completion signal ChapterFlow watches: every quest authored as
-	## type=="main" (the story spine) has reached the "completed" state. A chapter
-	## with zero main quests (shouldn't happen in practice) counts as complete —
-	## nothing is blocking it.
+	## type=="main" (the story spine) has reached the "completed" state.
+	## An empty quest list never counts as complete — it means the chapter's
+	## quests have not loaded yet (e.g. mid-reset, right before
+	## load_chapter_quests populates them), not that the chapter genuinely has
+	## no main quests. Treating that as vacuously "complete" was firing the
+	## chapter-complete celebration the instant a new game started.
+	if quests.is_empty():
+		return false
+	var has_main_quest := false
 	for quest in quests:
 		if str(quest.get("type", "main")) != "main":
 			continue
+		has_main_quest = true
 		if str(_state_of(quest).get("state", "")) != "completed":
 			return false
-	return true
+	return has_main_quest
 
 
 func stage_unlocked(unlock: Dictionary) -> bool:
@@ -854,6 +862,8 @@ func _process(_delta: float) -> void:
 		and not _choice_open and not _toast_busy
 	if _tracker_view != null:
 		_tracker_view.visible = hud_visible
+		# Dock right under the player card, which grows with the party.
+		_tracker_view.position = Vector2(12.0, PartyHudViewScript.bottom_y + 12.0)
 
 	if not _pending_choices.is_empty() and not _choice_open and not GameManager.ui_blocking_input:
 		_open_choice(_pending_choices.pop_front() as Dictionary)

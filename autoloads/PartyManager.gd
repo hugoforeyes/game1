@@ -14,6 +14,11 @@ const PartyJoinPopupScript := preload("res://scripts/ui/PartyJoinPopup.gd")
 var companions: Dictionary = {}
 var events: Array = []                 # party_events
 var active_members: Dictionary = {}    # npc_id -> true (currently travelling with the player)
+# npc_id -> true — EVER joined during this run, across chapters. World-continuity
+# companions keep stable world ids, so a `carried_over` chapter_start join in a
+# later chapter only applies when the player really recruited them earlier.
+# Deliberately NOT cleared by load_chapter_party (only by reset()); save-persisted.
+var joined_history: Dictionary = {}
 var _textures: Dictionary = {}         # npc_id -> Texture2D (companion walk sheet)
 var _portraits: Dictionary = {}        # npc_id -> Texture2D (happy face portrait, cropped)
 var _fired: Dictionary = {}            # event_id -> true (one-shot)
@@ -30,6 +35,7 @@ func reset() -> void:
 	companions.clear()
 	events = []
 	active_members.clear()
+	joined_history.clear()
 	_textures.clear()
 	_portraits.clear()
 	_fired.clear()
@@ -187,12 +193,22 @@ func _apply(event: Dictionary) -> void:
 		"join":
 			if active_members.has(npc_id):
 				return
+			var carried := bool(event.get("carried_over", false))
+			if carried and not joined_history.has(npc_id):
+				# Carried-over join from a previous chapter, but the player never
+				# actually recruited them there — don't force the party member.
+				return
 			active_members[npc_id] = true
+			joined_history[npc_id] = true
 			# Begin tracking this companion's XP/level the moment they join the party.
 			GameManager.ensure_companion(npc_id)
 			member_joined.emit(npc_id)
-			_show_join_popup(npc_id)
-			print("[Party] %s joined" % npc_id)
+			if carried:
+				# Quiet re-join at chapter start — no fanfare popup on every chapter.
+				_toast("%s tiếp tục đồng hành" % companion_name(npc_id))
+			else:
+				_show_join_popup(npc_id)
+			print("[Party] %s joined%s" % [npc_id, " (carried over)" if carried else ""])
 		"leave":
 			if not active_members.has(npc_id):
 				return
@@ -229,6 +245,7 @@ func serialize_save() -> Dictionary:
 	return {
 		"active_members": active_members.duplicate(true),
 		"fired": _fired.duplicate(true),
+		"joined_history": joined_history.duplicate(true),
 	}
 
 
@@ -237,5 +254,8 @@ func serialize_save() -> Dictionary:
 func apply_save(data: Dictionary) -> void:
 	active_members = (data.get("active_members", {}) as Dictionary).duplicate(true)
 	_fired = (data.get("fired", {}) as Dictionary).duplicate(true)
+	joined_history = (data.get("joined_history", {}) as Dictionary).duplicate(true)
+	# Older saves predate joined_history — backfill from whoever is in the party.
 	for npc_id in active_members.keys():
+		joined_history[str(npc_id)] = true
 		GameManager.ensure_companion(str(npc_id))

@@ -9,6 +9,7 @@ const WorldObjectScript := preload("res://scripts/world/WorldObject.gd")
 const PartyFollowerScript := preload("res://scripts/world/PartyFollower.gd")
 const PartyHudViewScript := preload("res://scripts/ui/PartyHudView.gd")
 const QuestCompassViewScript := preload("res://scripts/ui/QuestCompassView.gd")
+const HudShortcutsViewScript := preload("res://scripts/ui/HudShortcutsView.gd")
 const ZONE_TRANSITION_OVERLAY_NAME := "ZoneTransitionOverlay"
 const ZONE_TRANSITION_FADE_SECONDS := 0.35
 const ZONE_TRANSITION_CAMERA_SETTLE_FRAMES := 3
@@ -187,6 +188,8 @@ func _snap_player_camera() -> void:
 
 func _mount_party_hud() -> void:
 	# Overworld level/party readout (top-left). Self-contained; reads GameManager.
+	var shortcuts: CanvasLayer = HudShortcutsViewScript.new()
+	add_child(shortcuts)
 	var hud: CanvasLayer = PartyHudViewScript.new()
 	hud.name = "PartyHud"
 	add_child(hud)

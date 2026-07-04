@@ -152,9 +152,22 @@ var _sp_pip_row: Control
 
 const ENEMY_HP_BAR_W: = 170.0
 const PLAYER_HP_BAR_W: = 130.0
+const DESIGN_SIZE: = Vector2(960, 540)
+const ENEMY_PANEL_POS: = Vector2(2, 2)
+const ENEMY_PANEL_SIZE: = Vector2(312, 96)
+const LOG_PANEL_POS: = Vector2(2, 106)
+const LOG_PANEL_SIZE: = Vector2(330, 152)
+const PLAYER_PANEL_POS: = Vector2(2, 380)
+const PLAYER_PANEL_SIZE: = Vector2(312, 158)
+const MENU_PANEL_POS: = Vector2(404, 422)
+const MENU_PANEL_SIZE: = Vector2(470, 172)
+const TURN_ORDER_TITLE_POS: = Vector2(778, 2)
+const TURN_ORDER_TITLE_SIZE: = Vector2(176, 18)
+const TURN_ORDER_STACK_POS: = Vector2(0, 28)
+const TURN_ORDER_STACK_SIZE: = Vector2(960, 230)
 const PORTRAIT_HOME: = Vector2(350, 48)
 const PORTRAIT_SIZE: = Vector2(280, 290)
-const PLAYER_FX_CENTER: = Vector2(146, 430)
+const PLAYER_FX_CENTER: = Vector2(124, 454)
 const SCREEN_CENTER: = Vector2(480, 270)
 
 
@@ -470,13 +483,13 @@ func _build_ui() -> void :
         _root.add_child(backdrop)
 
     _design = Control.new()
-    _design.position = ((get_viewport().get_visible_rect().size - Vector2(960, 540)) * 0.5).floor()
-    _design.size = Vector2(960, 540)
+    _design.position = ((get_viewport().get_visible_rect().size - DESIGN_SIZE) * 0.5).floor()
+    _design.size = DESIGN_SIZE
     _design.mouse_filter = Control.MOUSE_FILTER_IGNORE
     _root.add_child(_design)
 
 
-    _enemy_panel = _make_panel_node(Rect2(24, 20, 312, 96))
+    _enemy_panel = _make_panel_node(Rect2(ENEMY_PANEL_POS, ENEMY_PANEL_SIZE))
     _design.add_child(_enemy_panel)
 
     var medallion_portrait: = TextureRect.new()
@@ -567,8 +580,8 @@ func _build_ui() -> void :
 
 
     _log_panel = Panel.new()
-    _log_panel.position = Vector2(24, 188)
-    _log_panel.size = Vector2(330, 152)
+    _log_panel.position = LOG_PANEL_POS
+    _log_panel.size = LOG_PANEL_SIZE
     _log_panel.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
     _log_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
     _design.add_child(_log_panel)
@@ -610,26 +623,29 @@ func _build_ui() -> void :
         _intent_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
         _log_panel.add_child(_intent_icon)
 
-    _intent_label = _make_label("", 13, Color(0.95, 0.82, 0.8, 0.95))
+    _intent_label = _make_label("", 13, Color(0.98, 0.92, 0.78, 0.98))
     var intent_font: = UiKit.body_font()
     if intent_font != null:
         var italic: = FontVariation.new()
         italic.base_font = intent_font
         italic.variation_transform = Transform2D(Vector2(1.0, 0.0), Vector2(-0.22, 1.0), Vector2.ZERO)
         _intent_label.add_theme_font_override("font", italic)
-    _intent_label.position = Vector2(36, 2)
-    _intent_label.size = Vector2(286, 32)
-    _intent_label.add_theme_font_size_override("font_size", 12)
+    _intent_label.position = Vector2(36, 0)
+    _intent_label.size = Vector2(286, 46)
+    _intent_label.add_theme_font_size_override("font_size", 13)
+    _intent_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.95))
+    _intent_label.add_theme_constant_override("shadow_offset_x", 1)
+    _intent_label.add_theme_constant_override("shadow_offset_y", 1)
     _intent_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     _intent_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-    _intent_label.clip_text = true
-    _intent_label.max_lines_visible = 2
-    _intent_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+    _intent_label.clip_text = false
+    _intent_label.max_lines_visible = 3
+    _intent_label.text_overrun_behavior = TextServer.OVERRUN_NO_TRIMMING
     _log_panel.add_child(_intent_label)
 
     var log_divider: = ColorRect.new()
     log_divider.color = Color(0.76, 0.58, 0.27, 0.4)
-    log_divider.position = Vector2(6, 36)
+    log_divider.position = Vector2(6, 50)
     log_divider.size = Vector2(300, 1)
     log_divider.mouse_filter = Control.MOUSE_FILTER_IGNORE
     _log_panel.add_child(log_divider)
@@ -639,9 +655,9 @@ func _build_ui() -> void :
     _log_label.scroll_active = false
     _log_label.fit_content = false
     _log_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    _log_label.position = Vector2(6, 44)
-    _log_label.size = Vector2(300, 96)
-    _log_label.add_theme_font_size_override("normal_font_size", FONT_SIZE)
+    _log_label.position = Vector2(6, 58)
+    _log_label.size = Vector2(300, 82)
+    _log_label.add_theme_font_size_override("normal_font_size", FONT_SIZE - 1)
     _log_label.add_theme_color_override("default_color", COLOR_TEXT)
     _log_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
     _log_label.add_theme_constant_override("shadow_offset_x", 1)
@@ -657,8 +673,8 @@ func _build_ui() -> void :
 
 
     _menu_panel = Panel.new()
-    _menu_panel.position = Vector2(352, 350)
-    _menu_panel.size = Vector2(470, 172)
+    _menu_panel.position = MENU_PANEL_POS
+    _menu_panel.size = MENU_PANEL_SIZE
     _menu_panel.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
     _menu_panel.visible = false
     _design.add_child(_menu_panel)
@@ -679,12 +695,12 @@ func _build_ui() -> void :
     info_texture.fill_from = Vector2(0.5, 0.5)
     info_texture.fill_to = Vector2(0.5, 0.0)
     info_texture.width = 470
-    info_texture.height = 64
+    info_texture.height = 86
     info_scrim.texture = info_texture
     info_scrim.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
     info_scrim.stretch_mode = TextureRect.STRETCH_SCALE
-    info_scrim.position = Vector2(-20, -10)
-    info_scrim.size = Vector2(510, 72)
+    info_scrim.position = Vector2(-20, -34)
+    info_scrim.size = Vector2(510, 104)
     info_scrim.mouse_filter = Control.MOUSE_FILTER_IGNORE
     _menu_panel.add_child(info_scrim)
 
@@ -692,24 +708,30 @@ func _build_ui() -> void :
     _menu_info_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
     _menu_info_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
     _menu_info_icon.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-    _menu_info_icon.position = Vector2(96, 8)
+    _menu_info_icon.position = Vector2(80, 8)
     _menu_info_icon.size = Vector2(34, 34)
     _menu_info_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
     _menu_panel.add_child(_menu_info_icon)
 
     _menu_info_name = UiKit.make_title("", 16, COLOR_ACCENT)
-    _menu_info_name.position = Vector2(142, 2)
-    _menu_info_name.size = Vector2(300, 24)
-    _menu_info_name.clip_text = true
-    _menu_info_name.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+    _menu_info_name.position = Vector2(124, 2)
+    _menu_info_name.size = Vector2(336, 22)
+    _menu_info_name.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    _menu_info_name.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+    _menu_info_name.clip_text = false
+    _menu_info_name.text_overrun_behavior = TextServer.OVERRUN_NO_TRIMMING
     _menu_panel.add_child(_menu_info_name)
 
-    _menu_info_desc = _make_label("", 11, COLOR_TEXT_DIM)
-    _menu_info_desc.position = Vector2(142, 26)
-    _menu_info_desc.size = Vector2(316, 18)
-    _menu_info_desc.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-    _menu_info_desc.clip_text = true
-    _menu_info_desc.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+    _menu_info_desc = _make_label("", 10, Color(0.93, 0.88, 0.72, 0.98))
+    _menu_info_desc.position = Vector2(124, 26)
+    _menu_info_desc.size = Vector2(346, 14)
+    _menu_info_desc.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.95))
+    _menu_info_desc.add_theme_constant_override("shadow_offset_x", 1)
+    _menu_info_desc.add_theme_constant_override("shadow_offset_y", 1)
+    _menu_info_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    _menu_info_desc.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+    _menu_info_desc.clip_text = false
+    _menu_info_desc.text_overrun_behavior = TextServer.OVERRUN_NO_TRIMMING
     _menu_panel.add_child(_menu_info_desc)
 
     _menu_row = HBoxContainer.new()
@@ -727,7 +749,7 @@ func _build_ui() -> void :
     _menu_panel.add_child(_menu_cursor)
 
 
-    _player_panel = _make_panel_node(Rect2(24, 356, 312, 158))
+    _player_panel = _make_panel_node(Rect2(PLAYER_PANEL_POS, PLAYER_PANEL_SIZE))
     _design.add_child(_player_panel)
 
     var hero_holder: = Control.new()
@@ -741,7 +763,7 @@ func _build_ui() -> void :
     hero_picture.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 
 
-    hero_picture.stretch_mode = TextureRect.STRETCH_SCALE if hero_texture != null and hero_texture.get_width() > 200 else TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+    hero_picture.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED if hero_texture != null and hero_texture.get_width() > 200 else TextureRect.STRETCH_KEEP_ASPECT_CENTERED
     hero_picture.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR if hero_texture != null and hero_texture.get_width() > 200 else CanvasItem.TEXTURE_FILTER_NEAREST
     hero_picture.position = Vector2(5, 5)
     hero_picture.size = hero_holder.size - Vector2(10, 10)
@@ -749,9 +771,12 @@ func _build_ui() -> void :
     hero_holder.add_child(hero_picture)
     hero_holder.add_child(UiKit.make_ornate_frame(hero_holder.size, "slot.png", 0.2, 14.0, false))
 
-    _player_panel_label = _make_display_label("YOU", 24, COLOR_ACCENT)
+    _player_panel_label = _make_display_label(_player_name(), 24, COLOR_ACCENT)
     _player_panel_label.position = Vector2(140, 10)
-    _player_panel_label.size = Vector2(96, 30)
+    _player_panel_label.size = Vector2(92, 30)
+    _player_panel_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    _player_panel_label.clip_text = false
+    _player_panel_label.text_overrun_behavior = TextServer.OVERRUN_NO_TRIMMING
     _player_panel.add_child(_player_panel_label)
 
     var player_chip: = _make_chip(Rect2(238, 14, 58, 21))
@@ -809,7 +834,7 @@ func _build_ui() -> void :
 
     _fx_layer = Control.new()
     _fx_layer.position = Vector2.ZERO
-    _fx_layer.size = Vector2(960, 540)
+    _fx_layer.size = DESIGN_SIZE
     _fx_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
     _design.add_child(_fx_layer)
 
@@ -822,23 +847,23 @@ func _build_turn_order_strip() -> void :
 
 
     var title: = _make_display_label("TURN ORDER", 11, COLOR_ACCENT)
-    title.position = Vector2(770, 148)
-    title.size = Vector2(174, 16)
+    title.position = TURN_ORDER_TITLE_POS
+    title.size = TURN_ORDER_TITLE_SIZE
     title.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
     _design.add_child(title)
 
     _turn_stack = Control.new()
-    _turn_stack.position = Vector2(0, 170)
-    _turn_stack.size = Vector2(960, 240)
+    _turn_stack.position = TURN_ORDER_STACK_POS
+    _turn_stack.size = TURN_ORDER_STACK_SIZE
     _turn_stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
     _design.add_child(_turn_stack)
     _update_turn_order(_turn_active_actor, false)
 
 
 const TURN_CARD_SIZE: = Vector2(148, 44)
-const TURN_CARD_RIGHT: = 960.0
-const TURN_CARD_TUCK: = 26.0
-const TURN_CARD_POP: = 26.0
+const TURN_CARD_RIGHT: = 954.0
+const TURN_CARD_TUCK: = 0.0
+const TURN_CARD_POP: = 6.0
 
 
 
@@ -866,7 +891,7 @@ func _update_turn_order(active: String, animate: bool = true) -> void :
         order.append({
             "actor": "player" if is_player else "enemy", 
             "texture": player_texture if is_player else enemy_texture, 
-            "label": "YOU" if is_player else _enemy_name(), 
+            "label": _player_name() if is_player else _enemy_name(),
         })
 
     for index in range(order.size()):
@@ -893,15 +918,7 @@ func _update_turn_order(active: String, animate: bool = true) -> void :
 
 
 func _player_turn_texture() -> Texture2D:
-    var sheet: = GameManager.load_texture(GameManager.get_player_sprite_path())
-    if sheet == null:
-        sheet = GameManager.load_texture(GameManager.DEFAULT_PLAYER_SPRITE_PATH)
-    if sheet != null:
-        var atlas: = AtlasTexture.new()
-        atlas.atlas = sheet
-        atlas.region = Rect2(0, 0, GameManager.CHARACTER_FRAME_SIZE, GameManager.CHARACTER_FRAME_SIZE)
-        return atlas
-    return null
+    return _hero_portrait_texture()
 
 
 ## Crop a character texture into a slanted banner that FILLS a turn card:
@@ -1046,16 +1063,16 @@ func _play_intro_animation() -> void :
 
 
     var off: Vector2 = _design.position
-    _enemy_panel.position.y = -150 - off.y
-    _log_panel.position.x = -320 - off.x
-    _menu_panel.position.y = 560 + off.y
-    _player_panel.position.x = -320 - off.x
+    _enemy_panel.position.y = -ENEMY_PANEL_SIZE.y - 40.0 - off.y
+    _log_panel.position.x = -LOG_PANEL_SIZE.x - 40.0 - off.x
+    _menu_panel.position.y = DESIGN_SIZE.y + 24.0 + off.y
+    _player_panel.position.x = -PLAYER_PANEL_SIZE.x - 40.0 - off.x
 
     var slide: = create_tween().set_parallel(true)
-    slide.tween_property(_enemy_panel, "position:y", 24.0, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-    slide.tween_property(_log_panel, "position:x", 24.0, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-    slide.tween_property(_menu_panel, "position:y", 372.0, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-    slide.tween_property(_player_panel, "position:x", 24.0, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+    slide.tween_property(_enemy_panel, "position:y", ENEMY_PANEL_POS.y, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+    slide.tween_property(_log_panel, "position:x", LOG_PANEL_POS.x, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+    slide.tween_property(_menu_panel, "position:y", MENU_PANEL_POS.y, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+    slide.tween_property(_player_panel, "position:x", PLAYER_PANEL_POS.x, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
     slide.tween_property(_portrait_holder, "position", PORTRAIT_HOME, 0.55).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
     slide.tween_property(_portrait_holder, "modulate:a", 1.0, 0.4)
 
@@ -1090,6 +1107,9 @@ func _battle_portrait_texture() -> Texture2D:
 
 
 func _hero_portrait_texture() -> Texture2D:
+    var emotion_portrait: = _player_emotion_portrait_texture("neutral")
+    if emotion_portrait != null:
+        return emotion_portrait
     var hero: = _v3("hero_portrait.png")
     if hero != null:
         return hero
@@ -1102,6 +1122,48 @@ func _hero_portrait_texture() -> Texture2D:
         atlas.region = Rect2(0, 0, GameManager.CHARACTER_FRAME_SIZE, GameManager.CHARACTER_FRAME_SIZE)
         return atlas
     return null
+
+
+func _player_emotion_portrait_texture(emotion: String) -> Texture2D:
+    var package: Dictionary = GameManager.get_scene_package()
+    var characters: Dictionary = package.get("characters", {}) as Dictionary
+    var main_character: Variant = characters.get("main_character", {})
+    if main_character is Dictionary:
+        return _character_emotion_portrait_texture(main_character as Dictionary, emotion)
+    return null
+
+
+func _character_emotion_portrait_texture(character: Dictionary, emotion: String) -> Texture2D:
+    var emotion_info: Variant = character.get("emotion_portraits")
+    if not (emotion_info is Dictionary):
+        return null
+    var portraits: Array = (emotion_info as Dictionary).get("portraits", []) as Array
+    for wanted in [_normalize_battle_emotion(emotion), "neutral"]:
+        for raw_portrait in portraits:
+            if not (raw_portrait is Dictionary):
+                continue
+            var portrait: Dictionary = raw_portrait as Dictionary
+            if str(portrait.get("emotion", "")) != wanted:
+                continue
+            var file_name: String = str(portrait.get("file", ""))
+            if file_name.is_empty():
+                continue
+            var texture: Texture2D = GameManager.load_texture(GameManager.get_scene_asset_path(file_name))
+            if texture != null:
+                return texture
+    return null
+
+
+func _normalize_battle_emotion(emotion: String) -> String:
+    match emotion.strip_edges().to_lower():
+        "happy", "joy", "joyful", "pleased", "relieved":
+            return "happy"
+        "angry", "anger", "mad", "irritated", "annoyed":
+            return "angry"
+        "sad", "sorrow", "worried", "wary", "uneasy", "haunted", "tired", "afraid", "scared":
+            return "sad"
+        _:
+            return "neutral"
 
 
 func _load_portrait() -> void :
@@ -1652,7 +1714,7 @@ func _pick_enemy_intent() -> void :
     if str(intent.get("kind", "")) == "heavy":
         _intent_label.add_theme_color_override("font_color", COLOR_HP.lightened(0.3))
     else:
-        _intent_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+        _intent_label.add_theme_color_override("font_color", Color(0.98, 0.92, 0.78, 0.98))
     _intent_label.text = telegraph if not telegraph.is_empty() else "It watches you."
     _intent_label.modulate.a = 0.0
     var fade: = create_tween()
@@ -1679,7 +1741,7 @@ func _spare_enemy() -> void :
         await _say("%s: \"%s\"" % [_enemy_name(), line])
     var fade: = create_tween()
     fade.tween_property(_portrait_holder, "modulate", Color(1, 1, 1, 0.35), 1.0)
-    var xp: int = int(int(enemy.get("xp_reward", 20)) * 0.6)
+    var xp: int = _scaled_battle_xp(int(int(enemy.get("xp_reward", 20)) * 0.6))
     await _grant_xp(xp, "You lower your weapon. +%d XP." % xp)
     _finish("spared")
 
@@ -1699,7 +1761,7 @@ func _victory() -> void :
         await _say("%s: \"%s\"" % [_enemy_name(), line])
 
     _show_victory_banner()
-    var xp: int = int(enemy.get("xp_reward", 20))
+    var xp: int = _scaled_battle_xp(int(enemy.get("xp_reward", 20)))
     if weakness_found:
         var bonus: int = int(xp * 0.25)
         xp += bonus
@@ -1763,6 +1825,17 @@ func _apply_party_regen() -> void :
 
 func _on_companion_leveled(npc_id: String, level: int) -> void :
     _companion_levelups.append({"npc_id": npc_id, "level": level})
+
+
+## Level-gap governor: an enemy far below the player's level teaches little
+## (mirrors the talk-XP scaling in GameManager.award_talk_xp) — grinding
+## low-level minions can't push the player far past the zone's balance anchor.
+## Applied at the reward call sites so the "+N XP" messages show the real number.
+func _scaled_battle_xp(raw: int) -> int:
+    var reference_level: int = int(enemy.get("level", 0))
+    if reference_level <= 0:
+        reference_level = ChapterFlow.expected_level_here()
+    return maxi(1, int(round(float(raw) * GameManager.xp_gap_factor(reference_level))))
 
 
 func _grant_xp(xp: int, message: String) -> void :
@@ -1864,7 +1937,7 @@ func _menu(ids: Array[String], labels: Array[String], descs: Array[String] = [])
     _menu_panel.visible = true
     _menu_panel.modulate.a = 0.0
     if _hint_label != null:
-        _hint_label.visible = true
+        _hint_label.visible = false
     var panel_in: = create_tween()
     panel_in.tween_property(_menu_panel, "modulate:a", 1.0, 0.16)
     var count: int = maxi(labels.size(), 1)
@@ -1972,8 +2045,34 @@ func _refresh_menu_info() -> void:
         desc = _menu_descs[_menu_index].strip_edges()
     _menu_info_desc.text = desc
     _menu_info_desc.visible = not desc.is_empty()
-    # With no description the name sits centered on the readout by itself.
-    _menu_info_name.position.y = 2.0 if not desc.is_empty() else 12.0
+    _layout_menu_info(not desc.is_empty())
+
+
+func _layout_menu_info(has_desc: bool) -> void:
+    var name_h: = _wrapped_label_height(_menu_info_name, 22.0, 40.0)
+    _menu_info_name.size.y = name_h
+    if not has_desc:
+        _menu_info_name.position.y = 8.0 if name_h <= 24.0 else 2.0
+        _menu_info_desc.size.y = 0.0
+        return
+
+    var desc_h: = _wrapped_label_height(_menu_info_desc, 14.0, 36.0)
+    var gap: = 2.0
+    var row_top: = _menu_row.position.y if _menu_row != null else 56.0
+    var total_h: = name_h + gap + desc_h
+    var top: = minf(2.0, row_top - 4.0 - total_h)
+    top = maxf(-28.0, top)
+    _menu_info_name.position.y = top
+    _menu_info_desc.position.y = top + name_h + gap
+    _menu_info_desc.size.y = desc_h
+
+
+func _wrapped_label_height(label: Label, min_height: float, max_height: float) -> float:
+    var line_count: = maxi(label.get_line_count(), 1)
+    var line_height: = float(label.get_line_height())
+    if line_height <= 0.0:
+        line_height = float(label.get_theme_font_size("font_size")) + 2.0
+    return clampf(float(line_count) * line_height + 2.0, min_height, max_height)
 
 
 func _make_menu_card_style(selected: bool) -> StyleBox:
@@ -2060,7 +2159,7 @@ func _on_menu_card_gui_input(event: InputEvent, index: int) -> void :
 
 func _process(delta: float) -> void :
     if _hint_label != null:
-        _hint_label.visible = _ui_mode == UiMode.MENU
+        _hint_label.visible = false
     if _menu_panel != null and _ui_mode != UiMode.MENU and _menu_items.is_empty():
         _menu_panel.visible = false
 
@@ -2132,6 +2231,7 @@ func _refresh_enemy_panel() -> void :
 
 func _refresh_player_panel() -> void :
     var max_hp: int = int(player_stats.get("max_hp", 80))
+    _player_panel_label.text = _player_name()
     _player_lv_label.text = "Lv.%d" % GameManager.player_level
     _player_hp_text.text = "%d / %d" % [GameManager.get_player_hp(), max_hp]
     var statuses: Array[String] = []
@@ -2148,6 +2248,17 @@ func _refresh_player_panel() -> void :
 
 func _enemy_name() -> String:
     return str(enemy.get("name", "Enemy"))
+
+
+func _player_name() -> String:
+    var package: Dictionary = GameManager.get_scene_package()
+    var characters: Dictionary = package.get("characters", {}) as Dictionary
+    var main_character: Variant = characters.get("main_character", {})
+    if main_character is Dictionary:
+        var name: String = str((main_character as Dictionary).get("name", "")).strip_edges()
+        if not name.is_empty() and name.to_upper() != "YOU":
+            return name
+    return "Bạn"
 
 
 func _dialogue(key: String) -> Array:
