@@ -20,12 +20,17 @@ var _footprint_center: Vector2 = Vector2.ZERO
 var _footprint_rect: Rect2 = Rect2()
 
 
-func setup(world_position: Vector2, exit_data: Dictionary, label_text: String, player: Node2D) -> void:
+func setup(
+	world_position: Vector2,
+	exit_data: Dictionary,
+	label_text: String,
+	player: Node2D,
+	footprint_rect: Rect2 = Rect2()
+) -> void:
 	_exit_data = exit_data.duplicate(true)
 	_label_text = label_text
 	_player = player
-	global_position = world_position
-	_build()
+	_build(world_position, footprint_rect)
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
 
@@ -58,14 +63,22 @@ func _process(_delta: float) -> void:
 	)
 
 
-func _build() -> void:
+func _build(world_position: Vector2, footprint_rect: Rect2) -> void:
+	if footprint_rect.size != Vector2.ZERO:
+		_footprint_rect = footprint_rect
+		_footprint_center = footprint_rect.position + footprint_rect.size * 0.5
+		global_position = _footprint_center
+	else:
+		var fallback_size := Vector2(GameManager.TILE_SIZE * 2.2, GameManager.TILE_SIZE * 2.2)
+		global_position = world_position
+		_footprint_rect = Rect2(global_position - fallback_size * 0.5, fallback_size)
+		_footprint_center = global_position
+
 	var shape := CollisionShape2D.new()
 	var rect := RectangleShape2D.new()
-	rect.size = Vector2(GameManager.TILE_SIZE * 2.2, GameManager.TILE_SIZE * 2.2)
+	rect.size = _footprint_rect.size
 	shape.shape = rect
 	add_child(shape)
-	_footprint_rect = Rect2(global_position - rect.size * 0.5, rect.size)
-	_footprint_center = _footprint_rect.position + _footprint_rect.size * 0.5
 
 
 func _touch_distance_tiles() -> float:

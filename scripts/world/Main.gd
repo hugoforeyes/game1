@@ -7,6 +7,7 @@ const CutscenePlayerScript := preload("res://scripts/cutscene/CutscenePlayer.gd"
 const ItemPickupScript := preload("res://scripts/world/ItemPickup.gd")
 const WorldObjectScript := preload("res://scripts/world/WorldObject.gd")
 const InteriorExitScript := preload("res://scripts/world/InteriorExit.gd")
+const ZoneExitPortalScript := preload("res://scripts/world/ZoneExitPortal.gd")
 const PartyFollowerScript := preload("res://scripts/world/PartyFollower.gd")
 const PartyHudViewScript := preload("res://scripts/ui/PartyHudView.gd")
 const QuestCompassViewScript := preload("res://scripts/ui/QuestCompassView.gd")
@@ -512,6 +513,7 @@ func _create_scene_exits(tile_context: Dictionary) -> void:
 			continue
 		var package_data: Dictionary = GameManager.get_scene_package()
 		var tile: Vector2i = _interior_exit_object_tile(package_data, data)
+		var footprint_rect: Rect2 = _interior_exit_object_rect(package_data, data)
 		if tile == Vector2i(-1, -1):
 			tile = _interior_exit_tile(
 				float(data.get("x_normalized", 0.5)),
@@ -519,62 +521,25 @@ func _create_scene_exits(tile_context: Dictionary) -> void:
 				map_tile_size
 			)
 			tile = _nearest_free_tile(tile, map_tile_size, tile_context.get("blocked_tiles", {}) as Dictionary)
-		_spawn_interior_exit(tile, data, _zone_display_name(leads_to))
+		_spawn_interior_exit(tile, data, _zone_display_name(leads_to), footprint_rect)
 
 func _spawn_scene_exit(tile: Vector2i, edge: String, leads_to: String, normalized: float, label_text: String) -> void:
-	var area := Area2D.new()
-	area.global_position = _tile_to_pixel_center(tile)
+	var portal := ZoneExitPortalScript.new()
+	portal.setup(_tile_to_pixel_center(tile), edge, leads_to, normalized, label_text, player)
+	portal.exit_requested.connect(_on_scene_exit_requested)
+	$World.add_child(portal)
 
-	var shape := CollisionShape2D.new()
-	var rect := RectangleShape2D.new()
-	# A band spanning the carved 3-cell exit corridor so it is easy to step into.
-	if edge == "east" or edge == "west":
-		rect.size = Vector2(GameManager.TILE_SIZE * 1.2, GameManager.TILE_SIZE * 3.0)
-	else:
-		rect.size = Vector2(GameManager.TILE_SIZE * 3.0, GameManager.TILE_SIZE * 1.2)
-	shape.shape = rect
-	area.add_child(shape)
+func _on_scene_exit_requested(leads_to: String, edge: String, normalized: float) -> void:
+	if leads_to.is_empty() or _battle_active or _zone_advancing:
+		return
+	_use_scene_exit(leads_to, _opposite_edge(edge), normalized)
 
-	var glow := ColorRect.new()
-	glow.color = Color(0.55, 0.85, 1.0, 0.16)
-	glow.size = rect.size
-	glow.position = -rect.size * 0.5
-	var glow_mat := CanvasItemMaterial.new()
-	glow_mat.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
-	glow.material = glow_mat
-	area.add_child(glow)
-
-	if not label_text.is_empty():
-		var label := Label.new()
-		label.text = "→ %s" % label_text
-		label.add_theme_color_override("font_color", Color(0.85, 0.95, 1.0, 0.92))
-		label.add_theme_font_size_override("font_size", 16)
-		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		label.position = Vector2(-90, -rect.size.y * 0.5 - 24)
-		label.size = Vector2(180, 18)
-		area.add_child(label)
-
-	var pulse := area.create_tween().set_loops()
-	pulse.tween_property(glow, "color:a", 0.32, 0.9).set_trans(Tween.TRANS_SINE)
-	pulse.tween_property(glow, "color:a", 0.10, 0.9).set_trans(Tween.TRANS_SINE)
-
-	var triggered: Array = [false]
-	area.body_entered.connect(func(body: Node2D) -> void:
-		if triggered[0] or _battle_active or _zone_advancing:
-			return
-		if body.get("camera") == null:
-			return  # only the player carries a camera
-		triggered[0] = true
-		_use_scene_exit(leads_to, _opposite_edge(edge), normalized)
-	)
-	$World.add_child(area)
-
-func _spawn_interior_exit(tile: Vector2i, exit_data: Dictionary, label_text: String) -> void:
+func _spawn_interior_exit(tile: Vector2i, exit_data: Dictionary, label_text: String, footprint_rect: Rect2 = Rect2()) -> void:
 	var leads_to: String = str(exit_data.get("leads_to", ""))
 	if leads_to.is_empty():
 		return
 	var area := InteriorExitScript.new()
-	area.setup(_tile_to_pixel_center(tile), exit_data, label_text, player)
+	area.setup(_tile_to_pixel_center(tile), exit_data, label_text, player, footprint_rect)
 	area.connect("exit_requested", Callable(self, "_on_interior_exit_requested"))
 	$World.add_child(area)
 
@@ -759,6 +724,32 @@ func _interior_exit_object_tile(package_data: Dictionary, exit_data: Dictionary)
 		)
 		return base_tile + center_offset
 	return Vector2i(-1, -1)
+
+func _interior_exit_object_rect(package_data: Dictionary, exit_data: Dictionary) -> Rect2:
+	var object_id: String = str(exit_data.get("object_id", ""))
+	if object_id.is_empty():
+		return Rect2()
+	var definitions: Dictionary = _definitions_by_id(package_data)
+	for instance in package_data.get("instances", []):
+		if not (instance is Dictionary):
+			continue
+		var data: Dictionary = instance as Dictionary
+		var instance_id: String = str(data.get("id", ""))
+		var interaction_id: String = str(data.get("interaction_object_id", ""))
+		var transition_id: String = str(data.get("transition_object_id", ""))
+		if object_id != instance_id and object_id != interaction_id and object_id != transition_id:
+			continue
+		var position_tile: Dictionary = data.get("position_tile", {}) as Dictionary
+		var base_tile := Vector2i(int(position_tile.get("x", 0)), int(position_tile.get("y", 0)))
+		var definition: Dictionary = definitions.get(str(data.get("definition_id", instance_id)), {}) as Dictionary
+		var size_tiles: Dictionary = definition.get("size_tiles", {}) as Dictionary
+		var width: int = max(int(size_tiles.get("w", 1)), 1)
+		var height: int = max(int(size_tiles.get("h", 1)), 1)
+		return Rect2(
+			Vector2(base_tile) * GameManager.TILE_SIZE,
+			Vector2(width, height) * GameManager.TILE_SIZE
+		)
+	return Rect2()
 
 func _entry_spawn_tile(edge: String, fallback_normalized: float, from_zone_id: String, tile_context: Dictionary) -> Vector2i:
 	var map_tile_size: Vector2i = tile_context.get("map_tile_size", Vector2i(12, 12))

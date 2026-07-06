@@ -258,9 +258,25 @@ func notify_npc_talked(npc_id: String) -> void:
 					_pending_choices.append({"quest": quest, "objective": objective})
 			"deliver":
 				_try_deliver(quest, objective)
+	_grant_current_npc_collect_objectives(npc_id)
 	_settle_collect_objectives()
 	quests_changed.emit()
 	_refresh_tracker()
+
+
+func _grant_current_npc_collect_objectives(npc_id: String) -> void:
+	# Some collect steps are fulfilled by talking to an NPC instead of picking up a
+	# world item. The acquisition rule is the source of truth for which NPC grants it.
+	for quest in quests:
+		var objective: Dictionary = _current_objective(quest)
+		if objective.is_empty() or str(objective.get("kind")) != "collect":
+			continue
+		if str(objective.get("zone_id")) != current_zone_id:
+			continue
+		InventoryManager.grant_linked_items(
+			"npc_grant", npc_id, current_zone_id,
+			str(quest.get("id", "")), str(objective.get("id", "")),
+		)
 
 
 ## Resolve an objective the player closes by interacting with a WORLD OBJECT
