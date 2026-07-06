@@ -42,6 +42,7 @@ func _ready() -> void:
 	InventoryManager.item_obtained.connect(_on_item_obtained_cutscene)
 	PartyManager.member_joined.connect(_on_party_member_joined)
 	PartyManager.member_left.connect(_on_party_member_left)
+	NarrativeState.narrative_changed.connect(_on_narrative_changed)
 	if GameManager.has_scene_package():
 		_build_imported_world()
 		# Register this zone's triggered cutscenes with the director, then play the
@@ -122,9 +123,12 @@ func _build_imported_world() -> void:
 	for npc in npcs:
 		if npc is Dictionary:
 			var npc_data: Dictionary = npc as Dictionary
+			var npc_id: String = str(npc_data.get("id", "")).strip_edges()
+			if NarrativeState.should_hide_actor(npc_id):
+				continue
 			# A companion who has joined the party travels as a FOLLOWER, not as a
 			# stationary NPC — skip their authored NPC so there aren't two of them.
-			if PartyManager.is_member(str(npc_data.get("id", ""))):
+			if PartyManager.is_member(npc_id):
 				continue
 			_spawn_npc(npc_data, tile_context, npc_occupied_tiles)
 			npc_occupied_tiles[_tile_key(_read_tile_position(npc_data))] = true
@@ -206,6 +210,8 @@ func _spawn_party_followers() -> void:
 		_spawn_follower(str(npc_id))
 
 func _spawn_follower(npc_id: String) -> void:
+	if NarrativeState.should_hide_actor(npc_id):
+		return
 	if _follower_for(npc_id) != null:
 		return
 	var follower: Node2D = PartyFollowerScript.new() as Node2D
@@ -225,7 +231,8 @@ func _on_party_member_joined(npc_id: String) -> void:
 	# Replace the just-joined companion's stationary NPC (if present in this zone) with
 	# a follower, so talking to Arlo turns him into a party member who walks with you.
 	_despawn_npc(npc_id)
-	_spawn_follower(npc_id)
+	if not NarrativeState.should_hide_actor(npc_id):
+		_spawn_follower(npc_id)
 
 func _on_party_member_left(npc_id: String) -> void:
 	var follower := _follower_for(npc_id)
@@ -237,6 +244,34 @@ func _despawn_npc(npc_id: String) -> void:
 		var data: Variant = child.get("npc_data")
 		if data is Dictionary and str((data as Dictionary).get("id", "")) == npc_id:
 			child.queue_free()
+
+func _on_narrative_changed() -> void:
+	_apply_actor_states_to_spawned_characters()
+
+func _apply_actor_states_to_spawned_characters() -> void:
+	if generated_characters == null:
+		return
+	for child in generated_characters.get_children():
+		var actor_id := _actor_id_for_node(child)
+		if actor_id.is_empty():
+			continue
+		if NarrativeState.should_hide_actor(actor_id):
+			child.queue_free()
+			continue
+		if child.has_method("apply_actor_state"):
+			child.call("apply_actor_state", NarrativeState.actor_state(actor_id))
+
+func _actor_id_for_node(node: Node) -> String:
+	var data: Variant = node.get("npc_data")
+	if data is Dictionary:
+		var id := str((data as Dictionary).get("id", "")).strip_edges()
+		if not id.is_empty():
+			return id
+	for key in ["npc_id", "actor_id", "entity_id"]:
+		var value := str(node.get(key)).strip_edges()
+		if not value.is_empty() and value != "<null>":
+			return value
+	return ""
 
 func _spawn_world_object(instance: Dictionary, definition: Dictionary) -> void:
 	var object_id: String = str(instance.get("interaction_object_id", instance.get("id", "")))
@@ -290,6 +325,7 @@ func _spawn_npc(npc_data: Dictionary, tile_context: Dictionary, occupied_tiles: 
 		"occupied_tiles": occupied_tiles,
 		"tile_metadata": tile_context.get("tile_metadata", {}),
 		"player": player,
+		"actor_state": NarrativeState.actor_state(str(npc_data.get("id", ""))),
 	}
 	npc.setup(npc_data, world_context)
 

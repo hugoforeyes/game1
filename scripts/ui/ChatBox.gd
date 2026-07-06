@@ -1196,10 +1196,20 @@ func _apply_dialogue_effects(effects: Variant) -> void:
 		match etype:
 			"quest_choice":
 				QuestManager.resolve_quest_choice(quest_id, str(eff.get("option", "a")))
+			"actor_state", "set_actor_state", "set_actor_states":
+				_apply_actor_state_effect(eff)
 			"give_item":
 				_apply_item_effect(eff, true)
 			"take_item":
 				_apply_item_effect(eff, false)
+
+func _apply_actor_state_effect(eff: Dictionary) -> void:
+	var outcome := eff.duplicate(true)
+	if not outcome.has("actor_state") \
+			and not outcome.has("actor_states") \
+			and not outcome.has("set_actor_states"):
+		outcome = {"actor_state": eff}
+	NarrativeState.apply_actor_state_changes(outcome)
 
 func _apply_item_effect(eff: Dictionary, give: bool) -> void:
 	var quest_id := str(eff.get("quest_id", ""))

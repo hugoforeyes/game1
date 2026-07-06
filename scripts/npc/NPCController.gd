@@ -25,6 +25,7 @@ enum State {
 var npc_data: Dictionary = {}
 var movement: Dictionary = {}
 var interaction: Dictionary = {}
+var actor_state: Dictionary = {}
 var map_tile_size := Vector2i.ZERO
 var blocked_tiles: Dictionary = {}
 var occupied_tiles: Dictionary = {}
@@ -58,6 +59,12 @@ var _in_interaction_range: bool = false
 var _loading_popup: Node = null
 var _awaited_npc_id: String = ""
 var _quest_marker: Label = null
+var _default_collision_layer: int = 1
+var _default_collision_mask: int = 1
+var _default_modulate: Color = Color.WHITE
+var _default_sprite_modulate: Color = Color.WHITE
+var _default_sprite_rotation_degrees: float = 0.0
+var _default_shadow_visible: bool = true
 
 func setup(data: Dictionary, world_context: Dictionary) -> void:
 	npc_data = data
@@ -68,6 +75,7 @@ func setup(data: Dictionary, world_context: Dictionary) -> void:
 	blocked_tiles = (world_context.get("blocked_tiles", {}) as Dictionary).duplicate()
 	occupied_tiles = (world_context.get("occupied_tiles", {}) as Dictionary).duplicate()
 	tile_metadata = (world_context.get("tile_metadata", {}) as Dictionary).duplicate(true)
+	actor_state = (world_context.get("actor_state", {}) as Dictionary).duplicate(true) if world_context.get("actor_state") is Dictionary else {}
 	_player = world_context.get("player") as Node2D
 	current_tile = _read_tile_position(data)
 	anchor_tile = _read_tile_position(movement.get("anchor_tile", {}) as Dictionary)
@@ -81,10 +89,12 @@ func setup(data: Dictionary, world_context: Dictionary) -> void:
 	_lighting_sys = get_tree().get_first_node_in_group("lighting")
 	_setup_shadow()
 	_setup_sprite_frames()
+	_capture_actor_defaults()
 	_start_behavior()
 	_setup_bubble()
 	_setup_interaction()
 	_setup_quest_marker()
+	apply_actor_state(actor_state)
 
 func _exit_tree() -> void:
 	WorldInteractionManager.clear_owner(self)
@@ -118,6 +128,112 @@ func update_quest_marker() -> void:
 		var bounce: Variant = _quest_marker.get_meta("bounce") if _quest_marker.has_meta("bounce") else null
 		if bounce is Tween and (bounce as Tween).is_valid():
 			(bounce as Tween).kill()
+
+func apply_actor_state(state_data: Dictionary) -> void:
+	actor_state = state_data.duplicate(true)
+	var state_name := _actor_state_token(actor_state.get("state", ""))
+	var presentation := _actor_state_token(actor_state.get("presentation", ""))
+	if presentation.is_empty():
+		presentation = _default_presentation_for_actor_state(state_name)
+	if presentation in ["hidden", "despawn", "removed", "none"] \
+			or state_name in ["hidden", "despawned", "removed"]:
+		_apply_hidden_actor_state()
+	elif presentation == "corpse" or state_name == "dead":
+		_apply_corpse_actor_state()
+	elif presentation == "inactive" or state_name in ["inactive", "disabled"]:
+		_apply_inactive_actor_state()
+	else:
+		_apply_normal_actor_state()
+
+func _capture_actor_defaults() -> void:
+	_default_collision_layer = collision_layer
+	_default_collision_mask = collision_mask
+	_default_modulate = modulate
+	_default_sprite_modulate = anim_sprite.modulate
+	_default_sprite_rotation_degrees = anim_sprite.rotation_degrees
+	_default_shadow_visible = shadow.visible
+
+func _apply_normal_actor_state() -> void:
+	visible = true
+	set_physics_process(true)
+	velocity = Vector2.ZERO
+	modulate = _default_modulate
+	anim_sprite.visible = true
+	anim_sprite.rotation_degrees = _default_sprite_rotation_degrees
+	anim_sprite.modulate = _default_sprite_modulate
+	shadow.visible = _default_shadow_visible
+	_set_actor_collision_enabled(true)
+	_setup_interaction()
+	if _bubble != null:
+		_bubble.visible = true
+	update_quest_marker()
+	_start_behavior()
+
+func _apply_hidden_actor_state() -> void:
+	visible = false
+	velocity = Vector2.ZERO
+	set_physics_process(false)
+	_disable_actor_interaction()
+	_set_actor_collision_enabled(false)
+
+func _apply_corpse_actor_state() -> void:
+	visible = true
+	velocity = Vector2.ZERO
+	state = State.IDLE
+	path_tiles.clear()
+	active_path.clear()
+	set_physics_process(false)
+	_disable_actor_interaction()
+	_set_actor_collision_enabled(false)
+	anim_sprite.visible = true
+	anim_sprite.pause()
+	anim_sprite.rotation_degrees = 90.0
+	anim_sprite.modulate = Color(0.65, 0.65, 0.7, 0.9)
+	shadow.visible = false
+
+func _apply_inactive_actor_state() -> void:
+	visible = true
+	velocity = Vector2.ZERO
+	state = State.IDLE
+	path_tiles.clear()
+	active_path.clear()
+	set_physics_process(false)
+	_disable_actor_interaction()
+	_set_actor_collision_enabled(false)
+	anim_sprite.rotation_degrees = _default_sprite_rotation_degrees
+	anim_sprite.modulate = _default_sprite_modulate
+	shadow.visible = _default_shadow_visible
+
+func _disable_actor_interaction() -> void:
+	_interaction_enabled = false
+	_in_interaction_range = false
+	WorldInteractionManager.clear_owner(self)
+	if _bubble != null:
+		_bubble.target_alpha = 0.0
+		_bubble.visible = false
+	_bubble_showing = false
+	if _quest_marker != null:
+		_quest_marker.visible = false
+
+func _set_actor_collision_enabled(enabled: bool) -> void:
+	collision_layer = _default_collision_layer if enabled else 0
+	collision_mask = _default_collision_mask if enabled else 0
+	var collision_shape := get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if collision_shape != null:
+		collision_shape.disabled = not enabled
+
+func _default_presentation_for_actor_state(state_name: String) -> String:
+	match state_name:
+		"dead":
+			return "corpse"
+		"hidden", "removed", "despawned":
+			return "despawn"
+		"inactive", "disabled":
+			return "inactive"
+	return "normal"
+
+func _actor_state_token(value: Variant) -> String:
+	return str(value).strip_edges().to_lower().replace(" ", "_").replace("-", "_")
 
 func _setup_bubble() -> void:
 	var lines: Variant = interaction.get("lines", [])
@@ -156,6 +272,7 @@ func _physics_process(delta: float) -> void:
 
 func _setup_interaction() -> void:
 	var inter: Dictionary = interaction
+	_interaction_items.clear()
 	# Quest participants — and any NPC that has a generated conversation tree —
 	# must always be approachable, whatever the package interaction flag says.
 	_interaction_enabled = bool(inter.get("enabled", false)) \
