@@ -52,11 +52,22 @@ func _test_skill_unlocks(gm: Node) -> void:
 	var ids1: Array = _skill_ids(gm.player_skills())
 	_ok(ids1.has("strike") and ids1.has("power_strike"), "level 1 has strike + power_strike")
 	_ok(not ids1.has("focus"), "level 1 lacks focus")
+	gm.player_level = 3
+	_ok(_skill_ids(gm.player_skills()).has("focus"), "level 3 unlocks focus")
 	gm.player_level = 6
 	var ids6: Array = _skill_ids(gm.player_skills())
-	_ok(ids6.has("focus") and ids6.has("crush") and ids6.has("mend") and ids6.has("tempest") and ids6.has("pierce"),
-		"level 6 unlocks the full roster")
-	_ok(gm.locked_skills().is_empty(), "no locked skills at level 6")
+	_ok(ids6.has("ember_slash") and not ids6.has("crush"), "level 6 (ch1 boss) unlocks ember_slash, not crush yet")
+	_ok(not gm.locked_skills().is_empty(), "the roster must NOT be maxed out by chapter 1 (level 6)")
+	gm.player_level = 9
+	_ok(_skill_ids(gm.player_skills()).has("crush"), "level 9 (ch2 boss) unlocks crush")
+	gm.player_level = 12
+	_ok(_skill_ids(gm.player_skills()).has("mend"), "level 12 (ch3 boss) unlocks mend")
+	gm.player_level = 15
+	_ok(_skill_ids(gm.player_skills()).has("tempest"), "level 15 (ch4 boss) unlocks tempest")
+	gm.player_level = 18
+	var ids18: Array = _skill_ids(gm.player_skills())
+	_ok(ids18.has("pierce"), "level 18 (ch5 boss / final) unlocks pierce")
+	_ok(gm.locked_skills().is_empty(), "the full roster is unlocked by the true final boss level (18)")
 
 
 func _skill_ids(skills: Array) -> Array:

@@ -321,22 +321,33 @@ func party_passive_bonus() -> Dictionary:
 ## desc. `effect` drives BattleScene's dispatch: "" / "attack" = a power strike,
 ## "focus" = empower next hit, "heal" = restore HP (power = HP per caster level),
 ## "multi" = several hits (hits = power rounded), "pierce" = ignore most defense.
+##
+## unlock_level is spread across the WHOLE 5-chapter journey, not just chapter 1.
+## Each threshold beyond the starter pair lines up with that chapter's boss level:
+## a boss zone typically sits ~3 map-hops from its chapter's entrance, so
+## enemy_balance.scaled_enemy_level(chapter, 3, "boss", is_boss_zone=true) works out
+## to 3*(chapter+1) — 6, 9, 12, 15, 18 for chapters 1-5 (mirrors the real chapter-1
+## generation: its boss zone was distance 3, boss level 6). Landing a new skill right
+## at each chapter's boss level means the player unlocks their next tool DURING that
+## chapter, in time to use it on the fight it was paced for — and the roster still has
+## something left to unlock all the way to the true final boss (level 18, the
+## MAX_ENEMY_LEVEL ceiling), instead of maxing out by the end of chapter 1.
 const SKILL_LIBRARY: Array = [
 	{"id": "strike", "name": "Strike", "power": 1.0, "sp_cost": 0, "unlock_level": 1, "effect": "attack",
 		"desc": "A basic attack. Costs no SP."},
 	{"id": "power_strike", "name": "Power Strike", "power": 1.6, "sp_cost": 1, "unlock_level": 1, "effect": "attack",
 		"desc": "Channel your strength into one heavy blow."},
-	{"id": "focus", "name": "Focus", "power": 0.0, "sp_cost": 1, "unlock_level": 2, "effect": "focus",
+	{"id": "focus", "name": "Focus", "power": 0.0, "sp_cost": 1, "unlock_level": 3, "effect": "focus",
 		"desc": "Your next attack hits twice as hard."},
-	{"id": "ember_slash", "name": "Ember Slash", "power": 1.9, "sp_cost": 2, "unlock_level": 3, "effect": "attack",
+	{"id": "ember_slash", "name": "Ember Slash", "power": 1.9, "sp_cost": 2, "unlock_level": 6, "effect": "attack",
 		"desc": "A blade wreathed in fire that scorches the foe."},
-	{"id": "crush", "name": "Crushing Blow", "power": 2.2, "sp_cost": 2, "unlock_level": 3, "effect": "attack",
+	{"id": "crush", "name": "Crushing Blow", "power": 2.2, "sp_cost": 2, "unlock_level": 9, "effect": "attack",
 		"desc": "A devastating, full-force strike."},
-	{"id": "mend", "name": "Mend", "power": 18.0, "sp_cost": 2, "unlock_level": 4, "effect": "heal",
+	{"id": "mend", "name": "Mend", "power": 18.0, "sp_cost": 2, "unlock_level": 12, "effect": "heal",
 		"desc": "Gather your focus to restore your own HP."},
-	{"id": "tempest", "name": "Tempest", "power": 3.0, "sp_cost": 3, "unlock_level": 5, "effect": "multi",
+	{"id": "tempest", "name": "Tempest", "power": 3.0, "sp_cost": 3, "unlock_level": 15, "effect": "multi",
 		"desc": "Unleash a flurry of chained slashes."},
-	{"id": "pierce", "name": "Pierce", "power": 2.0, "sp_cost": 3, "unlock_level": 6, "effect": "pierce",
+	{"id": "pierce", "name": "Pierce", "power": 2.0, "sp_cost": 3, "unlock_level": 18, "effect": "pierce",
 		"desc": "A thrust that punches through the enemy's defense."},
 ]
 

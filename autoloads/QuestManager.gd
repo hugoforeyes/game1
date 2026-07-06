@@ -49,7 +49,6 @@ var _ui: CanvasLayer = null
 var _journal_layer: CanvasLayer = null
 var _tracker_view: QuestTrackerView = null
 var _tracker_layer: CanvasLayer = null
-var _tracker_compact: bool = false
 var _toast_host: Control
 var _toast_queue: Array = []
 var _toast_busy: bool = false
@@ -79,7 +78,6 @@ func reset() -> void:
 	quest_states = {}
 	revealed_hints = {}
 	tracked_quest_id = ""
-	_tracker_compact = false
 	current_zone_id = ""
 	visited_zones = {}
 	visited_dialogue_nodes = {}
@@ -789,7 +787,6 @@ func _ensure_ui() -> void:
 	add_child(_tracker_layer)
 	_tracker_view = QuestTrackerViewScript.new()
 	_tracker_view.visible = false
-	_tracker_view.collapse_toggled.connect(_toggle_tracker_compact)
 	_tracker_layer.add_child(_tracker_view)
 
 	# Toast host (top-center; the layer runs at scale 2 → design width = vp/2)
@@ -904,13 +901,7 @@ func _refresh_tracker() -> void:
 		"objective": str(objective.get("description", "")),
 		"current": current, "total": total, "has_count": has_count,
 		"hints": hints,
-		"compact": _tracker_compact,
 	})
-
-
-func _toggle_tracker_compact() -> void:
-	_tracker_compact = not _tracker_compact
-	_refresh_tracker()
 
 
 func _push_toast(kind: String, quest: Dictionary) -> void:
@@ -1088,12 +1079,6 @@ func _confirm_choice() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.is_pressed() and not event.is_echo():
-		if (event as InputEventKey).physical_keycode == KEY_H and _tracker_view != null \
-				and _tracker_view.visible \
-				and not GameManager.ui_blocking_input and not _journal_open and not _choice_open:
-			_toggle_tracker_compact()
-			get_viewport().set_input_as_handled()
-			return
 		if (event as InputEventKey).physical_keycode == KEY_J:
 			_toggle_journal()
 			get_viewport().set_input_as_handled()

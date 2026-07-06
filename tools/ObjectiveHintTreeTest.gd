@@ -29,7 +29,6 @@ func _ready() -> void:
 	QuestManager._refresh_tracker()
 	var view = QuestManager._tracker_view
 	assert(view != null)
-	assert(not view.is_compact)
 	assert(view._data.get("title", "") == "Cánh Hoa Cuối Mùa")
 	assert(view.line_count >= 1)
 
@@ -54,11 +53,5 @@ func _ready() -> void:
 	assert(not QuestManager._hint_available)
 	assert(view._data.get("objective", "") == "Nói chuyện với Arlo")
 
-	# Compact toggle.
-	QuestManager._toggle_tracker_compact()
-	assert(view.is_compact)
-	assert(view.size == Vector2(64, 64))
-	QuestManager._toggle_tracker_compact()
-	assert(not view.is_compact)
 	print("[ObjectiveHintTreeTest] objective hierarchy states passed")
 	get_tree().quit()

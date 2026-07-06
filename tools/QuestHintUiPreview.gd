@@ -72,19 +72,8 @@ func _ready() -> void:
 	assert(QuestManager._hint_available)
 	assert(view.hint_row_count == 3)
 	assert(view._panel_height > 150.0)
-	assert(not view.is_compact)
 	view.visible = true
 	var output := "res://assets/ui/quest_tracker_v3/preview_expanded.png"
 	get_viewport().get_texture().get_image().save_png(ProjectSettings.globalize_path(output))
 	print("[QuestHintUiPreview] wrote %s" % output)
-
-	QuestManager._toggle_tracker_compact()
-	await get_tree().process_frame
-	await get_tree().process_frame
-	assert(view.is_compact)
-	assert(view.size == Vector2(64, 64))
-	view.visible = true
-	var compact_output := "res://assets/ui/quest_tracker_v3/preview_compact.png"
-	get_viewport().get_texture().get_image().save_png(ProjectSettings.globalize_path(compact_output))
-	print("[QuestHintUiPreview] wrote %s" % compact_output)
 	get_tree().quit()

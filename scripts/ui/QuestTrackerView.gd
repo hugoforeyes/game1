@@ -1,9 +1,8 @@
 class_name QuestTrackerView
 extends Control
 ## In-game quest tracker HUD — AAA art-directed, authored crisp in native 960×540.
-## QuestManager owns the data; this view is pure presentation (expanded + compact).
-
-signal collapse_toggled
+## QuestManager owns the data; this view is pure presentation. Always fully
+## expanded (no minimize) and every line wraps in full — never ellipsized.
 
 const ORN_DIR := "res://assets/ui/quest_journal_v2/ornaments/"
 const CREST_DIR := "res://assets/ui/quest_tracker_v3/ornaments/"
@@ -12,7 +11,6 @@ const WIDTH := 330.0
 const RIGHT_MARGIN := 12.0
 const TOP := 12.0
 const PAD := 15.0
-const COMPACT := 64.0
 
 # ── Palette (shared with the journal) ────────────────────────────────────────
 const C_GLASS := Color(0.035, 0.046, 0.066, 0.93)
@@ -33,7 +31,6 @@ var _panel_height := 120.0
 # Exposed for QA assertions.
 var line_count := 0
 var hint_row_count := 0
-var is_compact := false
 
 
 func _ready() -> void:
@@ -45,7 +42,6 @@ func _ready() -> void:
 
 func set_data(data: Dictionary) -> void:
 	_data = data
-	is_compact = bool(data.get("compact", false))
 	_rebuild()
 
 
@@ -53,27 +49,13 @@ func set_data(data: Dictionary) -> void:
 func _rebuild() -> void:
 	for child in get_children():
 		child.free()
-	if is_compact:
-		_build_compact()
-	else:
-		_build_expanded()
-
-
-func _build_compact() -> void:
-	size = Vector2(COMPACT, COMPACT)
-	_panel_height = COMPACT
-	_scrim(Rect2(-10, -10, COMPACT + 20, COMPACT + 20))
-	var crest := _quest_crest(str(_data.get("type", "main")))
-	add_child(_make_tex(crest, Rect2(8, 8, COMPACT - 16, COMPACT - 16)))
-	# Click target to expand.
-	_add_button(Rect2(0, 0, COMPACT, COMPACT))
-	# Tiny "expand" chevron hint, bottom-right.
-	_chevron(Vector2(COMPACT - 11, COMPACT - 11), false)
+	_build_expanded()
 
 
 func _build_expanded() -> void:
 	# Frameless: title / objective / hints float straight on the scene over a
-	# soft feathered scrim — no panel, no borders (mockup_hud style).
+	# soft feathered scrim — no panel, no borders (mockup_hud style). Every line
+	# wraps to its full measured height; nothing is ever trimmed with an ellipsis.
 	var content_w := WIDTH - PAD * 2.0
 	var title := str(_data.get("title", ""))
 	var objective := str(_data.get("objective", ""))
@@ -82,14 +64,25 @@ func _build_expanded() -> void:
 	var hints: Array = _data.get("hints", []) as Array
 
 	var font := get_theme_default_font()
-	var obj_h: float = clampf(ceilf(font.get_multiline_string_size(objective, HORIZONTAL_ALIGNMENT_LEFT, content_w - 16.0, 14).y) + 4.0, 18.0, 80.0)
+
+	# Title now wraps in full — measure it with the exact font it renders in.
+	var title_w := content_w - 8.0
+	var title_font := UiKit.title_font()
+	var title_variation: FontVariation = null
+	if title_font != null:
+		title_variation = FontVariation.new()
+		title_variation.base_font = title_font
+		title_variation.variation_opentype = {"wght": 640}
+	var title_font_used: Font = title_variation if title_variation != null else font
+	var title_h: float = maxf(ceilf(title_font_used.get_multiline_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, title_w, 16).y) + 4.0, 22.0)
+
+	var obj_h: float = maxf(ceilf(font.get_multiline_string_size(objective, HORIZONTAL_ALIGNMENT_LEFT, content_w - 16.0, 14).y) + 4.0, 18.0)
 	var hint_heights: Array[float] = []
 	for h in hints:
 		var t := str((h as Dictionary).get("text", ""))
-		var hh: float = clampf(ceilf(font.get_multiline_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, content_w - 16.0, 12).y), 15.0, 54.0)
+		var hh: float = maxf(ceilf(font.get_multiline_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, content_w - 16.0, 12).y), 15.0)
 		hint_heights.append(hh)
 
-	var title_h := 24.0
 	var obj_y := title_h + 6.0
 	var hints_top := obj_y + obj_h + 6.0
 	var hints_total := 0.0
@@ -101,28 +94,18 @@ func _build_expanded() -> void:
 
 	_scrim(Rect2(-24, -16, WIDTH + 60, _panel_height + 40))
 
-	# ── Title: gold diamond + serif title ──
+	# ── Title: gold diamond + serif title (wraps fully, never truncated) ──
 	_add_diamond(self, Vector2(PAD - 4, 12), 4.0, C_GOLD)
-	var title_label := _label(title, 16, C_GOLD, Rect2(PAD + 8, 0, content_w - 8 - 24, title_h))
-	var title_font := UiKit.title_font()
-	if title_font != null:
-		var title_variation := FontVariation.new()
-		title_variation.base_font = title_font
-		title_variation.variation_opentype = {"wght": 640}
+	var title_label := _label(title, 16, C_GOLD, Rect2(PAD + 8, 0, title_w, title_h), VERTICAL_ALIGNMENT_TOP)
+	if title_variation != null:
 		title_label.add_theme_font_override("font", title_variation)
-	title_label.clip_text = true
-	title_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	title_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	add_child(title_label)
-	# Collapse chevron (kept subtle, right of the title).
-	var chev_center := Vector2(WIDTH - PAD - 4, 12)
-	_chevron(chev_center, true)
-	_add_button(Rect2(chev_center.x - 13, chev_center.y - 13, 26, 26))
 
 	# ── Objective line: small amber diamond + text ──
 	_add_diamond(self, Vector2(PAD + 4, obj_y + 8), 3.2, C_AMBER)
 	var obj_label := UiKit.make_label("", 14, C_TEXT)
 	obj_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	obj_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	obj_label.position = Vector2(PAD + 14, obj_y).round()
 	obj_label.size = Vector2(content_w - 16, obj_h + 3).round()
 	obj_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
@@ -139,7 +122,6 @@ func _build_expanded() -> void:
 			_add_diamond(self, Vector2(PAD + 4, hy + 7), 2.6, Color(C_CYAN, 0.85))
 			var hint_label := UiKit.make_label("", 12, Color(C_CYAN, 0.82))
 			hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			hint_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 			hint_label.position = Vector2(PAD + 14, hy).round()
 			hint_label.size = Vector2(content_w - 16, hint_heights[i] + 3).round()
 			hint_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
@@ -254,32 +236,6 @@ func _circle_button(center: Vector2, radius: float) -> void:
 	_add_disc(self, center, radius + 0.6, Color(C_GOLD_DEEP, 0.9))
 	_add_disc(self, center, radius - 0.4, Color(0.10, 0.085, 0.05, 0.95))
 	_add_disc(self, center, radius - 0.4, Color(C_GOLD, 0.0))
-
-
-func _chevron(center: Vector2, down: bool) -> void:
-	var line := Line2D.new()
-	var dy := 3.0 if down else -3.0
-	line.points = PackedVector2Array([
-		center + Vector2(-4.0, -dy * 0.6), center + Vector2(0, dy * 0.7), center + Vector2(4.0, -dy * 0.6)])
-	line.width = 1.6
-	line.default_color = C_GOLD
-	line.joint_mode = Line2D.LINE_JOINT_ROUND
-	line.begin_cap_mode = Line2D.LINE_CAP_ROUND
-	line.end_cap_mode = Line2D.LINE_CAP_ROUND
-	line.antialiased = true
-	add_child(line)
-
-
-func _add_button(rect: Rect2) -> void:
-	var btn := Control.new()
-	btn.position = rect.position
-	btn.size = rect.size
-	btn.mouse_filter = Control.MOUSE_FILTER_STOP
-	btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	btn.gui_input.connect(func(e: InputEvent) -> void:
-		if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
-			collapse_toggled.emit())
-	add_child(btn)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -6,6 +6,7 @@ const BattleSceneScript := preload("res://scripts/battle/BattleScene.gd")
 const CutscenePlayerScript := preload("res://scripts/cutscene/CutscenePlayer.gd")
 const ItemPickupScript := preload("res://scripts/world/ItemPickup.gd")
 const WorldObjectScript := preload("res://scripts/world/WorldObject.gd")
+const InteriorExitScript := preload("res://scripts/world/InteriorExit.gd")
 const PartyFollowerScript := preload("res://scripts/world/PartyFollower.gd")
 const PartyHudViewScript := preload("res://scripts/ui/PartyHudView.gd")
 const QuestCompassViewScript := preload("res://scripts/ui/QuestCompassView.gd")
@@ -27,7 +28,6 @@ var _player_spawn_tile := Vector2i.ZERO
 var _battle_active: bool = false
 var _zone_advancing: bool = false
 var _zone_hostiles_cleared_notified: bool = false
-var _active_interior_exit: Dictionary = {}
 var _triggered_cutscene_active: bool = false
 var _pending_triggered_cutscenes: Array = []  # queued cutscene dicts waiting to play
 
@@ -61,24 +61,12 @@ func _ready() -> void:
 		_spawn_enemies_for_builtin_world()
 		_fade_in_pending_zone_transition.call_deferred()
 
-func _unhandled_input(event: InputEvent) -> void:
-	if not event.is_action_pressed("ui_accept"):
-		return
-	if _active_interior_exit.is_empty() or _battle_active or _zone_advancing:
-		return
-	var leads_to: String = str(_active_interior_exit.get("leads_to", ""))
-	if leads_to.is_empty():
-		return
-	get_viewport().set_input_as_handled()
-	_use_scene_exit(leads_to, "")
-
 func _build_imported_world() -> void:
 	_clear_generated_content()
 
 	# A freshly loaded world starts movable unless it is still under the persistent
 	# zone fade overlay; fade-in clears the block once the new scene is visible.
 	GameManager.ui_blocking_input = get_tree().root.get_node_or_null(ZONE_TRANSITION_OVERLAY_NAME) != null
-	_active_interior_exit = {}
 
 	var package_data: Dictionary = GameManager.get_scene_package()
 	ObjectInteractionManager.register_zone_contracts(package_data)
@@ -114,7 +102,7 @@ func _build_imported_world() -> void:
 
 		_create_instance_sprite(definition, tile_position)
 
-		if bool(instance.get("interactive", false)):
+		if bool(instance.get("interactive", false)) and not bool(instance.get("transition_object", false)):
 			_spawn_world_object(instance, definition)
 
 		if bool(definition.get("solid", false)):
@@ -150,6 +138,13 @@ func _build_imported_world() -> void:
 	_create_map_boundaries(GameManager.get_map_pixel_size(package_data, background.texture))
 
 	var spawn_tile: Vector2i = _resolve_player_spawn_tile(package_data, tile_context)
+	# Final guarantee across ALL spawn paths (entry / authored / center-fallback):
+	# never drop the player onto a solid tile or a walled-in pocket they can't leave.
+	spawn_tile = _nearest_open_tile(
+		spawn_tile,
+		tile_context.get("map_tile_size", Vector2i.ZERO) as Vector2i,
+		tile_context.get("blocked_tiles", {}) as Dictionary,
+	)
 	_player_spawn_tile = spawn_tile
 	player.global_position = _tile_to_pixel_center(spawn_tile)
 	player.z_index = 0
@@ -450,14 +445,41 @@ func _read_tile_position(data: Dictionary) -> Vector2i:
 # ── Scene-to-scene exits ────────────────────────────────────────────────────
 
 func _resolve_player_spawn_tile(package_data: Dictionary, tile_context: Dictionary) -> Vector2i:
-	# Arriving through an exit: spawn at the matching edge of the new scene.
+	# Arriving through an exit: edge exits use the matching edge. Interior/object
+	# exits have no edge, so spawn beside the matching return door instead.
 	if ChapterFlow.active:
 		var entry_edge: String = ChapterFlow.take_pending_entry_edge()
-		if entry_edge != "":
-			var entry_normalized: float = ChapterFlow.take_pending_entry_normalized()
-			var from_zone_id: String = ChapterFlow.take_pending_entry_from_zone()
+		var entry_normalized: float = ChapterFlow.take_pending_entry_normalized()
+		var from_zone_id: String = ChapterFlow.take_pending_entry_from_zone()
+		if not entry_edge.is_empty():
 			return _entry_spawn_tile(entry_edge, entry_normalized, from_zone_id, tile_context)
+		if not from_zone_id.is_empty():
+			var interior_spawn := _interior_entry_spawn_tile(from_zone_id, package_data, tile_context)
+			if interior_spawn != Vector2i(-1, -1):
+				return interior_spawn
 	return _find_player_spawn_tile(package_data)
+
+func _interior_entry_spawn_tile(from_zone_id: String, package_data: Dictionary, tile_context: Dictionary) -> Vector2i:
+	var map_tile_size: Vector2i = tile_context.get("map_tile_size", Vector2i.ZERO)
+	if map_tile_size == Vector2i.ZERO:
+		return Vector2i(-1, -1)
+	var blocked: Dictionary = tile_context.get("blocked_tiles", {}) as Dictionary
+	var zone: Dictionary = ChapterFlow.current_zone()
+	for exit_data in (zone.get("interior_exits", []) as Array):
+		if not (exit_data is Dictionary):
+			continue
+		var data: Dictionary = exit_data as Dictionary
+		if str(data.get("leads_to", "")) != from_zone_id:
+			continue
+		var tile: Vector2i = _interior_exit_object_tile(package_data, data)
+		if tile == Vector2i(-1, -1):
+			tile = _interior_exit_tile(
+				float(data.get("x_normalized", 0.5)),
+				float(data.get("y_normalized", 0.5)),
+				map_tile_size
+			)
+		return _nearest_open_tile(tile, map_tile_size, blocked)
+	return Vector2i(-1, -1)
 
 func _create_scene_exits(tile_context: Dictionary) -> void:
 	if not ChapterFlow.active:
@@ -551,60 +573,15 @@ func _spawn_interior_exit(tile: Vector2i, exit_data: Dictionary, label_text: Str
 	var leads_to: String = str(exit_data.get("leads_to", ""))
 	if leads_to.is_empty():
 		return
-	var trigger: String = str(exit_data.get("trigger", "interact"))
-	var area := Area2D.new()
-	area.global_position = _tile_to_pixel_center(tile)
-
-	var shape := CollisionShape2D.new()
-	var rect := RectangleShape2D.new()
-	rect.size = Vector2(GameManager.TILE_SIZE * 2.2, GameManager.TILE_SIZE * 2.2)
-	shape.shape = rect
-	area.add_child(shape)
-
-	var glow := ColorRect.new()
-	glow.color = Color(1.0, 0.88, 0.45, 0.18)
-	glow.size = rect.size
-	glow.position = -rect.size * 0.5
-	var glow_mat := CanvasItemMaterial.new()
-	glow_mat.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
-	glow.material = glow_mat
-	area.add_child(glow)
-
-	var label := Label.new()
-	if trigger == "interact":
-		label.text = "Press Enter: %s" % label_text
-	else:
-		label.text = "Enter %s" % label_text
-	label.add_theme_color_override("font_color", Color(1.0, 0.94, 0.72, 0.94))
-	label.add_theme_font_size_override("font_size", 15)
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.position = Vector2(-100, -rect.size.y * 0.5 - 22)
-	label.size = Vector2(200, 18)
-	area.add_child(label)
-
-	var pulse := area.create_tween().set_loops()
-	pulse.tween_property(glow, "color:a", 0.34, 0.9).set_trans(Tween.TRANS_SINE)
-	pulse.tween_property(glow, "color:a", 0.12, 0.9).set_trans(Tween.TRANS_SINE)
-
-	var triggered: Array = [false]
-	area.body_entered.connect(func(body: Node2D) -> void:
-		if body.get("camera") == null:
-			return
-		if trigger == "interact":
-			_active_interior_exit = exit_data.duplicate(true)
-			return
-		if triggered[0] or _battle_active or _zone_advancing:
-			return
-		triggered[0] = true
-		_use_scene_exit(leads_to, "")
-	)
-	area.body_exited.connect(func(body: Node2D) -> void:
-		if body.get("camera") == null:
-			return
-		if str(_active_interior_exit.get("leads_to", "")) == leads_to:
-			_active_interior_exit = {}
-	)
+	var area := InteriorExitScript.new()
+	area.setup(_tile_to_pixel_center(tile), exit_data, label_text, player)
+	area.connect("exit_requested", Callable(self, "_on_interior_exit_requested"))
 	$World.add_child(area)
+
+func _on_interior_exit_requested(leads_to: String) -> void:
+	if leads_to.is_empty() or _battle_active or _zone_advancing:
+		return
+	_use_scene_exit(leads_to, "")
 
 func _use_scene_exit(leads_to: String, arrival_edge: String, arrival_normalized: float = -1.0) -> void:
 	# _zone_advancing + the per-area triggered guard stop double-entry.
@@ -876,6 +853,48 @@ func _nearest_free_tile(start: Vector2i, map_tile_size: Vector2i, blocked: Dicti
 					return tile
 	return start
 
+## Nearest tile to `start` that is free AND not a sealed pocket — it has at least
+## one free orthogonal neighbour, so an actor placed there can actually move. This
+## is what `_nearest_free_tile` misses: a lone free cell walled in by objects on all
+## sides reads as "free" but traps the actor. Prefers the most-open tile in the
+## nearest ring; falls back to any free tile, then `start`. `blocked` must already
+## include object collision (GameManager.get_blocked_tiles) plus tiles taken by
+## other actors so spawns never stack.
+func _nearest_open_tile(start: Vector2i, map_tile_size: Vector2i, blocked: Dictionary) -> Vector2i:
+	var first_free := Vector2i(-1, -1)
+	var max_radius: int = max(map_tile_size.x, map_tile_size.y)
+	for radius in range(0, max_radius):
+		var best := Vector2i(-1, -1)
+		var best_openness := 0
+		for dy in range(-radius, radius + 1):
+			for dx in range(-radius, radius + 1):
+				if radius > 0 and max(abs(dx), abs(dy)) != radius:
+					continue  # only the ring at this exact radius (inner rings already checked)
+				var tile := start + Vector2i(dx, dy)
+				if tile.x < 1 or tile.y < 1 or tile.x > map_tile_size.x - 2 or tile.y > map_tile_size.y - 2:
+					continue
+				if blocked.has(_tile_key(tile)):
+					continue
+				if first_free == Vector2i(-1, -1):
+					first_free = tile
+				var openness := _free_orthogonal_neighbors(tile, map_tile_size, blocked)
+				if openness > best_openness:
+					best_openness = openness
+					best = tile
+		if best != Vector2i(-1, -1) and best_openness >= 1:
+			return best
+	return first_free if first_free != Vector2i(-1, -1) else start
+
+func _free_orthogonal_neighbors(tile: Vector2i, map_tile_size: Vector2i, blocked: Dictionary) -> int:
+	var count := 0
+	for dir in [Vector2i.RIGHT, Vector2i.LEFT, Vector2i.DOWN, Vector2i.UP]:
+		var n: Vector2i = tile + dir
+		if n.x < 0 or n.y < 0 or n.x >= map_tile_size.x or n.y >= map_tile_size.y:
+			continue
+		if not blocked.has(_tile_key(n)):
+			count += 1
+	return count
+
 func _opposite_edge(edge: String) -> String:
 	match edge:
 		"east":
@@ -1034,6 +1053,13 @@ func _spawn_enemies(package_data: Dictionary, tile_context: Dictionary, allow_fa
 		else:
 			print("[Main] no enemies in package, spawning none")
 
+	# Enemies get the same spawn safety as the player: nudge each off any solid /
+	# walled-in tile to the nearest open one, and reserve tiles as we go so two
+	# enemies (or an enemy and the player) never share a spawn.
+	var enemy_map_size: Vector2i = tile_context.get("map_tile_size", Vector2i.ZERO) as Vector2i
+	var enemy_blocked: Dictionary = (tile_context.get("blocked_tiles", {}) as Dictionary).duplicate()
+	enemy_blocked[_tile_key(_player_spawn_tile)] = true
+
 	var spawned := 0
 	for enemy_data in roster:
 		if not (enemy_data is Dictionary):
@@ -1044,6 +1070,14 @@ func _spawn_enemies(package_data: Dictionary, tile_context: Dictionary, allow_fa
 			continue
 		if GameManager.spared_enemy_ids.has(enemy_id):
 			data["_spared"] = true
+		if enemy_map_size != Vector2i.ZERO:
+			var spawn_info: Dictionary = (data.get("spawn", {}) as Dictionary).duplicate()
+			var raw_pt: Dictionary = spawn_info.get("position_tile", {}) as Dictionary
+			var raw_tile := Vector2i(int(raw_pt.get("x", 0)), int(raw_pt.get("y", 0)))
+			var open_tile: Vector2i = _nearest_open_tile(raw_tile, enemy_map_size, enemy_blocked)
+			enemy_blocked[_tile_key(open_tile)] = true
+			spawn_info["position_tile"] = {"x": open_tile.x, "y": open_tile.y}
+			data["spawn"] = spawn_info
 		var enemy: CharacterBody2D = ENEMY_SCENE.instantiate() as CharacterBody2D
 		generated_characters.add_child(enemy)
 		enemy.setup(data, {
