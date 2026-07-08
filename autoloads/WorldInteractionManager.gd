@@ -39,6 +39,10 @@ func is_active(owner: Node, kind: String) -> bool:
 		and str(_active_candidate.get("kind", "")) == kind
 
 
+func is_prompt_active() -> bool:
+	return not _active_candidate.is_empty()
+
+
 func clear_owner(owner: Node) -> void:
 	if owner == null:
 		return

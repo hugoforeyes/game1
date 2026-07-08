@@ -273,10 +273,24 @@ func _grant_current_npc_collect_objectives(npc_id: String) -> void:
 			continue
 		if str(objective.get("zone_id")) != current_zone_id:
 			continue
+		var quest_id := str(quest.get("id", ""))
+		var objective_id := str(objective.get("id", ""))
 		InventoryManager.grant_linked_items(
 			"npc_grant", npc_id, current_zone_id,
-			str(quest.get("id", "")), str(objective.get("id", "")),
+			quest_id, objective_id,
 		)
+		var quest_item: Dictionary = InventoryManager.quest_item_by_id(
+			str(objective.get("item_id", objective.get("item_ref", ""))), quest_id
+		)
+		var item_id := str(quest_item.get("id", ""))
+		if item_id.is_empty():
+			continue
+		if InventoryManager.count_of(item_id) >= int(objective.get("count", 1)):
+			continue
+		if InventoryManager.has_method("grant_linked_item_for_objective"):
+			InventoryManager.grant_linked_item_for_objective(
+				item_id, "npc_grant", npc_id, current_zone_id, quest_id, objective_id,
+			)
 
 
 ## Resolve an objective the player closes by interacting with a WORLD OBJECT
@@ -365,6 +379,9 @@ func _settle_collect_objectives() -> bool:
 			if wanted.is_empty():
 				break
 			var owned: int = InventoryManager.count_of(wanted)
+			if owned < int(objective.get("count", 1)):
+				_grant_collect_objective_from_party_sources(quest, objective, wanted)
+				owned = InventoryManager.count_of(wanted)
 			var state: Dictionary = _state_of(quest)
 			state["progress"] = owned
 			if owned >= int(objective.get("count", 1)):
@@ -373,6 +390,35 @@ func _settle_collect_objectives() -> bool:
 			else:
 				break
 	return changed
+
+
+func _grant_collect_objective_from_party_sources(
+		quest: Dictionary,
+		objective: Dictionary,
+		item_id: String,
+	) -> void:
+	if item_id.is_empty():
+		return
+	var objective_zone := str(objective.get("zone_id", ""))
+	if not objective_zone.is_empty() and current_zone_id != objective_zone:
+		return
+	if not InventoryManager.has_method("npc_grant_sources_for_item") \
+			or not InventoryManager.has_method("grant_linked_item_for_objective"):
+		return
+	if not PartyManager.has_method("is_member"):
+		return
+	var quest_id := str(quest.get("id", ""))
+	for npc_id in InventoryManager.npc_grant_sources_for_item(
+			item_id, quest_id, objective_zone,
+		):
+		if not PartyManager.is_member(str(npc_id)):
+			continue
+		InventoryManager.grant_linked_item_for_objective(
+			item_id, "npc_grant", str(npc_id), objective_zone,
+			quest_id, str(objective.get("id", "")),
+		)
+		if InventoryManager.count_of(item_id) >= int(objective.get("count", 1)):
+			return
 
 
 func notify_enemy_defeated(enemy_id: String) -> void:
@@ -416,10 +462,65 @@ func is_quest_npc(npc_id: String) -> bool:
 		for objective in quest.get("objectives", []) as Array:
 			if objective is Dictionary and str((objective as Dictionary).get("target_npc_id", "")) == npc_id:
 				return true
+			if objective is Dictionary and _collect_objective_needs_npc_grant(
+					quest, objective as Dictionary, npc_id,
+				):
+				return true
 		var giver: Dictionary = quest.get("giver", {}) as Dictionary
 		if str(giver.get("npc_id", "")) == npc_id:
 			return true
 	return false
+
+
+func has_unresolved_npc_objectives(npc_id: String) -> bool:
+	## True while any not-yet-completed quest still needs this NPC as a stationary
+	## giver/target. PartyManager uses this to delay companion joins until talking
+	## to that NPC can no longer be required by the quest journal.
+	if npc_id.is_empty():
+		return false
+	for quest in quests:
+		var state: Dictionary = _state_of(quest)
+		var quest_state := str(state.get("state", "inactive"))
+		if quest_state == "completed":
+			continue
+		if quest_state == "inactive" and _quest_giver_npc(quest) == npc_id:
+			return true
+		var objectives: Array = quest.get("objectives", []) as Array
+		var start_index := 0
+		if quest_state == "active":
+			start_index = maxi(0, int(state.get("objective_index", 0)))
+		for index in range(start_index, objectives.size()):
+			var objective: Dictionary = objectives[index] as Dictionary if objectives[index] is Dictionary else {}
+			if str(objective.get("target_npc_id", "")) == npc_id:
+				return true
+			if _collect_objective_needs_npc_grant(quest, objective, npc_id):
+				return true
+	return false
+
+
+func _collect_objective_needs_npc_grant(
+		quest: Dictionary,
+		objective: Dictionary,
+		npc_id: String,
+	) -> bool:
+	if npc_id.is_empty() or str(objective.get("kind")) != "collect":
+		return false
+	if not InventoryManager.has_method("has_npc_grant_for_item"):
+		return false
+	var quest_id := str(quest.get("id", ""))
+	var quest_item: Dictionary = InventoryManager.quest_item_by_id(
+		str(objective.get("item_id", objective.get("item_ref", ""))), quest_id
+	)
+	var item_id := str(quest_item.get("id", ""))
+	if item_id.is_empty():
+		item_id = str(objective.get("item_id", objective.get("item_ref", "")))
+	if item_id.is_empty():
+		return false
+	if InventoryManager.count_of(item_id) >= int(objective.get("count", 1)):
+		return false
+	return InventoryManager.has_npc_grant_for_item(
+		item_id, quest_id, npc_id, str(objective.get("zone_id", "")),
+	)
 
 
 func marker_for_npc(npc_id: String) -> String:
@@ -436,6 +537,8 @@ func marker_for_npc(npc_id: String) -> String:
 		if str(objective.get("zone_id")) != current_zone_id:
 			continue
 		if str(objective.get("target_npc_id", "")) == npc_id and str(objective.get("kind")) in ["talk", "choice", "deliver"]:
+			return "!"
+		if _collect_objective_needs_npc_grant(quest, objective, npc_id):
 			return "!"
 	return ""
 

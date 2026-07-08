@@ -48,6 +48,8 @@ func _ready() -> void:
 	_test_leave(arlo)
 	_test_follower_spawn(arlo)
 	_test_carried_over(arlo)
+	_test_deferred_join_until_related_quests_done()
+	_test_deferred_join_until_npc_grant_collect_done()
 	_finish()
 
 
@@ -78,6 +80,125 @@ func _test_carried_over(arlo: String) -> void:
 	PartyManager.joined_history.clear()
 	PartyManager.apply_save(saved)
 	_check(PartyManager.joined_history.has(arlo), "joined_history survives serialize/apply_save")
+
+
+func _test_deferred_join_until_related_quests_done() -> void:
+	print("\n--- DEFERRED JOIN: companion waits until no quest targets them ---")
+	var npc_id := "npc_deferred_companion"
+	_joined.clear()
+	QuestManager.reset()
+	PartyManager.reset()
+	PartyManager.load_chapter_party({
+		"companions": [{"npc_id": npc_id, "name": "Deferred", "combat_role": "support", "zones": []}],
+		"events": [{
+			"id": "party_join_deferred_companion",
+			"companion_id": npc_id,
+			"action": "join",
+			"trigger": {"type": "npc_talked", "npc_id": npc_id},
+		}],
+	})
+	QuestManager.load_chapter_quests([
+		{
+			"id": "quest_deferred_join",
+			"title": "Deferred Join QA",
+			"type": "main",
+			"giver": {"mode": "auto", "zone_id": "zone_defer"},
+			"objectives": [
+				{
+					"id": "o1",
+					"kind": "talk",
+					"zone_id": "zone_defer",
+					"target_npc_id": npc_id,
+					"description": "Talk once.",
+				},
+				{
+					"id": "o2",
+					"kind": "talk",
+					"zone_id": "zone_defer",
+					"target_npc_id": npc_id,
+					"description": "Talk again.",
+				},
+			],
+			"reward": {"xp": 0},
+		},
+	])
+	QuestManager.notify_zone_entered("zone_defer")
+	QuestManager._toast_queue.clear()
+
+	QuestManager.notify_npc_talked(npc_id)
+	_check(not PartyManager.is_member(npc_id), "join stays deferred while another objective still targets the NPC")
+	_check(PartyManager._pending_join_events.has("party_join_deferred_companion"), "join event is kept pending")
+
+	QuestManager.notify_npc_talked(npc_id)
+	_check(PartyManager.is_member(npc_id), "companion joins after their final related objective completes")
+	_check(_joined.has(npc_id), "member_joined fires after deferred join resolves")
+	_check(not PartyManager._pending_join_events.has("party_join_deferred_companion"), "pending join clears after joining")
+
+
+func _test_deferred_join_until_npc_grant_collect_done() -> void:
+	print("\n--- DEFERRED JOIN: companion waits for NPC-granted collect item ---")
+	var npc_id := "npc_collect_companion"
+	var item_id := "item_white_memory_flower"
+	_joined.clear()
+	QuestManager.reset()
+	PartyManager.reset()
+	InventoryManager.reset()
+	InventoryManager.load_chapter_catalog({
+		"icon_grid": 1,
+		"icon_cell_px": 48,
+		"items": [_quest_grant_item(item_id, "quest_npc_grant", npc_id, "zone_flower", "o_wrong", 1.0)],
+	}, null)
+	PartyManager.load_chapter_party(_collect_companion_party(npc_id))
+	QuestManager.load_chapter_quests([_collect_companion_quest(npc_id, item_id)])
+	QuestManager.notify_zone_entered("zone_flower")
+	QuestManager._toast_queue.clear()
+
+	QuestManager.notify_npc_talked(npc_id)
+	_check(InventoryManager.count_of(item_id) == 1, "NPC-granted collect item is awarded even if rule objective_id is stale")
+	_check(str((QuestManager.quest_states.get("quest_npc_grant", {}) as Dictionary).get("state", "")) == "completed", "NPC-granted collect objective completes")
+	_check(PartyManager.is_member(npc_id), "companion joins after NPC-granted collect objective completes")
+	_check(_joined.has(npc_id), "member_joined fires after collect grant resolves")
+
+	print("\n--- DEFERRED JOIN: unresolved NPC-grant collect keeps companion stationary ---")
+	_joined.clear()
+	QuestManager.reset()
+	PartyManager.reset()
+	InventoryManager.reset()
+	InventoryManager.load_chapter_catalog({
+		"icon_grid": 1,
+		"icon_cell_px": 48,
+		"items": [_quest_grant_item(item_id, "quest_npc_grant", npc_id, "zone_flower", "o2", 0.0)],
+	}, null)
+	PartyManager.load_chapter_party(_collect_companion_party(npc_id))
+	QuestManager.load_chapter_quests([_collect_companion_quest(npc_id, item_id)])
+	QuestManager.notify_zone_entered("zone_flower")
+	QuestManager._toast_queue.clear()
+
+	QuestManager.notify_npc_talked(npc_id)
+	_check(not PartyManager.is_member(npc_id), "join stays deferred while NPC-granted collect item is still missing")
+	_check(PartyManager._pending_join_events.has("party_join_collect_companion"), "NPC-grant collect keeps join pending")
+	InventoryManager.add_item(item_id, 1, true)
+	_check(PartyManager.is_member(npc_id), "companion joins once the NPC-granted collect objective is satisfied")
+
+	print("\n--- RECOVERY: party companion can satisfy their own NPC-grant collect ---")
+	_joined.clear()
+	QuestManager.reset()
+	PartyManager.reset()
+	InventoryManager.reset()
+	InventoryManager.load_chapter_catalog({
+		"icon_grid": 1,
+		"icon_cell_px": 48,
+		"items": [_quest_grant_item(item_id, "quest_npc_grant", npc_id, "zone_flower", "o_wrong", 1.0)],
+	}, null)
+	PartyManager.load_chapter_party(_collect_companion_party(npc_id))
+	PartyManager.active_members[npc_id] = true
+	PartyManager.joined_history[npc_id] = true
+	QuestManager.load_chapter_quests([_collect_companion_quest(npc_id, item_id)])
+	QuestManager.notify_zone_entered("zone_flower")
+	QuestManager.quest_states["quest_npc_grant"] = {"state": "active", "objective_index": 1, "progress": 0, "choices": {}}
+	QuestManager.notify_items_changed()
+	_check(InventoryManager.count_of(item_id) == 1, "already-joined companion grants the missing collect item")
+	_check(str((QuestManager.quest_states.get("quest_npc_grant", {}) as Dictionary).get("state", "")) == "completed", "stuck NPC-grant collect recovers while companion is in party")
 
 
 func _test_leave(arlo: String) -> void:
@@ -168,6 +289,73 @@ func _fire_trigger(trigger: Dictionary) -> void:
 			PartyManager.notify_zone_entered(str(trigger.get("zone_id", "")))
 		"enemy_defeated":
 			PartyManager.notify_enemy_defeated(str(trigger.get("enemy_id", "")))
+
+
+func _quest_grant_item(
+		item_id: String,
+		quest_id: String,
+		npc_id: String,
+		zone_id: String,
+		objective_id: String,
+		chance: float,
+	) -> Dictionary:
+	return {
+		"id": item_id,
+		"kind": "quest",
+		"role": "quest_entity",
+		"quest_id": quest_id,
+		"quest_ids": [quest_id],
+		"name": "White Memory Flower",
+		"description": "A quest item granted by the companion NPC.",
+		"acquisition": [{
+			"mode": "npc_grant",
+			"source_entity_id": npc_id,
+			"zone_id": zone_id,
+			"quest_id": quest_id,
+			"objective_id": objective_id,
+			"count": 1,
+			"chance": chance,
+		}],
+	}
+
+
+func _collect_companion_party(npc_id: String) -> Dictionary:
+	return {
+		"companions": [{"npc_id": npc_id, "name": "Collect Companion", "combat_role": "support", "zones": []}],
+		"events": [{
+			"id": "party_join_collect_companion",
+			"companion_id": npc_id,
+			"action": "join",
+			"trigger": {"type": "npc_talked", "npc_id": npc_id},
+		}],
+	}
+
+
+func _collect_companion_quest(npc_id: String, item_id: String) -> Dictionary:
+	return {
+		"id": "quest_npc_grant",
+		"title": "NPC Grant QA",
+		"type": "main",
+		"giver": {"mode": "auto", "zone_id": "zone_flower"},
+		"objectives": [
+			{
+				"id": "o1",
+				"kind": "talk",
+				"zone_id": "zone_flower",
+				"target_npc_id": npc_id,
+				"description": "Talk to the companion.",
+			},
+			{
+				"id": "o2",
+				"kind": "collect",
+				"zone_id": "zone_flower",
+				"item_id": item_id,
+				"count": 1,
+				"description": "Receive the quest item from the companion.",
+			},
+		],
+		"reward": {"xp": 0},
+	}
 
 
 func _check(condition: bool, label: String) -> void:

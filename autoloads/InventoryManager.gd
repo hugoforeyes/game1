@@ -154,6 +154,63 @@ func quest_item_by_id(item_id: String, quest_id: String = "") -> Dictionary:
 	return quest_item_for(quest_id)
 
 
+func has_npc_grant_for_item(
+		item_id: String,
+		quest_id: String,
+		npc_id: String,
+		zone_id: String = "",
+	) -> bool:
+	var item: Dictionary = quest_item_by_id(item_id, quest_id)
+	if item.is_empty():
+		return false
+	if not _item_matches_quest(item, quest_id):
+		return false
+	for raw_rule in item.get("acquisition", []) as Array:
+		if not (raw_rule is Dictionary):
+			continue
+		var rule: Dictionary = raw_rule as Dictionary
+		if str(rule.get("mode", "")) != "npc_grant":
+			continue
+		if not _source_matches(str(rule.get("source_entity_id", "")), npc_id):
+			continue
+		var rule_zone := str(rule.get("zone_id", ""))
+		if not zone_id.is_empty() and not rule_zone.is_empty() and rule_zone != zone_id:
+			continue
+		var rule_quest := str(rule.get("quest_id", ""))
+		if not quest_id.is_empty() and not rule_quest.is_empty() and rule_quest != quest_id:
+			continue
+		return true
+	return false
+
+
+func npc_grant_sources_for_item(
+		item_id: String,
+		quest_id: String,
+		zone_id: String = "",
+	) -> Array[String]:
+	var item: Dictionary = quest_item_by_id(item_id, quest_id)
+	var sources: Array[String] = []
+	if item.is_empty() or not _item_matches_quest(item, quest_id):
+		return sources
+	for raw_rule in item.get("acquisition", []) as Array:
+		if not (raw_rule is Dictionary):
+			continue
+		var rule: Dictionary = raw_rule as Dictionary
+		if str(rule.get("mode", "")) != "npc_grant":
+			continue
+		var source := str(rule.get("source_entity_id", ""))
+		if source.is_empty() or sources.has(source):
+			continue
+		var rule_zone := str(rule.get("zone_id", ""))
+		if not zone_id.is_empty() and not rule_zone.is_empty() and rule_zone != zone_id:
+			continue
+		var rule_quest := str(rule.get("quest_id", ""))
+		if not quest_id.is_empty() and not rule_quest.is_empty() and rule_quest != quest_id:
+			continue
+		sources.append(source)
+	return sources
+
+
 func count_of(item_id: String) -> int:
 	return int(counts.get(item_id, 0))
 
@@ -240,8 +297,7 @@ func grant_linked_items(
 			if str(rule.get("mode", "")) != mode:
 				continue
 			var source := str(rule.get("source_entity_id", ""))
-			if not source.is_empty() and source_entity_id != source \
-					and not source_entity_id.begins_with(source + "__"):
+			if not _source_matches(source, source_entity_id):
 				continue
 			var rule_zone := str(rule.get("zone_id", ""))
 			if not rule_zone.is_empty() and rule_zone != zone_id:
@@ -250,8 +306,7 @@ func grant_linked_items(
 			if not rule_objective.is_empty() and not objective_id.is_empty() \
 					and rule_objective != objective_id:
 				continue
-			var item_quests: Array = item.get("quest_ids", []) as Array
-			if not quest_id.is_empty() and not item_quests.is_empty() and not item_quests.has(quest_id):
+			if not _item_matches_quest(item, quest_id):
 				continue
 			var claim_source := source_entity_id if mode == "enemy_drop" else source
 			var claim_key := "%s:%s:%s:%s" % [mode, claim_source, item.get("id", ""), rule_objective]
@@ -265,6 +320,67 @@ func grant_linked_items(
 			add_item(item_id, maxi(1, int(rule.get("count", 1))))
 			granted.append(item_id)
 	return granted
+
+
+func grant_linked_item_for_objective(
+		item_id: String,
+		mode: String,
+		source_entity_id: String,
+		zone_id: String,
+		quest_id: String = "",
+		objective_id: String = "",
+	) -> Array[String]:
+	## Grant one specific objective item from a matching acquisition rule. This is
+	## intentionally narrower than grant_linked_items(): it lets a collect step
+	## recover when authored data tied the grant to the preceding talk beat.
+	var item: Dictionary = quest_item_by_id(item_id, quest_id)
+	if item.is_empty() or not _item_matches_quest(item, quest_id):
+		return []
+	var granted: Array[String] = []
+	for raw_rule in item.get("acquisition", []) as Array:
+		if not (raw_rule is Dictionary):
+			continue
+		var rule: Dictionary = raw_rule as Dictionary
+		if str(rule.get("mode", "")) != mode:
+			continue
+		var source := str(rule.get("source_entity_id", ""))
+		if not _source_matches(source, source_entity_id):
+			continue
+		var rule_zone := str(rule.get("zone_id", ""))
+		if not rule_zone.is_empty() and rule_zone != zone_id:
+			continue
+		var rule_quest := str(rule.get("quest_id", ""))
+		if not quest_id.is_empty() and not rule_quest.is_empty() and rule_quest != quest_id:
+			continue
+		var claim_source := source_entity_id if mode == "enemy_drop" else source
+		var claim_objective := objective_id if not objective_id.is_empty() else str(rule.get("objective_id", ""))
+		var claim_key := "%s:%s:%s:%s" % [mode, claim_source, item.get("id", ""), claim_objective]
+		if acquisition_claims.has(claim_key):
+			continue
+		if randf() > float(rule.get("chance", 1.0)):
+			acquisition_claims[claim_key] = true
+			continue
+		acquisition_claims[claim_key] = true
+		add_item(str(item.get("id", "")), maxi(1, int(rule.get("count", 1))))
+		granted.append(str(item.get("id", "")))
+		break
+	return granted
+
+
+func _source_matches(rule_source: String, runtime_source: String) -> bool:
+	if rule_source.is_empty():
+		return true
+	return runtime_source == rule_source or runtime_source.begins_with(rule_source + "__")
+
+
+func _item_matches_quest(item: Dictionary, quest_id: String) -> bool:
+	if quest_id.is_empty():
+		return true
+	var rule_quests: Array = item.get("quest_ids", []) as Array
+	if not rule_quests.is_empty():
+		return rule_quests.has(quest_id)
+	var item_quest := str(item.get("quest_id", ""))
+	return item_quest.is_empty() or item_quest == quest_id
 
 
 ## Returns a result message, or "" if the item could not be used here.

@@ -1,17 +1,17 @@
 extends Node
-## Runtime director for the chapter's TRIGGERED (mid-story) cutscenes.
+## Runtime director for the chapter's planned cutscenes.
 ##
 ## Each zone's scene_package carries a `cutscenes` array authored by the
 ## scene_cutscenes step: every entry has a `trigger` (zone_enter / zone_cleared /
 ## enemy_defeated / quest_objective / quest_complete / quest_choice /
 ## item_obtained / npc_talked)
-## plus an opening-style `actions` + absolute `start_tiles` script. This director
+## plus an `actions` + absolute `start_tiles` script. This director
 ## keeps the current zone's list and a per-run "already played" set, and matches
 ## events the game reports against the unplayed cutscenes' triggers. Quest gates
 ## reuse QuestManager.stage_unlocked (same contract as story dialogue).
 ##
 ## It only MATCHES — Main owns playback (so it can gate on battle/transitions and
-## reuse the same CutscenePlayer the opening cutscene uses).
+## reuse the same CutscenePlayer for every planned beat).
 
 var _played: Dictionary = {}        # cutscene_id -> true (one-shot for this run)
 var _zone_cutscenes: Array = []     # current zone's packaged cutscenes

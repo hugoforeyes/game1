@@ -77,7 +77,11 @@ var _selected_opt : int                = 0
 var _tree_mode      : bool       = false
 var _tree_nodes     : Dictionary = {}    # node id -> node dict
 var _tree_options   : Array      = []    # current node's option dicts (parallel to _options)
-var _talk_notified  : bool       = false # fired notify_npc_talked once this conversation
+var _tree_start_node: String     = "root"
+var _tree_signature : String     = ""
+var _tree_refresh_pending: bool  = false
+var _quest_refresh_connected: bool = false
+var _talk_notified  : bool       = false # fired notify_npc_talked once for the current tree beat
 var _tree_has_quest_reveal: bool = false # quest trees must reach their reveal node
 var _visited_nodes  : Dictionary = {}    # node ids the player has already reached
 var _opt_rows     : Array[Node]        = []
@@ -1015,7 +1019,7 @@ func open_tree(npc_name: String, npc_data: Dictionary, tree: Dictionary) -> void
 	_tree_mode = true
 	_leaf_waiting = false
 	_talk_notified = false
-	_tree_has_quest_reveal = false
+	_tree_refresh_pending = false
 	_visited_nodes = {}
 	_npc_name  = npc_name
 	_npc_data  = npc_data
@@ -1038,6 +1042,20 @@ func open_tree(npc_name: String, npc_data: Dictionary, tree: Dictionary) -> void
 	for child in _messages.get_children():
 		child.queue_free()
 
+	_load_tree(tree)
+	_connect_quest_refresh()
+
+	GameManager.ui_blocking_input = true
+	visible = true
+	_play_open_effect()
+	_enter_tree_node(_tree_start_node)
+
+func _load_tree(tree: Dictionary) -> void:
+	_tree_start_node = str(tree.get("start_node", "root"))
+	if _tree_start_node.is_empty():
+		_tree_start_node = "root"
+	_tree_signature = _signature_for_tree(tree)
+	_tree_has_quest_reveal = false
 	_tree_nodes = {}
 	for node in (tree.get("nodes", []) as Array):
 		if node is Dictionary:
@@ -1047,10 +1065,39 @@ func open_tree(npc_name: String, npc_data: Dictionary, tree: Dictionary) -> void
 				if str((node as Dictionary).get("reveals", "")) == "quest":
 					_tree_has_quest_reveal = true
 
-	GameManager.ui_blocking_input = true
-	visible = true
-	_play_open_effect()
-	_enter_tree_node(str(tree.get("start_node", "root")))
+func _signature_for_tree(tree: Dictionary) -> String:
+	return JSON.stringify(tree)
+
+func _connect_quest_refresh() -> void:
+	if _quest_refresh_connected:
+		return
+	QuestManager.quests_changed.connect(_on_quests_changed_during_tree)
+	_quest_refresh_connected = true
+
+func _disconnect_quest_refresh() -> void:
+	if not _quest_refresh_connected:
+		return
+	if QuestManager.quests_changed.is_connected(_on_quests_changed_during_tree):
+		QuestManager.quests_changed.disconnect(_on_quests_changed_during_tree)
+	_quest_refresh_connected = false
+
+func _on_quests_changed_during_tree() -> void:
+	if _tree_mode and visible:
+		_tree_refresh_pending = true
+
+func _refresh_tree_if_due_at(node_id: String) -> String:
+	if not _tree_refresh_pending or node_id != _tree_start_node:
+		return node_id
+	_tree_refresh_pending = false
+	var next_tree: Dictionary = DialogueAssembler.build_active_tree(_npc_data)
+	if next_tree.is_empty():
+		return node_id
+	var next_signature := _signature_for_tree(next_tree)
+	if next_signature == _tree_signature:
+		return node_id
+	_load_tree(next_tree)
+	_talk_notified = false
+	return _tree_start_node
 
 func _set_dialogue_text(text: String, queued_labels: Array = [], queued_leaf: bool = false, instant: bool = false) -> void:
 	if _dialogue_label == null:
@@ -1088,6 +1135,7 @@ func _finish_dialogue_reveal() -> void:
 		_leaf_waiting = true
 
 func _enter_tree_node(node_id: String) -> void:
+	node_id = _refresh_tree_if_due_at(node_id)
 	var node: Dictionary = _tree_nodes.get(node_id, {}) as Dictionary
 	if node.is_empty():
 		close()
@@ -1456,6 +1504,7 @@ func _on_start_error(error: String) -> void:
 	print("[ChatBox] start-stream error: ", error)
 
 func close() -> void:
+	_disconnect_quest_refresh()
 	NPCConversationManager.cancel_all()
 	_loading_label     = null
 	_stream_label      = null

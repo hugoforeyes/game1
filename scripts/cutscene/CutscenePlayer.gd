@@ -1,7 +1,7 @@
 extends CanvasLayer
 ## Chapter intro — cutscene mode. Plays a generated script on the live scene:
-## real NPC/enemy/player actors walk, turn, speak (with emotion portraits),
-## and die while a cinematic camera follows, framed by letterbox bars.
+## real NPC/enemy/player actors walk, turn, speak (with emotion portraits), emote,
+## attack, get hurt, die, and shake while a cinematic camera follows, framed by letterbox bars.
 ## The backend staging pass walks speakers next to their conversation partner;
 ## this player also auto-faces speaker pairs as a safety net. Esc skips.
 
@@ -14,6 +14,9 @@ const PRESTAGE_DISTANCE_TILES := 5.0
 const PRESTAGE_APPROACH_TILES := 2.0
 const WALK_BACK_MAX_SECONDS := 2.5
 const MOVE_CLAMP_TILES := 4  # max tiles a cutscene actor may stray from the player
+const ATTACK_LUNGE_PX := 30.0
+const HURT_KNOCKBACK_PX := 18.0
+const EMOTE_FLOAT_PX := 18.0
 const UI_COMPONENT_DIR := "res://assets/ui/cutscene_v3/components/"
 const TEX_CORNER_TL := UI_COMPONENT_DIR + "corner_tl.png"
 const TEX_CORNER_TR := UI_COMPONENT_DIR + "corner_tr.png"
@@ -236,12 +239,13 @@ func _cutscene_participants() -> Array[String]:
 	for action in _actions:
 		if not (action is Dictionary):
 			continue
-		var actor_id: String = str((action as Dictionary).get("actor", "")).strip_edges()
-		if actor_id.is_empty() or actor_id == "player" or actor_id == "narrator":
-			continue
-		if not seen.has(actor_id):
-			seen[actor_id] = true
-			ordered.append(actor_id)
+		for key in ["actor", "target", "source"]:
+			var actor_id: String = str((action as Dictionary).get(key, "")).strip_edges()
+			if actor_id.is_empty() or actor_id == "player" or actor_id == "narrator":
+				continue
+			if not seen.has(actor_id):
+				seen[actor_id] = true
+				ordered.append(actor_id)
 	return ordered
 
 
@@ -638,7 +642,35 @@ func _execute(action: Dictionary) -> void:
 			_do_face(str(action.get("actor", "")), str(action.get("direction", "down")))
 		"say":
 			await _do_say(action)
+		"attack":
+			await _do_attack(
+				str(action.get("actor", "")),
+				str(action.get("target", "")),
+				str(action.get("style", "lunge")),
+				float(action.get("seconds", 0.55))
+			)
+		"hurt":
+			await _do_hurt(
+				str(action.get("actor", "")),
+				str(action.get("source", "")),
+				str(action.get("severity", "medium")),
+				float(action.get("seconds", 0.65))
+			)
+		"emote":
+			await _do_emote(
+				str(action.get("actor", "")),
+				str(action.get("emotion", "alert")),
+				float(action.get("seconds", 0.9))
+			)
+		"shake":
+			await _do_shake(
+				str(action.get("actor", "")),
+				float(action.get("seconds", 0.45)),
+				float(action.get("strength", 5.0))
+			)
 		"die":
+			await _do_die(str(action.get("actor", "")))
+		"dead":
 			await _do_die(str(action.get("actor", "")))
 
 
@@ -857,6 +889,188 @@ func _do_face(actor_id: String, direction: String) -> void:
 		sprite.pause()
 
 
+func _do_attack(actor_id: String, target_id: String, style: String, seconds: float) -> void:
+	var actor: Node2D = _find_actor(actor_id)
+	if actor == null or not actor.visible:
+		return
+	var target: Node2D = _find_actor(target_id)
+	var direction := Vector2.DOWN
+	if target != null and target.visible:
+		direction = target.global_position - actor.global_position
+	if direction.length() < 1.0:
+		direction = _facing_vector(actor)
+	direction = direction.normalized()
+	_do_face(actor_id, _dir_name(direction))
+
+	var sprite: AnimatedSprite2D = _actor_anim_sprite(actor)
+	_play_walk(sprite, _dir_name(direction))
+	var original_position: Vector2 = actor.global_position
+	var original_scale: Vector2 = actor.scale
+	var duration: float = clampf(seconds, 0.25, 1.4)
+	var lunge_distance := ATTACK_LUNGE_PX
+	if style in ["shoot", "cast"]:
+		lunge_distance = 10.0
+	var lunge_position := original_position + direction * lunge_distance
+
+	var tween := create_tween()
+	tween.tween_property(actor, "global_position", lunge_position, duration * 0.35)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(actor, "scale", original_scale * 1.08, duration * 0.25)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_property(actor, "global_position", original_position, duration * 0.45)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tween.parallel().tween_property(actor, "scale", original_scale, duration * 0.35)
+	await tween.finished
+	actor.global_position = original_position
+	actor.scale = original_scale
+	if sprite != null:
+		sprite.pause()
+
+
+func _do_hurt(actor_id: String, source_id: String, severity: String, seconds: float) -> void:
+	var actor: Node2D = _find_actor(actor_id)
+	if actor == null or not actor.visible:
+		return
+	var source: Node2D = _find_actor(source_id)
+	var away := Vector2.DOWN
+	if source != null and source.visible:
+		away = actor.global_position - source.global_position
+	if away.length() < 1.0:
+		away = _facing_vector(actor)
+	away = away.normalized()
+
+	var original_position: Vector2 = actor.global_position
+	var original_modulate: Color = actor.modulate
+	var original_scale: Vector2 = actor.scale
+	var duration: float = clampf(seconds, 0.25, 1.5)
+	var knockback := HURT_KNOCKBACK_PX
+	if severity == "light":
+		knockback *= 0.55
+	elif severity == "heavy":
+		knockback *= 1.55
+
+	var tween := create_tween()
+	tween.tween_property(actor, "global_position", original_position + away * knockback, duration * 0.25)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(actor, "modulate", Color(1.0, 0.22, 0.22, original_modulate.a), duration * 0.16)
+	tween.parallel().tween_property(actor, "scale", Vector2(original_scale.x * 1.05, original_scale.y * 0.92), duration * 0.16)
+	tween.tween_property(actor, "global_position", original_position, duration * 0.45)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(actor, "modulate", original_modulate, duration * 0.35)
+	tween.parallel().tween_property(actor, "scale", original_scale, duration * 0.35)
+	await tween.finished
+	actor.global_position = original_position
+	actor.modulate = original_modulate
+	actor.scale = original_scale
+
+
+func _do_emote(actor_id: String, emotion: String, seconds: float) -> void:
+	var actor: Node2D = _find_actor(actor_id)
+	if actor == null or not actor.visible:
+		return
+	var marker := Label.new()
+	marker.text = _emote_symbol(emotion)
+	marker.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	marker.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	marker.add_theme_font_size_override("font_size", 18)
+	marker.add_theme_color_override("font_color", _emote_color(emotion))
+	marker.position = Vector2(-32, -58)
+	marker.size = Vector2(64, 24)
+	marker.z_index = 60
+	marker.modulate.a = 0.0
+	actor.add_child(marker)
+
+	var original_scale: Vector2 = actor.scale
+	var duration: float = clampf(seconds, 0.4, 2.0)
+	var tween := create_tween()
+	tween.tween_property(marker, "modulate:a", 1.0, 0.12)
+	tween.parallel().tween_property(marker, "position:y", marker.position.y - EMOTE_FLOAT_PX, duration)\
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(actor, "scale", original_scale * 1.06, 0.12)\
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.tween_property(actor, "scale", original_scale, 0.16)
+	tween.parallel().tween_property(marker, "modulate:a", 0.0, 0.2).set_delay(maxf(duration - 0.25, 0.1))
+	await tween.finished
+	actor.scale = original_scale
+	if is_instance_valid(marker):
+		marker.queue_free()
+
+
+func _do_shake(actor_id: String, seconds: float, strength: float) -> void:
+	var target: Node2D = _find_actor(actor_id)
+	if target == null:
+		target = _camera
+	if target == null:
+		return
+	var original_position: Vector2 = target.global_position
+	var duration: float = clampf(seconds, 0.2, 1.2)
+	var amount: float = clampf(strength, 1.0, 12.0)
+	var steps: int = maxi(3, int(ceil(duration / 0.045)))
+	var offsets := [
+		Vector2(amount, 0),
+		Vector2(-amount, amount * 0.5),
+		Vector2(amount * 0.5, -amount),
+		Vector2(-amount * 0.5, 0),
+	]
+	for i in range(steps):
+		if _skip:
+			break
+		target.global_position = original_position + offsets[i % offsets.size()]
+		await get_tree().create_timer(duration / float(steps)).timeout
+	target.global_position = original_position
+
+
+func _facing_vector(actor: Node2D) -> Vector2:
+	var sprite: AnimatedSprite2D = _actor_anim_sprite(actor)
+	if sprite != null:
+		var anim := str(sprite.animation)
+		if anim.ends_with("_left"):
+			return Vector2.LEFT
+		if anim.ends_with("_right"):
+			return Vector2.RIGHT
+		if anim.ends_with("_up"):
+			return Vector2.UP
+	return Vector2.DOWN
+
+
+func _emote_symbol(emotion: String) -> String:
+	match emotion.strip_edges().to_lower():
+		"surprise":
+			return "!"
+		"fear":
+			return "!!"
+		"anger":
+			return "!"
+		"sad":
+			return "..."
+		"relief":
+			return "*"
+		"determined":
+			return "!"
+		"question":
+			return "?"
+		_:
+			return "!"
+
+
+func _emote_color(emotion: String) -> Color:
+	match emotion.strip_edges().to_lower():
+		"fear":
+			return Color(0.70, 0.86, 1.0, 1.0)
+		"anger":
+			return Color(1.0, 0.34, 0.26, 1.0)
+		"sad":
+			return Color(0.58, 0.74, 1.0, 1.0)
+		"relief":
+			return Color(0.70, 1.0, 0.78, 1.0)
+		"determined":
+			return Color(1.0, 0.86, 0.42, 1.0)
+		"question":
+			return Color(0.92, 0.92, 1.0, 1.0)
+		_:
+			return Color(1.0, 0.92, 0.45, 1.0)
+
+
 func _face_pair(speaker_id: String) -> void:
 	# Safety net for scripts without staged face actions: speaker and the
 	# previous speaker turn toward each other.
@@ -975,7 +1189,7 @@ func _finish() -> void:
 	# Resolve any remaining deaths instantly so skipping keeps story state.
 	if _skip:
 		for action in _actions:
-			if action is Dictionary and str((action as Dictionary).get("type", "")) == "die":
+			if action is Dictionary and str((action as Dictionary).get("type", "")) in ["die", "dead"]:
 				var actor: Node2D = _find_actor(str((action as Dictionary).get("actor", "")))
 				if actor != null and actor.visible:
 					var enemy_data: Variant = actor.get("enemy_data")

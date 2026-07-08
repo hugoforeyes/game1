@@ -20,9 +20,9 @@ var zone_index: int = 0
 var active: bool = false
 var pending_intro: Dictionary = {}
 var pending_cutscene_actions: Array = []
-# One-shot: true only on the initial entry to the chapter's first zone (not on
-# walk-back transitions). Gates the new scene-package opening cutscene so it plays
-# exactly once. Consumed by Main via take_pending_opening().
+# One-shot legacy fallback: true only on the initial entry to the chapter's first
+# zone (not on walk-back transitions). New packages use a planned zone_enter
+# cutscene with role="opening"; old packages may still have opening_cutscene.
 var pending_play_opening: bool = false
 # When the player walks through an exit, the edge they should arrive at in the
 # next scene (opposite of the exit edge). Consumed by Main on spawn.
@@ -414,12 +414,11 @@ func enter_current_zone() -> Error:
 	# walking through an exit is instant when the target is already downloaded.
 	prefetch_remaining_zones()
 
-	# In-scene cutscene plays in the chapter's first zone only, and never when
-	# the player merely walked back into a zone through an exit.
+	# Legacy in-scene intro cutscene plays in the chapter's first zone only, and
+	# never when the player merely walked back into a zone through an exit.
 	pending_cutscene_actions = []
-	# The opening plays on the initial entry to the first zone only, never on a
-	# walk-back transition. This gates BOTH the new scene-package opening cutscene
-	# (preferred) and the legacy chapter-intro cutscene (old packages).
+	# New packages play opening through CutsceneDirector as a planned zone_enter
+	# beat. This only gates legacy opening_cutscene/chapter-intro fallback.
 	pending_play_opening = (zone_index == 0 and not _suppress_cutscene)
 	var mode: String = str(pending_intro.get("recommended_mode", ""))
 	var cutscene: Dictionary = pending_intro.get("cutscene", {}) as Dictionary

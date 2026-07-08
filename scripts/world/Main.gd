@@ -45,9 +45,8 @@ func _ready() -> void:
 	NarrativeState.narrative_changed.connect(_on_narrative_changed)
 	if GameManager.has_scene_package():
 		_build_imported_world()
-		# Register this zone's triggered cutscenes with the director, then play the
-		# opening (if any). The zone_enter check runs deferred so it lands AFTER the
-		# opening cutscene releases input (the director's drain gate waits on it).
+		# Register this zone's planned cutscenes with the director. Opening cutscenes
+		# are now normal zone_enter beats in scene_package.cutscenes.
 		CutsceneDirector.set_zone_cutscenes(
 			str(GameManager.get_scene_context().get("zone_id", "")),
 			GameManager.get_scene_package().get("cutscenes", []) as Array,
@@ -1222,12 +1221,14 @@ func _maybe_start_cutscene() -> void:
 	var legacy_actions: Array = ChapterFlow.take_pending_cutscene()
 	# Plays only on the initial entry to the chapter's first zone (one-shot).
 	var play_opening: bool = ChapterFlow.take_pending_opening()
+	if _has_planned_opening_cutscene():
+		return
 
 	var actions: Array = []
 	var start_tiles: Dictionary = {}
 	if play_opening:
-		# Prefer the new opening cutscene packaged into this scene (entry zone).
-		# It carries backend pre-placed start tiles so actors barely move.
+		# Legacy packages only: newer packages put opening in cutscenes as a
+		# zone_enter beat with role="opening".
 		var opening: Dictionary = GameManager.get_scene_package().get("opening_cutscene", {}) as Dictionary
 		actions = (opening.get("actions", []) as Array)
 		start_tiles = (opening.get("start_tiles", {}) as Dictionary)
@@ -1244,10 +1245,24 @@ func _maybe_start_cutscene() -> void:
 	cutscene.cutscene_finished.connect(_check_zone_cleared)
 	cutscene.play(actions, self, player, generated_characters, start_tiles)
 
-# ── triggered (mid-chapter) cutscenes ───────────────────────────────────────────
+func _has_planned_opening_cutscene() -> bool:
+	var package_data: Dictionary = GameManager.get_scene_package()
+	var cutscenes: Array = package_data.get("cutscenes", []) as Array
+	for cutscene in cutscenes:
+		if not (cutscene is Dictionary):
+			continue
+		var data: Dictionary = cutscene as Dictionary
+		if str(data.get("role", "")) != "opening":
+			continue
+		var trigger: Dictionary = data.get("trigger", {}) as Dictionary
+		if str(trigger.get("type", "")) == "zone_enter":
+			return true
+	return false
+
+# ── planned cutscenes ──────────────────────────────────────────────────────────
 # Match a reported event against this zone's packaged cutscenes (CutsceneDirector)
-# and play the first unplayed one — the SAME way the opening cutscene plays
-# (CutscenePlayer applies the pre-placed start tiles, then restores actors).
+# and play the first unplayed one. CutscenePlayer applies the pre-placed start
+# tiles, then restores actors.
 
 func _try_trigger_cutscene(event_type: String, params: Dictionary = {}) -> void:
 	if not ChapterFlow.active:

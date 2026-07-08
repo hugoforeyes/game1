@@ -6,6 +6,7 @@ const LoadingPopupScript := preload("res://scripts/ui/LoadingPopup.gd")
 const FPS := 8.0
 const BUBBLE_FULL_TILES  := 2.5
 const BUBBLE_FADE_TILES  := 4.0
+const BUBBLE_FULL_SECONDS := 3.0
 const ARRIVE_DISTANCE := 4.0
 const STUCK_DISTANCE_EPSILON := 1.5
 const STUCK_TIME_LIMIT := 0.8
@@ -53,6 +54,8 @@ var _player: Node2D = null
 var _bubble_lines: Array = []
 var _interaction_items: Array[String] = []
 var _bubble_showing: bool = false
+var _bubble_full_timer: float = 0.0
+var _bubble_cycle_expired: bool = false
 var _interaction_enabled: bool = false
 var _interaction_radius: float = 1.5
 var _in_interaction_range: bool = false
@@ -251,6 +254,7 @@ func _physics_process(delta: float) -> void:
 		# position and animation directly while this gate holds.
 		velocity = Vector2.ZERO
 		_update_shadow()
+		_suppress_bubble(true)
 		return
 	match state:
 		State.WAITING, State.BLOCKED:
@@ -267,8 +271,8 @@ func _physics_process(delta: float) -> void:
 
 	_update_animation()
 	_update_shadow()
-	_update_bubble_alpha()
 	_update_interaction()
+	_update_bubble_alpha(delta)
 
 func _setup_interaction() -> void:
 	var inter: Dictionary = interaction
@@ -303,6 +307,8 @@ func _on_interaction_item_confirmed(item: String, _index: int) -> void:
 		if _bubble != null:
 			_bubble.target_alpha = 0.0
 			_bubble_showing = false
+			_bubble_full_timer = 0.0
+			_bubble_cycle_expired = false
 		var bubble_line := ""
 		if not _bubble_lines.is_empty():
 			bubble_line = str(_bubble_lines.pick_random())
@@ -373,27 +379,60 @@ func _face_player() -> void:
 	else:
 		last_facing = "down" if diff.y > 0.0 else "up"
 
-func _update_bubble_alpha() -> void:
+func _update_bubble_alpha(delta: float) -> void:
 	if _bubble == null:
 		return
 	if _player == null or not is_instance_valid(_player):
-		_bubble.target_alpha = 0.0
-		_bubble_showing = false
+		_reset_bubble_cycle()
 		return
 	var dist_tiles := global_position.distance_to(_player.global_position) / GameManager.TILE_SIZE
+	if dist_tiles >= BUBBLE_FADE_TILES:
+		_reset_bubble_cycle()
+		return
+	if GameManager.ui_blocking_input or WorldInteractionManager.is_prompt_active():
+		_suppress_bubble(true)
+		return
+	if _bubble_cycle_expired:
+		_bubble.target_alpha = 0.0
+		return
+
 	var alpha: float
 	if dist_tiles <= BUBBLE_FULL_TILES:
 		alpha = 1.0
-	elif dist_tiles >= BUBBLE_FADE_TILES:
-		alpha = 0.0
 	else:
 		alpha = 1.0 - (dist_tiles - BUBBLE_FULL_TILES) / (BUBBLE_FADE_TILES - BUBBLE_FULL_TILES)
 	if alpha > 0.0 and not _bubble_showing:
 		_bubble_showing = true
+		_bubble_full_timer = 0.0
 		_bubble.show_text(str(_bubble_lines.pick_random()))
-	elif alpha == 0.0:
-		_bubble_showing = false
+
+	if alpha >= 1.0 and _bubble.modulate.a >= 0.98:
+		_bubble_full_timer += delta
+		if _bubble_full_timer >= BUBBLE_FULL_SECONDS:
+			_bubble_cycle_expired = true
+			_bubble.target_alpha = 0.0
+			return
+	else:
+		_bubble_full_timer = 0.0
 	_bubble.target_alpha = alpha
+
+
+func _suppress_bubble(expire_current_cycle: bool = false) -> void:
+	if _bubble == null:
+		return
+	_bubble.target_alpha = 0.0
+	_bubble_full_timer = 0.0
+	if expire_current_cycle and _bubble_showing:
+		_bubble_cycle_expired = true
+
+
+func _reset_bubble_cycle() -> void:
+	if _bubble == null:
+		return
+	_bubble.target_alpha = 0.0
+	_bubble_showing = false
+	_bubble_full_timer = 0.0
+	_bubble_cycle_expired = false
 
 func _update_shadow() -> void:
 	if _lighting_sys == null or not is_instance_valid(_lighting_sys):
