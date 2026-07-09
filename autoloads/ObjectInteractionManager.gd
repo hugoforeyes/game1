@@ -23,6 +23,12 @@ signal object_interacted(object_id: String, result: Dictionary)
 var _contracts: Dictionary = {}
 # object_id -> true once its one-shot interaction has been consumed
 var _used: Dictionary = {}
+# instance_id -> true once the player has PERSONALLY interacted with that specific
+# placed copy. Display-only: identical scatter props share one object_id (and thus
+# one _used state / one hidden item), but each placed copy dims its own glow/verb
+# only after the player actually walks up to IT — a searched crate in one corner
+# must not make an untouched look-alike across the map read as "already done".
+var _revealed_instances: Dictionary = {}
 # zone_id -> Array[String] of item ids that are obtained from an object in that zone
 # (so Main suppresses their random world scatter)
 var _zone_object_items: Dictionary = {}
@@ -35,6 +41,7 @@ func _ready() -> void:
 func reset() -> void:
 	_contracts.clear()
 	_used.clear()
+	_revealed_instances.clear()
 	_zone_object_items.clear()
 
 
@@ -74,6 +81,18 @@ func has_interaction(object_id: String) -> bool:
 
 func is_used(object_id: String) -> bool:
 	return bool(_used.get(object_id, false))
+
+
+func mark_instance_revealed(instance_id: String) -> void:
+	## Display-only: record that the player personally interacted with this exact
+	## placed copy, so ITS glow/verb dim without touching sibling copies that share
+	## the same object_id. The item/one-shot logic stays keyed by object_id.
+	if not instance_id.is_empty():
+		_revealed_instances[instance_id] = true
+
+
+func is_instance_revealed(instance_id: String) -> bool:
+	return bool(_revealed_instances.get(instance_id, false))
 
 
 func object_id_for_objective(quest_id: String, objective_id: String) -> String:

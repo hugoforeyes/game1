@@ -249,7 +249,15 @@ func add_item(item_id: String, amount: int = 1, silent: bool = false) -> void:
 		return
 	counts[item_id] = count_of(item_id) + amount
 	if not silent:
-		_push_toast("✚ %s ×%d" % [definition.get("name", item_id), amount])
+		# In a conversation this becomes the full-screen "item get" ceremony;
+		# in the open world it stays a lightweight toast.
+		var announced: bool = AnnouncementCenter.enqueue("item", {"items": [{
+			"item_id": item_id,
+			"name": str(definition.get("name", item_id)),
+			"count": amount,
+		}]})
+		if not announced:
+			_push_toast("✚ %s ×%d" % [definition.get("name", item_id), amount])
 	item_obtained.emit(item_id)
 	inventory_changed.emit()
 

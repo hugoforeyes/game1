@@ -35,6 +35,7 @@ WorldInteractionManager="*res://autoloads/WorldInteractionManager.gd"
 PartyManager="*res://autoloads/PartyManager.gd"
 NarrativeState="*res://autoloads/NarrativeState.gd"
 CutsceneDirector="*res://autoloads/CutsceneDirector.gd"
+AnnouncementCenter="*res://autoloads/AnnouncementCenter.gd"
 
 [display]
 

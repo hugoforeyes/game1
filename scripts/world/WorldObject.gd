@@ -12,6 +12,7 @@ const PLAYER_COLLISION_HALF := Vector2(10.0, 6.0)
 const TOUCH_GROW_PX := 3.0
 
 var object_id: String = ""
+var instance_id: String = ""
 var contract: Dictionary = {}
 
 var _player: Node2D = null
@@ -28,6 +29,10 @@ var _has_affordance_glow: bool = false
 func setup(p_contract: Dictionary, instance: Dictionary, definition: Dictionary, world_context: Dictionary) -> void:
 	contract = p_contract
 	object_id = str(p_contract.get("object_id", instance.get("interaction_object_id", instance.get("id", ""))))
+	# the specific placed copy — its "already checked" glow/verb is tracked per
+	# instance so look-alike scatter siblings don't dim in sympathy (they share
+	# object_id, hence one hidden item, but each dims only when personally touched)
+	instance_id = str(instance.get("id", ""))
 	_player = world_context.get("player") as Node2D
 
 	var position_tile: Dictionary = instance.get("position_tile", {}) as Dictionary
@@ -130,9 +135,15 @@ func _process(delta: float) -> void:
 
 
 func _current_verb() -> String:
-	if ObjectInteractionManager.is_used(object_id) and bool(contract.get("one_shot", false)):
+	if _revealed_here() and bool(contract.get("one_shot", false)):
 		return "Xem lại"
 	return str(contract.get("verb", "Quan sát"))
+
+
+func _revealed_here() -> bool:
+	## This exact copy is "already checked" only after the player personally
+	## interacted with it — not merely because a sibling sharing object_id was.
+	return ObjectInteractionManager.is_instance_revealed(instance_id)
 
 
 func _touch_distance_tiles() -> float:
@@ -152,8 +163,9 @@ func _touch_distance_tiles() -> float:
 func _update_glow(delta: float) -> void:
 	if _glow == null:
 		return
-	# fade the bloom out once the object has been used up
-	var used := ObjectInteractionManager.is_used(object_id) and bool(contract.get("one_shot", false))
+	# fade the bloom out once THIS copy has been personally searched (a sibling
+	# scatter prop sharing object_id keeps glowing until the player touches it too)
+	var used := _revealed_here() and bool(contract.get("one_shot", false))
 	_glow_time += delta
 	var target := 0.0 if used else (0.45 + 0.25 * sin(_glow_time * 2.2))
 	_glow.modulate.a = lerpf(_glow.modulate.a, target, minf(delta * 4.0, 1.0))
@@ -190,3 +202,8 @@ func _on_prompt_confirmed(_item: String, _index: int) -> void:
 
 func _on_view_closed() -> void:
 	_view_open = false
+	# The player personally engaged THIS copy; dim only it. Gate on the shared
+	# one-shot actually being consumed so a cancelled examine or a locked give
+	# (missing item) leaves the glow inviting for a return trip.
+	if bool(contract.get("one_shot", false)) and ObjectInteractionManager.is_used(object_id):
+		ObjectInteractionManager.mark_instance_revealed(instance_id)

@@ -213,6 +213,7 @@ func start_new_game() -> Error:
 	NarrativeState.reset()
 	CutsceneDirector.reset()
 	MinimapManager.reset()
+	AnnouncementCenter.reset()
 	print("[ChapterFlow] flow loaded run=%s chapters=%d" % [str(flow.get("run_id", "")), chapters().size()])
 	return await begin_current_chapter()
 
@@ -365,6 +366,7 @@ func continue_saved_game() -> Error:
 	NarrativeState.reset()
 	CutsceneDirector.reset()
 	MinimapManager.reset()
+	AnnouncementCenter.reset()
 
 	chapter_index = clampi(int(saved_flow.get("chapter_index", 0)), 0, maxi(chapters().size() - 1, 0))
 	var chapter: Dictionary = current_chapter()

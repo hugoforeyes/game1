@@ -22,6 +22,10 @@ var _contract: Dictionary = {}
 var _stage: int = Stage.EXAMINE
 var _primary_enabled: bool = true
 var _closing: bool = false
+# Driven by AnnouncementCenter as the in-conversation "item get" ceremony —
+# skips the examine flow and leaves input-blocking to the ceremony host.
+var _announce_mode: bool = false
+var _accept_after_ms: int = 0
 
 var _object_name: String = ""
 var _root: Control
@@ -56,6 +60,32 @@ func open_object(object_id: String) -> void:
 	_header.text = _object_name.to_upper()
 	_present_initial()
 	# entrance animation
+	_root.modulate.a = 0.0
+	_panel.scale = Vector2(0.92, 0.92)
+	_panel.pivot_offset = _panel.size * 0.5
+	var tween := create_tween()
+	tween.tween_property(_root, "modulate:a", 1.0, 0.18)
+	tween.parallel().tween_property(_panel, "scale", Vector2.ONE, 0.22).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+
+## AnnouncementCenter entry: reuse this screen as the "you received items"
+## ceremony during a conversation. Jumps straight to the golden reveal stage;
+## the items were already added to the inventory — this is display only.
+func open_item_announcement(items: Array, body_text: String = "") -> void:
+	_announce_mode = true
+	_accept_after_ms = Time.get_ticks_msec() + 450
+	_stage = Stage.RESULT
+	_object_name = ""
+	_header.text = "VẬT PHẨM MỚI"
+	_body.text = body_text if not body_text.is_empty() else "Đã thêm vào túi đồ của bạn."
+	_clear_reveal()
+	# the ceremony body is a single line — lift the cards so a two-line item
+	# name never reaches the action chip at the panel's bottom
+	_reveal_box.position.y = 128.0
+	_beam.position.y = 128.0
+	_reveal_items(items)
+	_set_action("Tiếp tục", true)
+
 	_root.modulate.a = 0.0
 	_panel.scale = Vector2(0.92, 0.92)
 	_panel.pivot_offset = _panel.size * 0.5
@@ -223,7 +253,27 @@ func _make_item_card(entry: Dictionary, is_grant: bool) -> Control:
 	name_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	name_label.position = Vector2(0, 82)
 	name_label.size = Vector2(96, 28)
+	name_label.max_lines_visible = 2
+	name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	card.add_child(name_label)
+
+	# quantity badge on the slot corner (grants of ×2 and up)
+	if is_grant and int(entry.get("count", 1)) > 1:
+		var badge := Panel.new()
+		var badge_style := StyleBoxFlat.new()
+		badge_style.bg_color = Color(0.06, 0.05, 0.03, 0.92)
+		badge_style.border_color = Color(1.0, 0.78, 0.34, 0.86)
+		badge_style.set_border_width_all(1)
+		badge_style.set_corner_radius_all(5)
+		badge.add_theme_stylebox_override("panel", badge_style)
+		badge.size = Vector2(30, 17)
+		badge.position = Vector2(8 + 80 - 24, 80 - 11)
+		card.add_child(badge)
+		var badge_label := UiKit.make_label_strong("×%d" % int(entry.get("count", 1)), 10, UiKit.COLOR_ACCENT)
+		badge_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		badge_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		badge_label.set_anchors_preset(Control.PRESET_FULL_RECT)
+		badge.add_child(badge_label)
 
 	if not is_grant:
 		var have := int(entry.get("have", 0))
@@ -409,7 +459,7 @@ func _set_action(label: String, enabled: bool) -> void:
 
 
 func _activate_primary() -> void:
-	if _closing:
+	if _closing or Time.get_ticks_msec() < _accept_after_ms:
 		return
 	if _stage == Stage.EXAMINE:
 		var archetype := str(_contract.get("archetype", "inspect"))
@@ -444,7 +494,8 @@ func _close() -> void:
 	var tween := create_tween()
 	tween.tween_property(_root, "modulate:a", 0.0, 0.16)
 	tween.tween_callback(func() -> void:
-		GameManager.ui_blocking_input = false
+		if not _announce_mode:
+			GameManager.ui_blocking_input = false
 		closed.emit()
 		queue_free()
 	)

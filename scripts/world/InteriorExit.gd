@@ -5,6 +5,7 @@ extends Area2D
 
 signal exit_requested(leads_to: String)
 
+const ZoneMarkerScript := preload("res://scripts/world/ZoneMarker.gd")
 const PROMPT_KIND := "exit"
 const PROMPT_PRIORITY := 0
 const PLAYER_COLLISION_OFFSET := Vector2(0.0, 28.0)
@@ -31,6 +32,7 @@ func setup(
 	_label_text = label_text
 	_player = player
 	_build(world_position, footprint_rect)
+	_build_marker()
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
 
@@ -79,6 +81,18 @@ func _build(world_position: Vector2, footprint_rect: Rect2) -> void:
 	rect.size = _footprint_rect.size
 	shape.shape = rect
 	add_child(shape)
+
+
+## Frameless destination marker floating above the entrance (same design
+## system as ZoneExitPortal's edge marker): name + hairline rule + a chevron
+## pointing down at the door. No panel — see scripts/world/ZoneMarker.gd.
+func _build_marker() -> void:
+	if _label_text.strip_edges().is_empty():
+		return
+	var marker := ZoneMarkerScript.new() as Node2D
+	marker.setup(_label_text, Vector2.DOWN, _player)
+	marker.position = Vector2(0.0, -(_footprint_rect.size.y * 0.5 + 12.0))
+	add_child(marker)
 
 
 func _touch_distance_tiles() -> float:

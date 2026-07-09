@@ -101,6 +101,7 @@ var _dialogue_label: Label             = null
 var _divider: TextureRect              = null
 var _leaf_waiting := false
 var _dialogue_revealing := false
+var _announcing := false   # chat hidden while the reward ceremony plays
 var _dialogue_visible_chars := 0.0
 var _pending_tree_labels: Array = []
 var _pending_tree_leaf := false
@@ -1046,6 +1047,7 @@ func open_tree(npc_name: String, npc_data: Dictionary, tree: Dictionary) -> void
 	_connect_quest_refresh()
 
 	GameManager.ui_blocking_input = true
+	AnnouncementCenter.set_conversation_active(true)
 	visible = true
 	_play_open_effect()
 	_enter_tree_node(_tree_start_node)
@@ -1125,6 +1127,16 @@ func _finish_dialogue_reveal() -> void:
 	_dialogue_revealing = false
 	if _dialogue_label != null:
 		_dialogue_label.visible_characters = -1
+	# Rewards earned on this beat (items / hints / quests / companions) play as
+	# full-screen ceremonies now that the line has been read: hide the chat,
+	# run the queue one by one, then come back to exactly this spot.
+	if AnnouncementCenter.has_pending() and not _announcing:
+		_run_announcements_then_continue()
+		return
+	_show_pending_tree_ui()
+
+
+func _show_pending_tree_ui() -> void:
 	if not _pending_tree_labels.is_empty():
 		var labels := _pending_tree_labels.duplicate()
 		_pending_tree_labels.clear()
@@ -1133,6 +1145,33 @@ func _finish_dialogue_reveal() -> void:
 	elif _pending_tree_leaf:
 		_pending_tree_leaf = false
 		_leaf_waiting = true
+
+
+func _run_announcements_then_continue() -> void:
+	_announcing = true
+	visible = false
+	await AnnouncementCenter.play_queue()
+	if not is_inside_tree():
+		return  # conversation was torn down while the ceremony played
+	_announcing = false
+	visible = true
+	_play_return_effect()
+	_show_pending_tree_ui()
+
+
+## Soft re-entrance after a ceremony: fade the core dialogue elements back in.
+func _play_return_effect() -> void:
+	var animated: Array[CanvasItem] = [
+		_panel, _portrait_fg, _npc_portrait, _nameplate, _npc_label,
+		_dialogue_label, _divider,
+	]
+	var tween := create_tween()
+	for item in animated:
+		if item == null or not is_instance_valid(item):
+			continue
+		item.modulate.a = 0.0
+		tween.parallel().tween_property(item, "modulate:a", 1.0, 0.20)\
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 
 func _enter_tree_node(node_id: String) -> void:
 	node_id = _refresh_tree_if_due_at(node_id)
@@ -1161,12 +1200,31 @@ func _enter_tree_node(node_id: String) -> void:
 
 	_tree_options = []
 	var labels: Array = []
-	for opt in (node.get("options", []) as Array):
-		if opt is Dictionary:
-			_tree_options.append(opt)
-			labels.append(str((opt as Dictionary).get("player_text", "...")))
+	if _npc_left_conversation():
+		# A moral choice (or any effect) just killed or removed this NPC. Show this
+		# node's line as the final beat, then offer a single way out — a departed NPC
+		# must never keep speaking or loop back to the top of its living tree.
+		_tree_options.append({"player_text": "Rời đi.", "goto": "__end__"})
+		labels.append("Rời đi.")
+	else:
+		for opt in (node.get("options", []) as Array):
+			if opt is Dictionary:
+				_tree_options.append(opt)
+				labels.append(str((opt as Dictionary).get("player_text", "...")))
 	_clear_options()
 	_set_dialogue_text(line, labels, labels.is_empty(), revisit)
+
+# True when a dialogue effect has removed the NPC we're talking to from the world
+# (killed → corpse, or despawned/removed). Used to end the conversation gracefully
+# instead of letting a dead NPC keep speaking or loop back into its living tree.
+func _npc_left_conversation() -> bool:
+	if _npc_id.is_empty():
+		return false
+	if NarrativeState.should_hide_actor(_npc_id):
+		return true
+	if NarrativeState.actor_presentation(_npc_id) == "corpse":
+		return true
+	return NarrativeState.actor_state_name(_npc_id).strip_edges().to_lower() == "dead"
 
 # Award talk-XP for reaching a dialogue node. Quest beats (reveals == "quest") pay
 # the larger reward; world-layer lore nodes (w:* in the merged tree, or any node the
@@ -1489,6 +1547,7 @@ func open(npc_name: String, npc_data: Dictionary, npc_id: String = "", bubble_li
 	)
 
 	GameManager.ui_blocking_input = true
+	AnnouncementCenter.set_conversation_active(true)
 	visible = true
 	_chat_input.grab_focus()
 
@@ -1515,6 +1574,9 @@ func close() -> void:
 	_leaf_waiting = false
 	_restore_staged_camera()
 	GameManager.ui_blocking_input = false
+	# Rewards still queued on the goodbye beat play as a standalone ceremony
+	# right after the chat disappears (AnnouncementCenter handles it from here).
+	AnnouncementCenter.set_conversation_active(false)
 	visible = false
 	# NPCController instantiates a fresh ChatBox per interaction, so free this one.
 	queue_free()

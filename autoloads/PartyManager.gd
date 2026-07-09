@@ -259,6 +259,14 @@ func _retry_pending_joins() -> void:
 
 func _show_join_popup(npc_id: String) -> void:
 	var companion: Dictionary = companions.get(npc_id, {}) as Dictionary
+	# Joins earned mid-conversation play as a full-screen ceremony in the
+	# announcement queue; outside conversations keep the classic slide-in popup.
+	if AnnouncementCenter.enqueue("companion", {
+		"name": companion_name(npc_id),
+		"role": str(companion.get("role", "")),
+		"portrait": companion_portrait(npc_id),
+	}):
+		return
 	var popup: CanvasLayer = PartyJoinPopupScript.new()
 	# Deferred (in order) so it is safe even when a join fires mid-_ready / during a
 	# scene build; the add lands first (popup enters tree → _ready), then show_member

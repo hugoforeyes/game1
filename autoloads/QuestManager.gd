@@ -616,7 +616,8 @@ func reveal_hint(
 	hints_by_level[level_key] = payload
 	revealed_hints[key] = hints_by_level
 	if is_new:
-		_toast_queue.append({"kind": "hint", "hint": payload})
+		if not AnnouncementCenter.enqueue("hint", {"hint": payload}):
+			_toast_queue.append({"kind": "hint", "hint": payload})
 		if hints_by_level.size() >= 3:
 			objective_fully_hinted.emit(quest_id, objective_id)
 	_refresh_tracker()
@@ -1028,6 +1029,10 @@ func _push_toast(kind: String, quest: Dictionary) -> void:
 	if kind == "objective":
 		payload["objective"] = _current_objective(quest).duplicate(true)
 		payload["progress"] = int(_state_of(quest).get("progress", 0))
+	# During a conversation the event becomes a full-screen ceremony instead of
+	# a corner toast (AnnouncementCenter refuses outside conversations).
+	if AnnouncementCenter.enqueue(kind, payload):
+		return
 	_toast_queue.append(payload)
 
 
