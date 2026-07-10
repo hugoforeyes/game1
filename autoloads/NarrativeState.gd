@@ -8,6 +8,7 @@ var choices: Dictionary = {}       # choice_key -> {quest_id, objective_id, opti
 var flags: Dictionary = {}         # flag -> true
 var relationships: Dictionary = {} # npc_id -> int
 var actor_states: Dictionary = {}  # actor_id -> {state, presentation, ...}
+var enemy_level_mods: Array = []   # [{chapter, zone_id ("" = whole chapter), delta}]
 
 
 func reset() -> void:
@@ -15,6 +16,7 @@ func reset() -> void:
 	flags.clear()
 	relationships.clear()
 	actor_states.clear()
+	enemy_level_mods.clear()
 	narrative_changed.emit()
 
 
@@ -27,6 +29,7 @@ func serialize_save() -> Dictionary:
 			"flags": flags.duplicate(true),
 			"relationships": relationships.duplicate(true),
 			"actor_states": actor_states.duplicate(true),
+			"enemy_level_mods": enemy_level_mods.duplicate(true),
 		}
 
 
@@ -35,6 +38,7 @@ func apply_save(data: Dictionary) -> void:
 	flags = (data.get("flags", {}) as Dictionary).duplicate(true)
 	relationships = (data.get("relationships", {}) as Dictionary).duplicate(true)
 	actor_states = (data.get("actor_states", {}) as Dictionary).duplicate(true)
+	enemy_level_mods = (data.get("enemy_level_mods", []) as Array).duplicate(true)
 	narrative_changed.emit()
 
 
@@ -68,6 +72,33 @@ func record_choice(
 	apply_actor_state_changes(outcome, false)
 	narrative_changed.emit()
 	return true
+
+
+## Choice-consequence: enemies of one zone (or the whole chapter when zone_id is
+## empty) permanently shift levels for this run — "word of your deeds spreads".
+func add_enemy_level_mod(chapter: int, zone_id: String, delta: int) -> void:
+	if delta == 0:
+		return
+	enemy_level_mods.append({
+		"chapter": chapter,
+		"zone_id": zone_id.strip_edges(),
+		"delta": clampi(delta, -2, 2),
+	})
+	narrative_changed.emit()
+
+
+## Total enemy-level shift applying to a battle in this chapter+zone.
+func enemy_level_delta_for(chapter: int, zone_id: String) -> int:
+	var total := 0
+	for mod in enemy_level_mods:
+		if not (mod is Dictionary):
+			continue
+		if int((mod as Dictionary).get("chapter", 0)) != chapter:
+			continue
+		var scope_zone := str((mod as Dictionary).get("zone_id", ""))
+		if scope_zone.is_empty() or scope_zone == zone_id:
+			total += int((mod as Dictionary).get("delta", 0))
+	return clampi(total, -3, 3)
 
 
 func choice_matches(condition: Dictionary) -> bool:

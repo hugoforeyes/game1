@@ -172,7 +172,7 @@ const SCREEN_CENTER: = Vector2(480, 270)
 
 
 func open(enemy_data: Dictionary) -> void :
-    enemy = enemy_data
+    enemy = _with_choice_scaling(enemy_data)
     enemy_id = str(enemy.get("id", ""))
     var stats: Dictionary = enemy.get("stats", {}) as Dictionary
     enemy_max_hp = max(int(stats.get("max_hp", 40)), 1)
@@ -194,6 +194,42 @@ func open(enemy_data: Dictionary) -> void :
     _load_ui_kit()
     _build_ui()
     _run_battle()
+
+
+## Choice-consequence: shift this enemy's level by the NarrativeState modifier
+## recorded for the current chapter+zone ("word of your deeds spreads"). The
+## stat curves mirror utils/enemy_balance.py enemy_stats_for as RATIOS over the
+## packaged stats, so the rank multiplier cancels out — keep the constants in
+## sync with the backend, same rule as the XP curve.
+func _with_choice_scaling(enemy_data: Dictionary) -> Dictionary:
+    var narrative: = get_node_or_null("/root/NarrativeState")
+    if narrative == null:
+        return enemy_data
+    var zone_id: = str(GameManager.get_scene_context().get("zone_id", ""))
+    var chapter: = 0
+    var flow: = get_node_or_null("/root/ChapterFlow")
+    if flow != null and flow.has_method("current_chapter"):
+        chapter = int((flow.call("current_chapter") as Dictionary).get("chapter", 0))
+    var delta: int = narrative.call("enemy_level_delta_for", chapter, zone_id)
+    if delta == 0:
+        return enemy_data
+    var old_level: int = max(1, int(enemy_data.get("level", 1)))
+    var new_level: int = clampi(old_level + delta, 1, 18)  # MAX_ENEMY_LEVEL mirror
+    if new_level == old_level:
+        return enemy_data
+    var scaled: Dictionary = enemy_data.duplicate(true)
+    var stats: Dictionary = (scaled.get("stats", {}) as Dictionary).duplicate(true)
+    var hp_ratio: = (30.0 + 14.0 * new_level) / (30.0 + 14.0 * old_level)
+    var atk_ratio: = (6.0 + 2.2 * new_level) / (6.0 + 2.2 * old_level)
+    var def_ratio: = (2.0 + 1.4 * new_level) / (2.0 + 1.4 * old_level)
+    stats["max_hp"] = max(1, int(round(int(stats.get("max_hp", 40)) * hp_ratio)))
+    stats["attack"] = max(1, int(round(int(stats.get("attack", 8)) * atk_ratio)))
+    stats["defense"] = max(0, int(round(int(stats.get("defense", 2)) * def_ratio)))
+    stats["speed"] = max(1, int(stats.get("speed", 6)) + (new_level - old_level))
+    scaled["stats"] = stats
+    scaled["level"] = new_level
+    print("[Battle] choice scaling: %s level %d -> %d" % [str(scaled.get("id", "?")), old_level, new_level])
+    return scaled
 
 
 

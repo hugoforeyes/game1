@@ -80,6 +80,26 @@ static func _inject_hints(tree: Dictionary, npc_data: Dictionary) -> Dictionary:
 	if hint_root_options.is_empty():
 		return tree
 
+	# Delayed choice-consequence: an NPC the player has wronged (negative
+	# relationship, e.g. after a cruel moral choice) withholds every hint they
+	# hold. The refusal REPLACES the hint menu — the player sees exactly what
+	# that choice cost them. reveals stays "" so no hint XP / reveal fires.
+	var npc_id := str(npc_data.get("id", ""))
+	if not npc_id.is_empty() and NarrativeState.relationship_with(npc_id) < 0:
+		hint_root_options = [{
+			"player_text": "(Gợi ý) Xin một lời chỉ dẫn.",
+			"goto": "hint:refused",
+			"is_hint": true,
+		}]
+		hint_nodes = [{
+			"id": "hint:refused",
+			"npc_line": "Ngươi còn dám hỏi ta sao? Ta không còn gì để nói với ngươi.",
+			"emotion": "angry",
+			"topic": "hint",
+			"reveals": "",
+			"options": [{"player_text": "...", "goto": start_id}],
+		}]
+
 	var out: Dictionary = tree.duplicate(true)
 	var new_nodes: Array = []
 	for node in (out.get("nodes", []) as Array):

@@ -122,6 +122,24 @@ func companion_combat_role(npc_id: String) -> String:
 # ── event intake ────────────────────────────────────────────────────────────────
 
 
+## Choice-consequence: a moral choice forces a companion to join or leave the
+## party right now. Reuses the trigger pipeline's _apply so the join popup,
+## joined_history, deferred-join guard, and toasts all behave as usual.
+## Returns true when the roster actually changed.
+func force_party_change(npc_id: String, action: String) -> bool:
+	npc_id = npc_id.strip_edges()
+	if npc_id.is_empty() or not action in ["join", "leave"]:
+		return false
+	var before := active_members.size()
+	_apply({
+		"id": "choice:%s:%s" % [action, npc_id],
+		"companion_id": npc_id,
+		"action": action,
+		"source": "choice",
+	})
+	return active_members.size() != before
+
+
 func notify_zone_entered(zone_id: String) -> void:
 	_evaluate("zone_enter", {"zone_id": zone_id})
 

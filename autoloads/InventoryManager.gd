@@ -9,6 +9,8 @@ extends Node
 signal inventory_changed
 signal item_obtained(item_id: String)
 
+const ItemPickupToastScript = preload("res://scripts/ui/ItemPickupToast.gd")
+
 var catalog: Array = []                 # item definitions in icon order
 var counts: Dictionary = {}             # item_id -> int owned
 var drop_chance: Dictionary = {"minion": 0.45, "elite": 1.0, "boss": 1.0}
@@ -257,7 +259,7 @@ func add_item(item_id: String, amount: int = 1, silent: bool = false) -> void:
 			"count": amount,
 		}]})
 		if not announced:
-			_push_toast("✚ %s ×%d" % [definition.get("name", item_id), amount])
+			_push_item_toast(definition, amount)
 	item_obtained.emit(item_id)
 	inventory_changed.emit()
 
@@ -649,7 +651,7 @@ func _ensure_ui() -> void:
 
 	var vp: Vector2 = get_viewport().get_visible_rect().size
 	_toast_host = Control.new()
-	_toast_host.position = Vector2(vp.x * 0.5, 60)
+	_toast_host.position = Vector2(vp.x * 0.5, 44)
 	_ui.add_child(_toast_host)
 
 	_screen_root = Control.new()
@@ -1106,7 +1108,17 @@ func _close_item_detail_view() -> void:
 
 func _push_toast(text: String) -> void:
 	_ensure_ui()
-	_toast_queue.append(text)
+	_toast_queue.append({"kind": "text", "text": text})
+
+
+func _push_item_toast(definition: Dictionary, amount: int = 1) -> void:
+	_ensure_ui()
+	_toast_queue.append({
+		"kind": "item",
+		"name": str(definition.get("name", definition.get("id", "Vật phẩm"))),
+		"count": maxi(1, amount),
+		"icon": icon_for(definition),
+	})
 
 
 func _process(_delta: float) -> void:
@@ -1118,7 +1130,16 @@ func _process(_delta: float) -> void:
 
 func _show_next_toast() -> void:
 	_toast_busy = true
-	var text: String = _toast_queue.pop_front()
+	var entry: Variant = _toast_queue.pop_front()
+	if entry is Dictionary and str((entry as Dictionary).get("kind", "")) == "item":
+		var toast = ItemPickupToastScript.new()
+		toast.setup(entry as Dictionary)
+		_toast_host.add_child(toast)
+		await toast.play()
+		toast.queue_free()
+		_toast_busy = false
+		return
+	var text := str((entry as Dictionary).get("text", "")) if entry is Dictionary else str(entry)
 	var panel := UiKit.make_panel(Rect2(0, 0, 10, 20))
 	var label := UiKit.make_label(text, 8, UiKit.COLOR_TEXT)
 	label.position = Vector2(10, 4)

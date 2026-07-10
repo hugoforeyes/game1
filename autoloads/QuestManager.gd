@@ -15,14 +15,20 @@ signal npc_talked(npc_id: String)
 ## Emitted the moment a player has now heard all 3 hint levels for one objective —
 ## QuestCompassView listens for this to start pointing toward the exact target.
 signal objective_fully_hinted(quest_id: String, objective_id: String)
+## Emitted after a moral choice resolves, carrying the applied-consequence
+## summary ({option_id, option_label, consequence_text, npc_reaction, chips})
+## the ceremony UI displays. Mirrored in last_choice_result.
+signal choice_resolved(result: Dictionary)
 
 const TOAST_SECONDS := 2.4
 const QuestTrackerViewScript = preload("res://scripts/ui/QuestTrackerView.gd")
 const QuestNotificationToastScript = preload("res://scripts/ui/QuestNotificationToast.gd")
 const PartyHudViewScript = preload("res://scripts/ui/PartyHudView.gd")
 const QuestJournalViewScript = preload("res://scripts/ui/QuestJournalView.gd")
+const MoralChoiceViewScript = preload("res://scripts/ui/MoralChoiceView.gd")
 
 var quests: Array = []
+var last_choice_result: Dictionary = {}  # summary of the most recent moral choice
 var quest_states: Dictionary = {}  # quest_id -> {state, objective_index, progress, choices}
 var revealed_hints: Dictionary = {} # quest_id:objective_id -> level -> display payload
 var tracked_quest_id: String = ""
@@ -55,13 +61,7 @@ var _toast_busy: bool = false
 var _journal_root: Control
 var _journal_view
 var _journal_open: bool = false
-var _choice_root: Control
-var _choice_prompt: Label
-var _choice_options_box: VBoxContainer
-var _choice_open: bool = false
-var _choice_index: int = 0
-var _choice_payload: Dictionary = {}
-var _choice_showing_consequence: bool = false
+var _choice_open: bool = false  # a MoralChoiceView ceremony currently owns the screen
 var _pending_choices: Array = []
 
 
@@ -779,9 +779,21 @@ func _complete_current_objective(quest: Dictionary) -> void:
 		print("[Quest] %s objective %d/%d" % [quest.get("id"), state["objective_index"], objectives.size()])
 
 
-func choose_option(option_id: String) -> void:
-	var quest: Dictionary = _choice_payload.get("quest", {}) as Dictionary
-	resolve_quest_choice(str(quest.get("id", "")), option_id)
+## The {quest, objective} payload for a quest whose CURRENT objective is an
+## unresolved moral choice — {} otherwise. ChatBox uses this to decide whether a
+## choice node hands off to the ceremony, and the ceremony itself feeds on it.
+func dialogue_choice_payload(quest_id: String) -> Dictionary:
+	for quest in quests:
+		if str(quest.get("id")) != quest_id:
+			continue
+		var objective: Dictionary = _current_objective(quest)
+		if objective.is_empty() or str(objective.get("kind")) != "choice":
+			return {}
+		var state: Dictionary = _state_of(quest)
+		if (state.get("choices", {}) as Dictionary).has(str(objective.get("id"))):
+			return {}
+		return {"quest": quest, "objective": objective}
+	return {}
 
 
 ## Resolve a quest's moral choice from inside a conversation tree (an option's
@@ -823,8 +835,19 @@ func resolve_quest_choice(quest_id: String, option_id: String) -> bool:
 				kept_choices.append(payload)
 		_pending_choices = kept_choices
 		choices[str(objective.get("id"))] = option_id
-		_apply_choice_outcome(outcome)
+		var chips: Array = _apply_choice_outcome(outcome)
 		_complete_current_objective(quest)
+		last_choice_result = {
+			"quest_id": quest_id,
+			"objective_id": str(objective.get("id", "")),
+			"option_id": option_id,
+			"option_label": str(selected.get("label", "")),
+			"consequence_text": str(selected.get("consequence_text", "")),
+			"npc_reaction": str(selected.get("npc_reaction", "")),
+			"npc_id": str(objective.get("target_npc_id", "")),
+			"chips": chips,
+		}
+		choice_resolved.emit(last_choice_result)
 		quests_changed.emit()
 		_refresh_tracker()
 		print("[Quest] %s choice resolved in dialogue -> %s" % [quest_id, option_id])
@@ -832,16 +855,147 @@ func resolve_quest_choice(quest_id: String, option_id: String) -> bool:
 	return false
 
 
-func _apply_choice_outcome(outcome: Dictionary) -> void:
+## Apply every mechanical consequence of a choice outcome and return the display
+## "chips" the ceremony UI shows: [{icon, text, tone: "gain"|"loss"|"neutral"}].
+## Flags/relationships/actor-states were already recorded by
+## NarrativeState.record_choice — here they only produce their chips.
+func _apply_choice_outcome(outcome: Dictionary) -> Array:
+	var chips: Array = []
+
 	for grant in outcome.get("give_items", []) as Array:
 		if not (grant is Dictionary):
 			continue
 		var item_id := str((grant as Dictionary).get("item_id", ""))
-		if not item_id.is_empty():
-			InventoryManager.add_item(item_id, maxi(1, int((grant as Dictionary).get("count", 1))))
-	var xp := maxi(0, int(outcome.get("xp", 0)))
+		# add_item silently refuses ids missing from the catalog — only show the
+		# chip for a grant that can actually land.
+		if item_id.is_empty() or InventoryManager.item_def(item_id).is_empty():
+			continue
+		var count := maxi(1, int((grant as Dictionary).get("count", 1)))
+		InventoryManager.add_item(item_id, count)
+		chips.append({
+			"icon": "item", "tone": "gain",
+			"text": "Nhận: %s" % _item_display_name(item_id, str((grant as Dictionary).get("name", ""))),
+		})
+
+	for taken in outcome.get("take_items", []) as Array:
+		if not (taken is Dictionary):
+			continue
+		var item_id := str((taken as Dictionary).get("item_id", ""))
+		if item_id.is_empty():
+			continue
+		var count := maxi(1, int((taken as Dictionary).get("count", 1)))
+		if InventoryManager.remove_item(item_id, count):
+			chips.append({
+				"icon": "item", "tone": "loss",
+				"text": "Mất: %s" % _item_display_name(item_id, str((taken as Dictionary).get("name", ""))),
+			})
+
+	var xp := int(outcome.get("xp", 0))
 	if xp > 0:
 		GameManager.grant_party_xp(xp)
+		chips.append({"icon": "xp", "tone": "gain", "text": "+%d KN" % xp})
+	elif xp < 0:
+		var lost: int = GameManager.lose_xp(-xp)
+		if lost > 0:
+			chips.append({"icon": "xp", "tone": "loss", "text": "-%d KN" % lost})
+
+	var hp_pct := float(outcome.get("hp_percent", 0))
+	if hp_pct != 0.0:
+		var applied: int = GameManager.apply_hp_percent(hp_pct)
+		if applied != 0:
+			chips.append({
+				"icon": "hp_gain" if applied > 0 else "hp_loss",
+				"tone": "gain" if applied > 0 else "loss",
+				"text": "%+d Máu" % applied,
+			})
+
+	for change in outcome.get("relationships", []) as Array:
+		if not (change is Dictionary):
+			continue
+		var npc_id := str((change as Dictionary).get("npc_id", ""))
+		var delta := int((change as Dictionary).get("delta", 0))
+		if npc_id.is_empty() or delta == 0:
+			continue
+		chips.append({
+			"icon": "bond_gain" if delta > 0 else "bond_break",
+			"tone": "gain" if delta > 0 else "loss",
+			"text": "%s %+d" % [_npc_display_name(npc_id, str((change as Dictionary).get("name", ""))), delta],
+		})
+
+	for entry in outcome.get("party", []) as Array:
+		if not (entry is Dictionary):
+			continue
+		var npc_id := str((entry as Dictionary).get("npc_id", ""))
+		var action := str((entry as Dictionary).get("action", ""))
+		if PartyManager.force_party_change(npc_id, action):
+			var display := _npc_display_name(npc_id, str((entry as Dictionary).get("name", "")))
+			chips.append({
+				"icon": "party_leave", "tone": "loss" if action == "leave" else "gain",
+				"text": ("%s rời đội" % display) if action == "leave" else ("%s gia nhập" % display),
+			})
+
+	var scaling: Dictionary = outcome.get("enemy_level_delta", {}) as Dictionary \
+		if outcome.get("enemy_level_delta") is Dictionary else {}
+	var scale_delta := int(scaling.get("delta", 0))
+	if scale_delta != 0:
+		var zone := str(scaling.get("zone_id", ""))
+		if str(scaling.get("scope", "zone")) == "zone" and zone.is_empty():
+			zone = current_zone_id
+		elif str(scaling.get("scope", "zone")) == "chapter":
+			zone = ""
+		NarrativeState.add_enemy_level_mod(_current_chapter_number(), zone, scale_delta)
+		chips.append({
+			"icon": "enemy_up",
+			"tone": "loss" if scale_delta > 0 else "gain",
+			"text": "Kẻ địch mạnh hơn" if scale_delta > 0 else "Kẻ địch yếu đi",
+		})
+
+	for entry in outcome.get("actor_states", []) as Array:
+		if not (entry is Dictionary):
+			continue
+		var actor_id := str((entry as Dictionary).get("actor_id", (entry as Dictionary).get("npc_id", "")))
+		if actor_id.is_empty():
+			continue
+		var state := str((entry as Dictionary).get("state", "")).strip_edges().to_lower()
+		if state in ["dead", "died", "killed"]:
+			chips.append({"icon": "death", "tone": "loss", "text": "%s đã chết" % _npc_display_name(actor_id, "")})
+		elif state in ["hidden", "removed", "despawned", "gone"]:
+			chips.append({"icon": "party_leave", "tone": "neutral", "text": "%s đã rời đi" % _npc_display_name(actor_id, "")})
+
+	return chips
+
+
+func _item_display_name(item_id: String, authored_name: String = "") -> String:
+	if not authored_name.is_empty():
+		return authored_name
+	var definition: Dictionary = InventoryManager.item_def(item_id)
+	var display := str(definition.get("name", "")).strip_edges()
+	return display if not display.is_empty() else _prettify_id(item_id)
+
+
+func _npc_display_name(npc_id: String, authored_name: String = "") -> String:
+	if not authored_name.is_empty():
+		return authored_name
+	var from_party := PartyManager.companion_name(npc_id)
+	if from_party != npc_id:
+		return from_party
+	return _prettify_id(npc_id)
+
+
+func _prettify_id(raw_id: String) -> String:
+	var cleaned := raw_id
+	for prefix in ["world_npc_", "world_item_", "world_enemy_", "npc_", "item_", "enemy_"]:
+		if cleaned.begins_with(prefix):
+			cleaned = cleaned.substr(prefix.length())
+			break
+	return cleaned.replace("_", " ").capitalize()
+
+
+func _current_chapter_number() -> int:
+	var flow := get_node_or_null("/root/ChapterFlow")
+	if flow != null and flow.has_method("current_chapter"):
+		return int((flow.call("current_chapter") as Dictionary).get("chapter", 0))
+	return 0
 
 
 func _skip_unavailable_objectives(quest: Dictionary) -> void:
@@ -915,7 +1069,6 @@ func _ensure_ui() -> void:
 	_ui.add_child(_toast_host)
 
 	_build_journal()
-	_build_choice_dialog()
 
 
 func _build_journal() -> void:
@@ -930,40 +1083,6 @@ func _build_journal() -> void:
 		quests_changed.connect(_refresh_open_journal)
 	if not InventoryManager.inventory_changed.is_connected(_refresh_open_journal):
 		InventoryManager.inventory_changed.connect(_refresh_open_journal)
-
-
-func _build_choice_dialog() -> void:
-	_choice_root = Control.new()
-	_choice_root.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_choice_root.visible = false
-	_ui.add_child(_choice_root)
-
-	var dim := ColorRect.new()
-	dim.color = Color(0.01, 0.01, 0.04, 0.78)
-	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_choice_root.add_child(dim)
-
-	var design: Vector2 = get_viewport().get_visible_rect().size / 2.0
-	var panel := UiKit.make_panel(Rect2((design.x - 340.0) * 0.5, (design.y - 150.0) * 0.5, 340, 150))
-	_choice_root.add_child(panel)
-
-	var header := UiKit.make_label("LỰA CHỌN", 9, UiKit.COLOR_ACCENT)
-	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.position = Vector2(0, 8)
-	header.size = Vector2(340, 12)
-	panel.add_child(header)
-
-	_choice_prompt = UiKit.make_label("", 7, UiKit.COLOR_TEXT)
-	_choice_prompt.position = Vector2(16, 26)
-	_choice_prompt.size = Vector2(308, 52)
-	_choice_prompt.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	panel.add_child(_choice_prompt)
-
-	_choice_options_box = VBoxContainer.new()
-	_choice_options_box.position = Vector2(24, 84)
-	_choice_options_box.size = Vector2(292, 56)
-	_choice_options_box.add_theme_constant_override("separation", 8)
-	panel.add_child(_choice_options_box)
 
 
 # ── UI behavior ───────────────────────────────────────────────────────────────
@@ -1142,60 +1261,18 @@ func _on_journal_track_requested(quest_id: String) -> void:
 	_refresh_journal()
 
 
-# ── choice dialog ─────────────────────────────────────────────────────────────
+# ── choice ceremony ───────────────────────────────────────────────────────────
 
 
+## Fallback trigger: the player talked to the choice's target NPC but the
+## conversation tree never routed into the choice node — the ceremony still
+## plays, just without a conversation to hand off from.
 func _open_choice(payload: Dictionary) -> void:
-	_choice_payload = payload
 	_choice_open = true
-	_choice_index = 0
-	_choice_showing_consequence = false
-	GameManager.ui_blocking_input = true
-	var objective: Dictionary = payload.get("objective", {}) as Dictionary
-	_choice_prompt.text = str(objective.get("prompt", objective.get("description", "")))
-	_render_choice_options()
-	_choice_root.visible = true
-	_choice_root.modulate.a = 0.0
-	var tween := create_tween()
-	tween.tween_property(_choice_root, "modulate:a", 1.0, 0.25)
-
-
-func _render_choice_options() -> void:
-	for child in _choice_options_box.get_children():
-		child.queue_free()
-	var objective: Dictionary = _choice_payload.get("objective", {}) as Dictionary
-	var options: Array = objective.get("options", []) as Array
-	for index in range(options.size()):
-		var option: Dictionary = options[index] as Dictionary
-		var selected: bool = index == _choice_index
-		var entry := UiKit.make_label(
-			("> " if selected else "  ") + str(option.get("label", "")),
-			8,
-			UiKit.COLOR_ACCENT if selected else UiKit.COLOR_TEXT_DIM,
-		)
-		entry.size = Vector2(292, 12)
-		_choice_options_box.add_child(entry)
-
-
-func _confirm_choice() -> void:
-	var objective: Dictionary = _choice_payload.get("objective", {}) as Dictionary
-	var options: Array = objective.get("options", []) as Array
-	if _choice_showing_consequence:
-		_choice_root.visible = false
-		_choice_open = false
-		GameManager.ui_blocking_input = false
-		var picked: Dictionary = options[_choice_index] as Dictionary if _choice_index < options.size() else {}
-		choose_option(str(picked.get("id", "a")))
-		return
-	if _choice_index >= options.size():
-		return
-	var option: Dictionary = options[_choice_index] as Dictionary
-	_choice_showing_consequence = true
-	_choice_prompt.text = str(option.get("consequence_text", "")) if not str(option.get("consequence_text", "")).is_empty() else str(option.get("label", ""))
-	for child in _choice_options_box.get_children():
-		child.queue_free()
-	var hint := UiKit.make_label("ENTER  tiếp tục", 7, UiKit.COLOR_TEXT_DIM)
-	_choice_options_box.add_child(hint)
+	var view := MoralChoiceViewScript.new()
+	get_tree().root.add_child(view)
+	view.present(payload)
+	view.closed.connect(func() -> void: _choice_open = false)
 
 
 # ── input ─────────────────────────────────────────────────────────────────────
@@ -1209,17 +1286,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 
 	if _choice_open:
-		if event.is_action_pressed("ui_accept"):
-			_confirm_choice()
-			get_viewport().set_input_as_handled()
-		elif not _choice_showing_consequence and (event.is_action_pressed("ui_down") or event.is_action_pressed("ui_up")):
-			var objective: Dictionary = _choice_payload.get("objective", {}) as Dictionary
-			var count: int = (objective.get("options", []) as Array).size()
-			if count > 0:
-				_choice_index = (_choice_index + (1 if event.is_action_pressed("ui_down") else count - 1)) % count
-				_render_choice_options()
-			get_viewport().set_input_as_handled()
-		return
+		return  # the MoralChoiceView ceremony owns input while it is open
 
 	if _journal_open:
 		if _journal_view != null and _journal_view.handle_input(event):

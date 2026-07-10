@@ -1,0 +1,25 @@
+MOCKUP
+Use case: ui-mockup
+Asset type: shippable AAA item-pickup notification for a 1024x576 top-down RPG
+Primary request: a compact upper-center toast with a 52x52 item icon, the exact
+Vietnamese micro-label "VẬT PHẨM NHẬN ĐƯỢC", the item name "Cánh Hoa Xám", a
+small "+3" quantity capsule, and a thin cyan-to-gold lifetime line.
+Style: restrained dark navy glass, antique-gold hairline frame, warm ivory text,
+one cyan gem accent, subtle inner highlight and controlled shadow.
+Typography: modern humanist sans-serif similar to Be Vietnam Pro; correct
+Vietnamese diacritics; exact optical alignment; no serif text.
+Constraints: production-realistic Godot UI, no giant medallion, no clutter, no
+clipped text, no logo, no watermark, feasible with Control nodes/style boxes.
+
+RUNTIME COMPONENT
+Use case: background-extraction
+Asset type: empty item-pickup toast frame for a Godot TextureRect
+Input image: the approved mockup above as the visual reference.
+Primary request: recreate only the empty horizontal frame at approximately 5:1.
+Keep the navy glass body, antique-gold rim, empty left icon well, cyan divider,
+empty right quantity capsule, tiny cyan gems and bottom cyan-to-gold timer track.
+Remove all text, item art and gameplay. Keep the component front-facing and
+centered on a perfectly uniform #00ff00 chroma background with generous padding.
+Constraints: crisp separated edges; no green inside the component; no text,
+letters, numbers, logo, watermark, extra pieces or oversized ornament; preserve
+clear dynamic-content areas and readability after downscaling to 360x72.

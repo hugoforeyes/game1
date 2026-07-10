@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://moralchoiceqa1"]
+
+[ext_resource type="Script" path="res://tools/MoralChoiceQAPreview.gd" id="1"]
+
+[node name="MoralChoiceQAPreview" type="Node"]
+script = ExtResource("1")

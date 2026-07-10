@@ -31,6 +31,10 @@ static var bottom_y: float = 96.0
 var _root: Control
 var _party_manager: Node
 var _portrait_cache: Texture2D = null
+var _xp_rect := Rect2()
+var _xp_fill: Control = null
+var _xp_gain_label: Label = null
+var _xp_gain_tween: Tween = null
 
 
 func _ready() -> void:
@@ -41,6 +45,7 @@ func _ready() -> void:
 
 	GameManager.player_stats_changed.connect(_refresh)
 	GameManager.companion_leveled.connect(_on_companion_leveled)
+	GameManager.talk_xp_awarded.connect(_on_talk_xp_awarded)
 	if _party_manager != null:
 		_party_manager.member_joined.connect(_on_party_changed)
 		_party_manager.member_left.connect(_on_party_changed)
@@ -53,6 +58,52 @@ func _on_companion_leveled(_npc_id: String, _level: int) -> void:
 
 func _on_party_changed(_npc_id: String) -> void:
 	_refresh()
+
+
+func _on_talk_xp_awarded(_category: String, amount: int, _recipients: Array) -> void:
+	if amount <= 0 or _root == null or not is_instance_valid(_root):
+		return
+	if _xp_gain_tween != null and _xp_gain_tween.is_valid():
+		_xp_gain_tween.kill()
+	if _xp_gain_label != null and is_instance_valid(_xp_gain_label):
+		_xp_gain_label.queue_free()
+
+	# The value is right-aligned directly beneath the slim EXP bar. This keeps
+	# the feedback attached to progression without widening the persistent card.
+	var target := Vector2(_xp_rect.end.x - 58.0, _xp_rect.end.y + 1.0).round()
+	var label := UiKit.make_label_strong("+%d KN" % amount, 8, UiKit.COLOR_CYAN)
+	label.name = "XpGainLabel"
+	label.position = target + Vector2(0, 2)
+	label.size = Vector2(58, 11)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	label.z_index = 20
+	label.modulate.a = 0.0
+	label.set_meta("target_position", target)
+	_root.add_child(label)
+	_xp_gain_label = label
+
+	# A short brightness pulse makes the bar acknowledge the update while the
+	# text remains the only new shape added to the HUD.
+	if _xp_fill != null and is_instance_valid(_xp_fill):
+		_xp_fill.modulate = Color(1.32, 1.32, 1.32, 1.0)
+
+	_xp_gain_tween = create_tween()
+	_xp_gain_tween.set_pause_mode(Tween.TWEEN_PAUSE_PROCESS)
+	_xp_gain_tween.set_parallel(true)
+	_xp_gain_tween.tween_property(label, "position", target, 0.16).set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_OUT)
+	_xp_gain_tween.tween_property(label, "modulate:a", 1.0, 0.12).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	if _xp_fill != null and is_instance_valid(_xp_fill):
+		_xp_gain_tween.tween_property(_xp_fill, "modulate", Color.WHITE, 0.32).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_xp_gain_tween.chain().tween_interval(0.90)
+	_xp_gain_tween.chain().tween_property(label, "position:y", target.y - 2.0, 0.22).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	_xp_gain_tween.parallel().tween_property(label, "modulate:a", 0.0, 0.20).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	_xp_gain_tween.chain().tween_callback(func() -> void:
+		if is_instance_valid(label):
+			label.queue_free()
+		if _xp_gain_label == label:
+			_xp_gain_label = null
+	)
 
 
 func _hero_portrait() -> Texture2D:
@@ -132,6 +183,10 @@ func _refresh() -> void:
 		return
 	for child in _root.get_children():
 		child.queue_free()
+	if _xp_gain_tween != null and _xp_gain_tween.is_valid():
+		_xp_gain_tween.kill()
+	_xp_gain_label = null
+	_xp_fill = null
 
 	var members: Array = []
 	if _party_manager != null and _party_manager.has_method("active_member_ids"):
@@ -211,10 +266,11 @@ func _refresh() -> void:
 	_root.add_child(hp_text)
 
 	# ── slim XP bar ──
-	var xp_rect := Rect2(LEFT + 78.0, TOP + 50.0, WIDTH - 90.0, 7.0)
-	var xp_bar := UiKit.make_bar(xp_rect, "blue")
+	_xp_rect = Rect2(LEFT + 78.0, TOP + 50.0, WIDTH - 90.0, 7.0)
+	var xp_bar := UiKit.make_bar(_xp_rect, "blue")
 	var xp_ratio := clampf(float(GameManager.player_xp) / float(maxi(GameManager.xp_to_next_level(), 1)), 0.0, 1.0)
 	(xp_bar["fill"] as Control).size.x = xp_bar["track_w"] * xp_ratio
+	_xp_fill = xp_bar["fill"] as Control
 	_root.add_child(xp_bar["root"])
 
 	# ── companion rows ──

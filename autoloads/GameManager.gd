@@ -182,6 +182,29 @@ func lose_xp_on_defeat() -> void:
 	player_stats_changed.emit()
 	_autosave()
 
+## Choice-consequence: XP drained by a moral choice. Only eats progress within
+## the current level — a choice never de-levels the hero. Returns the actual loss.
+func lose_xp(amount: int) -> int:
+	var lost: int = clampi(amount, 0, player_xp)
+	if lost <= 0:
+		return 0
+	player_xp -= lost
+	player_stats_changed.emit()
+	_autosave()
+	return lost
+
+## Choice-consequence: damage/heal the hero by a percentage of max HP.
+## Never lethal (floors at 1 HP). Returns the signed HP change actually applied.
+func apply_hp_percent(percent: float) -> int:
+	var max_hp: int = int(player_battle_stats()["max_hp"])
+	var current: int = get_player_hp()
+	var target: int = clampi(current + int(round(max_hp * percent / 100.0)), 1, max_hp)
+	if target == current:
+		return 0
+	set_player_hp(target)
+	_autosave()
+	return target - current
+
 # ── talk-XP (quest beats vs. world lore) ───────────────────────────────────────
 ## Award conversation XP the FIRST time the player reaches a given dialogue node.
 ## category: "quest" (a story beat) or "world" (a piece of lore) — different worth.

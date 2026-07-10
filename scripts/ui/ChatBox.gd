@@ -2,6 +2,7 @@ extends CanvasLayer
 
 const MenuCursorScript := preload("res://scripts/ui/MenuCursor.gd")
 const InteractionPromptScript := preload("res://scripts/npc/InteractionPrompt.gd")
+const MoralChoiceViewScript := preload("res://scripts/ui/MoralChoiceView.gd")
 
 const TEX_DIALOGUE_PANEL_PATH := "res://assets/ui/dialogue_v2/dialogue_panel.png"
 const TEX_PORTRAIT_FRAME_PATH := "res://assets/ui/dialogue_v2/portrait_frame.png"
@@ -1179,6 +1180,13 @@ func _enter_tree_node(node_id: String) -> void:
 	if node.is_empty():
 		close()
 		return
+	# A moral choice NEVER plays inline in the tree: reaching a node whose
+	# options carry a quest_choice effect (and whose quest still awaits its
+	# decision) hands the whole moment to the full-screen ceremony instead.
+	var choice_quest_id := _pending_choice_quest_of(node)
+	if not choice_quest_id.is_empty():
+		_open_choice_ceremony(choice_quest_id)
+		return
 	# "Seen before" survives across conversation sessions (QuestManager, per NPC),
 	# not just navigation within the currently-open one.
 	var revisit: bool = _visited_nodes.has(node_id) or QuestManager.is_dialogue_node_visited(_npc_id, node_id)
@@ -1214,6 +1222,31 @@ func _enter_tree_node(node_id: String) -> void:
 	_clear_options()
 	_set_dialogue_text(line, labels, labels.is_empty(), revisit)
 
+# The quest id of an UNRESOLVED moral choice hosted by this node — "" when the
+# node is not a choice node, or when that choice was already decided (a revisit
+# falls through to the normal tree flow).
+func _pending_choice_quest_of(node: Dictionary) -> String:
+	for opt in (node.get("options", []) as Array):
+		if not (opt is Dictionary):
+			continue
+		for eff in ((opt as Dictionary).get("effects", []) as Array):
+			if eff is Dictionary and str((eff as Dictionary).get("type", "")) == "quest_choice":
+				var quest_id := str((eff as Dictionary).get("quest_id", ""))
+				if not QuestManager.dialogue_choice_payload(quest_id).is_empty():
+					return quest_id
+	return ""
+
+
+# Close this chat and let the full-screen ceremony own the moral choice.
+func _open_choice_ceremony(quest_id: String) -> void:
+	var payload: Dictionary = QuestManager.dialogue_choice_payload(quest_id)
+	var portrait: Texture2D = _npc_portrait.texture if _npc_portrait != null else null
+	var view := MoralChoiceViewScript.new()
+	get_tree().root.add_child(view)
+	view.present(payload, _npc_name, portrait)
+	close(true)  # hand-off: the ceremony owns AnnouncementCenter's window now
+
+
 # True when a dialogue effect has removed the NPC we're talking to from the world
 # (killed → corpse, or despawned/removed). Used to end the conversation gracefully
 # instead of letting a dead NPC keep speaking or loop back into its living tree.
@@ -1243,34 +1276,9 @@ func _award_talk_xp(node_id: String, node: Dictionary, line: String) -> void:
 			category = "world"
 	if category.is_empty():
 		return
-	var result: Dictionary = GameManager.award_talk_xp(_npc_id, node_id, category)
-	if bool(result.get("awarded", false)):
-		_show_talk_xp_popup(category, int(result.get("amount", 0)), result.get("recipients", []) as Array)
-
-# A small floating "+XP" cue over the conversation. Authored in the ChatBox's
-# ~480x270 space (the layer carries a UI_SCALE transform).
-func _show_talk_xp_popup(category: String, amount: int, recipients: Array) -> void:
-	var label := Label.new()
-	var tag := "Nhiệm vụ" if category == "quest" else "Thế giới"
-	var who := "" if recipients.size() <= 1 else "  (cả đội)"
-	label.text = "+%d KN · %s%s" % [amount, tag, who]
-	label.add_theme_font_size_override("font_size", 11)
-	var col := Color(1.0, 0.85, 0.45) if category == "quest" else Color(0.55, 0.85, 1.0)
-	label.add_theme_color_override("font_color", col)
-	label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
-	label.add_theme_constant_override("shadow_offset_x", 1)
-	label.add_theme_constant_override("shadow_offset_y", 1)
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.position = Vector2(170.0, 54.0)
-	label.size = Vector2(140.0, 16.0)
-	label.z_index = 50
-	add_child(label)
-	label.modulate.a = 0.0
-	var tween := create_tween()
-	tween.tween_property(label, "modulate:a", 1.0, 0.18)
-	tween.parallel().tween_property(label, "position:y", 40.0, 1.2).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	tween.tween_property(label, "modulate:a", 0.0, 0.5).set_delay(0.4)
-	tween.tween_callback(label.queue_free)
+	# PartyHudView owns the feedback beside the persistent EXP bar via the
+	# talk_xp_awarded signal emitted by GameManager.
+	GameManager.award_talk_xp(_npc_id, node_id, category)
 
 func _tree_select(index: int) -> void:
 	if index < 0 or index >= _tree_options.size():
@@ -1562,7 +1570,7 @@ func _on_start_final(data: Dictionary) -> void:
 func _on_start_error(error: String) -> void:
 	print("[ChatBox] start-stream error: ", error)
 
-func close() -> void:
+func close(hand_off_ceremony: bool = false) -> void:
 	_disconnect_quest_refresh()
 	NPCConversationManager.cancel_all()
 	_loading_label     = null
@@ -1574,9 +1582,15 @@ func close() -> void:
 	_leaf_waiting = false
 	_restore_staged_camera()
 	GameManager.ui_blocking_input = false
-	# Rewards still queued on the goodbye beat play as a standalone ceremony
-	# right after the chat disappears (AnnouncementCenter handles it from here).
-	AnnouncementCenter.set_conversation_active(false)
+	if hand_off_ceremony:
+		# The moral-choice ceremony takes the stage next and OWNS the
+		# conversation window from here — leaving it active keeps rewards
+		# queueing instead of spilling out as corner toasts mid-ceremony.
+		pass
+	else:
+		# Rewards still queued on the goodbye beat play as a standalone ceremony
+		# right after the chat disappears (AnnouncementCenter handles it from here).
+		AnnouncementCenter.set_conversation_active(false)
 	visible = false
 	# NPCController instantiates a fresh ChatBox per interaction, so free this one.
 	queue_free()
