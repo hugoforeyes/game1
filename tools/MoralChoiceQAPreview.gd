@@ -216,3 +216,81 @@ func _run() -> void:
 	# close the ceremony (DONE phase) so teardown is clean
 	_key(KEY_ENTER)
 	await get_tree().create_timer(0.5).timeout
+
+	await _run_dialogue_handoff_check()
+
+
+## Regression (the "Chiến Hào Tro Lạnh" double-ceremony bug): a story tree
+## whose quest-beat node (reveals=="quest") comes BEFORE the choice node makes
+## notify_npc_talked queue the choice as a fallback; the ChatBox hand-off then
+## used to drop ui_blocking_input for a frame, letting QuestManager._process
+## pop that queue and open a SECOND ceremony over the first one.
+func _run_dialogue_handoff_check() -> void:
+	NarrativeState.reset()
+	QuestManager.quests = [{
+		"id": "qa_q3", "title": "QA Handoff", "type": "main",
+		"reward": {"xp": 5},
+		"giver": {"mode": "npc", "npc_id": "npc_trench"},
+		"objectives": [{
+			"id": "o1", "kind": "choice", "zone_id": "qa_zone", "target_npc_id": "npc_trench",
+			"prompt": "Chọn đi.",
+			"options": [
+				{"id": "a", "label": "A", "consequence_text": "a.", "outcome": {"xp": 5}},
+				{"id": "b", "label": "B", "consequence_text": "b.", "outcome": {"xp": 5}},
+			],
+		}],
+	}]
+	QuestManager.quest_states = {
+		"qa_q3": {"state": "inactive", "objective_index": 0, "progress": 0, "choices": {}},
+	}
+	QuestManager.current_zone_id = "qa_zone"
+
+	var tree := {
+		"start_node": "root",
+		"nodes": [
+			{"id": "root", "npc_line": "Chào.", "options": [{"player_text": "Về nhiệm vụ.", "goto": "beat"}]},
+			{"id": "beat", "npc_line": "Tình hình đây.", "reveals": "quest",
+				"options": [{"player_text": "Ta sẽ quyết.", "goto": "choice"}]},
+			{"id": "choice", "npc_line": "Chọn đi.", "options": [
+				{"player_text": "A", "goto": "root", "effects": [{"type": "quest_choice", "quest_id": "qa_q3", "option": "a"}]},
+				{"player_text": "B", "goto": "root", "effects": [{"type": "quest_choice", "quest_id": "qa_q3", "option": "b"}]},
+			]},
+		],
+	}
+	var ChatBoxScene := load("res://scenes/ui/ChatBox.tscn") as PackedScene
+	var chatbox: Node = ChatBoxScene.instantiate()
+	add_child(chatbox)
+	chatbox.open_tree("Lính Chiến Hào", {"id": "npc_trench"}, tree)
+	await get_tree().process_frame
+	chatbox.call("_tree_select", 0)   # -> beat node (reveals quest, queues fallback)
+	await get_tree().process_frame
+	_check((QuestManager._pending_choices as Array).size() == 1, "quest-beat queued the fallback choice")
+	chatbox.call("_tree_select", 0)   # -> choice node: hands off to the ceremony
+	# The old bug popped the queue within a frame or two — watch a good while.
+	var max_seen := 0
+	for _i in range(40):
+		await get_tree().process_frame
+		max_seen = maxi(max_seen, _count_ceremonies())
+	_check(max_seen == 1, "exactly ONE ceremony across the hand-off (saw %d)" % max_seen)
+	_check((QuestManager._pending_choices as Array).is_empty(), "hand-off claimed the queued duplicate")
+
+	# Resolve + close, then make sure no late second ceremony sneaks in.
+	await get_tree().create_timer(0.8).timeout
+	_key(KEY_ENTER)
+	await get_tree().create_timer(0.25).timeout
+	_key(KEY_ENTER)
+	await get_tree().create_timer(1.6).timeout
+	_key(KEY_ENTER)
+	await get_tree().create_timer(0.6).timeout
+	for _i in range(40):
+		await get_tree().process_frame
+	_check(_count_ceremonies() == 0, "no ceremony re-opens after resolve+close")
+	_check(NarrativeState.choice_matches({"choice_key": "qa_q3:o1", "option": "a"}), "hand-off choice recorded")
+
+
+func _count_ceremonies() -> int:
+	var count := 0
+	for child in get_tree().root.get_children():
+		if child is CanvasLayer and child.get_script() == MoralChoiceViewScript:
+			count += 1
+	return count

@@ -28,7 +28,20 @@ const SILVER_DIM := Color(0.84, 0.90, 0.99, 0.58)
 const SILVER_FAINT := Color(0.84, 0.90, 0.99, 0.34)
 const ICE := Color(0.64, 0.86, 1.0, 1.0)
 const RED_COLD := Color(0.90, 0.47, 0.49, 1.0)
-const DIM_COLOR := Color(0.006, 0.010, 0.026, 0.86)
+const DIM_COLOR := Color(0.006, 0.010, 0.026, 0.62)
+
+## Frosted-glass backdrop: the live scene stays visible behind the ceremony,
+## blurred (mipmap LOD) and gently tinted toward moonlit navy for contrast.
+const FROSTED_SHADER := """
+shader_type canvas_item;
+uniform sampler2D screen_texture : hint_screen_texture, filter_linear_mipmap;
+uniform float blur_lod = 2.4;
+uniform vec4 tint : source_color = vec4(0.006, 0.010, 0.026, 0.58);
+void fragment() {
+	vec3 scene = textureLod(screen_texture, SCREEN_UV, blur_lod).rgb;
+	COLOR = vec4(mix(scene, tint.rgb, tint.a), 1.0);
+}
+"""
 
 enum Phase { CHOICE, ARMED, RESOLVING, REVEAL, DONE }
 
@@ -82,9 +95,16 @@ func _build_shell() -> void:
 	add_child(_root)
 
 	var dim := ColorRect.new()
+	# The color is only the fallback look if the shader ever fails to compile —
+	# normally the frosted shader fully overrides the fragment output.
 	dim.color = DIM_COLOR
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var frost := Shader.new()
+	frost.code = FROSTED_SHADER
+	var frost_material := ShaderMaterial.new()
+	frost_material.shader = frost
+	dim.material = frost_material
 	_root.add_child(dim)
 
 	var vp := _viewport_size()

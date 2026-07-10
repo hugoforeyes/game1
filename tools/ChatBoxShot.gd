@@ -10,7 +10,7 @@ var _tree := {
 	"nodes": [
 		{
 			"id": "root",
-			"npc_line": "Chào cậu, lữ khách. Khu chợ này đã nuôi sống ba thế hệ nhà ta — có điều gì ta giúp được không?",
+			"npc_line": "Chào cậu, lữ khách. Khu chợ này đã nuôi sống ba thế hệ nhà ta. Ngày ông nội ta dựng sạp đầu tiên, cả vùng còn là bãi lầy hoang vu, người qua kẻ lại chỉ đếm trên đầu ngón tay. Rồi chiến tranh tràn qua, lửa cháy ba ngày ba đêm, nhưng chúng ta vẫn đứng dậy, dựng lại từng viên gạch một — có điều gì ta giúp được không?",
 			"emotion": "happy",
 			"options": [
 				{"player_text": "Về nhiệm vụ Lá Thư Cuối.", "goto": "topic_a"},

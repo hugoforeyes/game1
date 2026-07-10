@@ -113,3 +113,23 @@ func _update_animation(direction: Vector2) -> void:
 
 func get_facing_vector() -> Vector2:
 	return _facing_vector
+
+
+func face_direction(direction: String) -> void:
+	## Keeps the logical interaction-facing direction in sync when a cutscene
+	## turns the player without movement input.
+	var normalized := direction if direction in ["down", "up", "left", "right"] else "down"
+	match normalized:
+		"right":
+			_facing_vector = Vector2.RIGHT
+		"left":
+			_facing_vector = Vector2.LEFT
+		"up":
+			_facing_vector = Vector2.UP
+		_:
+			_facing_vector = Vector2.DOWN
+	_last_anim = "walk_%s" % normalized
+	if anim_sprite != null and anim_sprite.sprite_frames != null \
+			and anim_sprite.sprite_frames.has_animation(_last_anim):
+		anim_sprite.play(_last_anim)
+		anim_sprite.pause()

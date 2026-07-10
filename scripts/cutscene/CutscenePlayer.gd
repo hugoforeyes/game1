@@ -6,9 +6,12 @@ extends CanvasLayer
 ## this player also auto-faces speaker pairs as a safety net. Esc skips.
 
 signal cutscene_finished
+signal actor_return_finished
 
 const TYPE_SPEED := 44.0
 const MOVE_SPEED_PX := 144.0
+const DEFAULT_NPC_RETURN_SPEED_PX := 36.0
+const DEFAULT_ENEMY_RETURN_SPEED_PX := 44.0
 const LETTERBOX_H := 9.0
 const PRESTAGE_DISTANCE_TILES := 5.0
 const PRESTAGE_APPROACH_TILES := 2.0
@@ -35,6 +38,13 @@ const NAMEPLATE_MIN_WIDTH := 86.0
 const NAMEPLATE_MAX_WIDTH := 240.0
 const NAMEPLATE_TEXT_PADDING := 14.0
 
+# chat_v3 — the conversation UI's gold+cyan skin, applied over this dialogue
+# block too so cutscene and NPC chat read as one system. Only the DRAWING
+# swaps; the layout/logic (dynamic nameplate, narrator repositioning) stays.
+# Missing assets fall back to the cutscene_v3 modular pieces.
+const CHAT_V3_DIR := "res://assets/ui/chat_v3/"
+const NAMEPLATE_TEXT_PADDING_V3 := 19.0  # the plaque's pointed caps are wider
+
 const DIALOGUE_PANEL_RECT := Rect2(134, 176, 316, 68)
 const NARRATOR_PANEL_TOP := 40.0
 
@@ -46,6 +56,9 @@ var _characters_root: Node2D = null
 var _camera: Camera2D = null
 var _player_camera: Camera2D = null
 
+const ScrollingDialogueTextScript := preload("res://scripts/ui/ScrollingDialogueText.gd")
+
+var _chat_v3 := false
 var _actions: Array = []
 var _skip: bool = false
 var _accept_pressed: bool = false
@@ -57,6 +70,11 @@ var _start_tiles: Dictionary = {}  # actor_id -> {x,y}: backend pre-placement (a
 var _blocked_tiles: Dictionary = {}
 var _astar: AStarGrid2D = null  # walkable-grid pathfinding for cutscene moves
 var _collision_state: Dictionary = {}  # actor -> {layer, mask}: restored on finish
+var _return_physics_state: Dictionary = {}  # non-NPC actor -> pre-return physics enabled
+var _walk_home_tweens: Array[Tween] = []
+var _walk_home_sprites: Dictionary = {}  # Tween -> AnimatedSprite2D
+var _walk_home_actors: Dictionary = {}  # Tween -> Node2D
+var _walk_home_paused: bool = false
 
 # Design-space size of this scale-2 layer (512x288 at a 1024x576 viewport).
 # The dialogue/title blocks are authored for a 480x270 canvas and anchored
@@ -72,7 +90,7 @@ var _nameplate_art_root: Control
 var _name_label: Label
 var _portrait_frame: Control
 var _portrait_rect: TextureRect
-var _text_label: Label
+var _text_label: RichTextLabel  # ScrollingDialogueText — fixed font, scrolls when long
 var _continue_marker: TextureRect
 var _title_dim: ColorRect
 var _title_label: Label
@@ -491,24 +509,48 @@ func _build_ui() -> void:
 	_portrait_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_portrait_frame.add_child(_portrait_rect)
 
+	_chat_v3 = ResourceLoader.exists(CHAT_V3_DIR + "dialogue_panel.png")
 	var panel_rect := DIALOGUE_PANEL_RECT
 	_dialogue_panel = Panel.new()
 	_dialogue_panel.position = panel_rect.position
 	_dialogue_panel.size = panel_rect.size
-	var panel_style := StyleBoxFlat.new()
-	panel_style.bg_color = Color(0.025, 0.035, 0.085, 0.94)
-	panel_style.set_corner_radius_all(2)
-	_dialogue_panel.add_theme_stylebox_override("panel", panel_style)
+	if _chat_v3:
+		# The chat_v3 panel art (damask + gold border + cyan gems) drawn at its
+		# TRUE baked aspect, as a CHILD of the panel so the narrator variant's
+		# repositioning carries it along. Bottom-aligned with a slight bleed;
+		# the extra height rises behind the nameplate.
+		_dialogue_panel.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
+		var art_w := panel_rect.size.x + 8.0
+		var art_h := art_w * (352.0 / 1474.0)
+		var art := TextureRect.new()
+		art.texture = load(CHAT_V3_DIR + "dialogue_panel.png") as Texture2D
+		art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		art.stretch_mode = TextureRect.STRETCH_SCALE
+		art.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+		art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		art.size = Vector2(art_w, art_h)
+		art.position = Vector2(-4.0, panel_rect.size.y + 2.0 - art_h)
+		_dialogue_panel.add_child(art)
+	else:
+		var panel_style := StyleBoxFlat.new()
+		panel_style.bg_color = Color(0.025, 0.035, 0.085, 0.94)
+		panel_style.set_corner_radius_all(2)
+		_dialogue_panel.add_theme_stylebox_override("panel", panel_style)
 	_dialogue_root.add_child(_dialogue_panel)
-	_add_modular_frame(_dialogue_root, panel_rect)
+	if not _chat_v3:
+		_add_modular_frame(_dialogue_root, panel_rect)
 
 	var name_rect := Rect2(NAMEPLATE_POSITION, Vector2(NAMEPLATE_MIN_WIDTH, NAMEPLATE_HEIGHT))
 	_name_plate = Panel.new()
 	_name_plate.position = name_rect.position
 	_name_plate.size = name_rect.size
-	var name_style := StyleBoxFlat.new()
-	name_style.bg_color = Color(0.035, 0.045, 0.105, 0.98)
-	_name_plate.add_theme_stylebox_override("panel", name_style)
+	if _chat_v3:
+		# The chat_v3 plaque art carries its own navy fill.
+		_name_plate.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
+	else:
+		var name_style := StyleBoxFlat.new()
+		name_style.bg_color = Color(0.035, 0.045, 0.105, 0.98)
+		_name_plate.add_theme_stylebox_override("panel", name_style)
 	_dialogue_root.add_child(_name_plate)
 	_nameplate_art_root = Control.new()
 	_nameplate_art_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -524,16 +566,23 @@ func _build_ui() -> void:
 	_name_label.z_index = 3
 	_name_plate.add_child(_name_label)
 
-	_text_label = UiKit.make_label("", 8, Color(0.95, 0.89, 0.76, 1.0))
-	_text_label.position = Vector2(18, 9)
-	_text_label.size = Vector2(270, 50)
-	_text_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_text_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_text_label.add_theme_constant_override("line_spacing", 2)
+	# Long lines never shrink or overflow — the passage scrolls (intro slides
+	# mechanics: auto-follow the typewriter, wheel/drag to re-read).
+	_text_label = ScrollingDialogueTextScript.new()
+	_text_label.add_theme_font_override("normal_font", UiKit.body_font())
+	_text_label.add_theme_font_size_override("normal_font_size", 8)
+	_text_label.add_theme_color_override("default_color", Color(0.95, 0.89, 0.76, 1.0))
+	_text_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.7))
+	_text_label.add_theme_constant_override("shadow_offset_x", 1)
+	_text_label.add_theme_constant_override("shadow_offset_y", 1)
+	_text_label.add_theme_constant_override("line_separation", 2)
 	_text_label.z_index = 3
+	_text_label.set_area(Rect2(18, 9, 270, 50), true)
 	_dialogue_panel.add_child(_text_label)
 
-	_continue_marker = _make_texture_rect(TEX_CONTINUE_CRYSTAL, Rect2(293, 39, 9, 22))
+	_continue_marker = _make_texture_rect(
+		CHAT_V3_DIR + "continue_gem.png" if _chat_v3 else TEX_CONTINUE_CRYSTAL,
+		Rect2(291, 37, 12, 24))
 	_continue_marker.visible = false
 	_continue_marker.z_index = 3
 	_dialogue_panel.add_child(_continue_marker)
@@ -604,10 +653,47 @@ func _add_modular_frame(parent: Control, rect: Rect2) -> void:
 
 
 func _add_nameplate_art(parent: Control, rect: Rect2) -> void:
+	if _chat_v3:
+		var plaque := load(CHAT_V3_DIR + "nameplate.png") as Texture2D
+		if plaque != null:
+			# 3-slice: the pointed gold caps (cyan gem on the right) keep their
+			# true aspect at any name width; only the straight middle stretches.
+			_add_three_slice(parent, plaque, rect.grow_individual(2.0, 3.0, 2.0, 3.0), 0.16, 0.22)
+			return
 	_add_repeated_edge(parent, TEX_EDGE_H, Rect2(rect.position.x + 8, rect.position.y, rect.size.x - 16, 2), true)
 	_add_repeated_edge(parent, TEX_EDGE_H, Rect2(rect.position.x + 8, rect.end.y - 2, rect.size.x - 16, 2), true)
 	parent.add_child(_make_texture_rect(TEX_NAME_CAP_LEFT, Rect2(rect.position.x - 6, rect.position.y - 2, 14, 22)))
 	parent.add_child(_make_texture_rect(TEX_NAME_CAP_RIGHT, Rect2(rect.end.x - 8, rect.position.y - 2, 14, 22)))
+
+
+func _add_three_slice(parent: Control, texture: Texture2D, rect: Rect2, cap_frac_l: float, cap_frac_r: float) -> void:
+	var tw := float(texture.get_width())
+	var th := float(texture.get_height())
+	var cap_l_tex := tw * cap_frac_l
+	var cap_r_tex := tw * cap_frac_r
+	var cap_l_w := rect.size.y * cap_l_tex / th
+	var cap_r_w := rect.size.y * cap_r_tex / th
+	var mid_w := maxf(1.0, rect.size.x - cap_l_w - cap_r_w)
+	var pieces := [
+		[Rect2(0, 0, cap_l_tex, th), Rect2(rect.position, Vector2(cap_l_w, rect.size.y))],
+		[Rect2(cap_l_tex, 0, tw - cap_l_tex - cap_r_tex, th),
+			Rect2(rect.position + Vector2(cap_l_w, 0), Vector2(mid_w, rect.size.y))],
+		[Rect2(tw - cap_r_tex, 0, cap_r_tex, th),
+			Rect2(rect.position + Vector2(rect.size.x - cap_r_w, 0), Vector2(cap_r_w, rect.size.y))],
+	]
+	for piece in pieces:
+		var atlas := AtlasTexture.new()
+		atlas.atlas = texture
+		atlas.region = piece[0] as Rect2
+		var slice := TextureRect.new()
+		slice.texture = atlas
+		slice.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		slice.stretch_mode = TextureRect.STRETCH_SCALE
+		slice.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+		slice.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		slice.position = (piece[1] as Rect2).position
+		slice.size = (piece[1] as Rect2).size
+		parent.add_child(slice)
 
 
 func _layout_nameplate(speaker: String) -> void:
@@ -619,16 +705,19 @@ func _layout_nameplate(speaker: String) -> void:
 		-1.0,
 		font_size,
 	).x
+	# The chat_v3 plaque's pointed caps eat more horizontal room than the flat
+	# cutscene_v3 caps did — measure and inset with the wider padding.
+	var pad := NAMEPLATE_TEXT_PADDING_V3 if _chat_v3 else NAMEPLATE_TEXT_PADDING
 	var plate_width := clampf(
-		ceilf(text_width) + NAMEPLATE_TEXT_PADDING * 2.0,
+		ceilf(text_width) + pad * 2.0,
 		NAMEPLATE_MIN_WIDTH,
 		NAMEPLATE_MAX_WIDTH,
 	)
 	var name_rect := Rect2(NAMEPLATE_POSITION, Vector2(plate_width, NAMEPLATE_HEIGHT))
 	_name_plate.position = name_rect.position
 	_name_plate.size = name_rect.size
-	_name_label.position = Vector2(NAMEPLATE_TEXT_PADDING, 0)
-	_name_label.size = Vector2(plate_width - NAMEPLATE_TEXT_PADDING * 2.0, NAMEPLATE_HEIGHT)
+	_name_label.position = Vector2(pad, 0)
+	_name_label.size = Vector2(plate_width - pad * 2.0, NAMEPLATE_HEIGHT)
 
 	for child in _nameplate_art_root.get_children():
 		child.free()
@@ -675,6 +764,32 @@ func _run() -> void:
 			continue
 		await _execute(action as Dictionary)
 	await _finish()
+
+
+func _process(_delta: float) -> void:
+	if _walk_home_tweens.is_empty():
+		return
+	_cancel_invalid_walk_home_actors()
+	if _walk_home_tweens.is_empty():
+		return
+	# A conversation/menu opened while an NPC is returning should hold the NPC
+	# still, so staged dialogue cameras never lose their subject. Resume when the
+	# blocking UI closes.
+	var should_pause := GameManager.ui_blocking_input
+	if should_pause == _walk_home_paused:
+		return
+	_walk_home_paused = should_pause
+	for tween in _walk_home_tweens:
+		if tween != null and tween.is_valid():
+			var sprite := _valid_walk_home_sprite(tween)
+			if should_pause:
+				tween.pause()
+				if sprite != null:
+					sprite.pause()
+			else:
+				tween.play()
+				if sprite != null:
+					sprite.play()
 
 
 func _execute(action: Dictionary) -> void:
@@ -929,6 +1044,8 @@ func _do_move(actor_id: String, to_tile: Dictionary) -> void:
 			anim_direction = "right" if direction.x > 0 else "left"
 		else:
 			anim_direction = "down" if direction.y > 0 else "up"
+		if actor.has_method("face_direction"):
+			actor.call("face_direction", anim_direction)
 		if sprite != null and sprite.sprite_frames != null and sprite.sprite_frames.has_animation("walk_%s" % anim_direction):
 			sprite.play("walk_%s" % anim_direction)
 		var duration: float = distance / MOVE_SPEED_PX
@@ -946,6 +1063,9 @@ func _do_move(actor_id: String, to_tile: Dictionary) -> void:
 
 func _do_face(actor_id: String, direction: String) -> void:
 	var actor: Node2D = _find_actor(actor_id)
+	if actor != null and actor.has_method("face_direction"):
+		actor.call("face_direction", direction)
+		return
 	var sprite: AnimatedSprite2D = _actor_anim_sprite(actor)
 	if sprite != null and sprite.sprite_frames != null and sprite.sprite_frames.has_animation("walk_%s" % direction):
 		sprite.play("walk_%s" % direction)
@@ -1220,15 +1340,18 @@ func _do_say(action: Dictionary) -> void:
 		pop_portrait.tween_property(_portrait_rect, "scale", Vector2.ONE, 0.2).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 	_continue_marker.visible = false
+	# visible_characters (not substr) so the scrolling view can follow the
+	# reveal cursor without re-wrapping the text every frame.
+	_text_label.set_passage(text)
 	var shown: float = 0.0
 	while shown < text.length() and not _skip:
 		shown += TYPE_SPEED * get_process_delta_time()
 		if _accept_pressed:
 			_accept_pressed = false
 			break
-		_text_label.text = text.substr(0, mini(int(shown), text.length()))
+		_text_label.visible_characters = mini(int(shown), text.length())
 		await get_tree().process_frame
-	_text_label.text = text
+	_text_label.reveal_finished()
 	if _skip:
 		return
 	_continue_marker.visible = true
@@ -1271,34 +1394,38 @@ func _finish() -> void:
 	_title_dim.color.a = 0.0
 	if _title_banner != null:
 		_title_banner.modulate.a = 0.0
+	if _skip_hint != null:
+		_skip_hint.visible = false
+	# This node remains alive only as a background walk-home coordinator. It must
+	# no longer consume Esc/Enter after gameplay control is returned.
+	set_process_unhandled_input(false)
 
 	# The NPCs START walking home now — and that's the moment the cutscene ends.
-	# We hand control back right away; they finish the walk in the background.
-	var walk_duration: float = _begin_walk_home()
-
-	await _restore_player_camera()
+	# Hand camera/input/interaction back in this same frame; they finish walking
+	# in the background at their normal world movement speed.
+	_begin_walk_home()
+	await _restore_player_camera(true)
+	if _camera != null:
+		_camera.queue_free()
+	_restore_collision_for(_player)
+	GameManager.ui_blocking_input = false
 
 	var bars := create_tween()
 	bars.tween_property(_top_bar, "position:y", -LETTERBOX_H, 0.5)
 	bars.parallel().tween_property(_bottom_bar, "position:y", _design_size.y, 0.5)
-	await bars.finished
-
-	if _camera != null:
-		_camera.queue_free()
-	# Hand control to the player; NPCs keep walking home behind them.
-	_restore_collision_for(_player)
-	GameManager.ui_blocking_input = false
 	cutscene_finished.emit()
 
-	# Keep this node (and its walk-home tweens) alive until the NPCs arrive, then
-	# restore anything still pending and free.
-	if walk_duration > 0.0:
-		await get_tree().create_timer(walk_duration + 0.3).timeout
+	# Keep this coordinator alive until every possibly-paused return tween ends.
+	# A fixed timer is unsafe because talking to a walking NPC pauses that tween.
+	await bars.finished
+	while _has_active_walk_home_tweens():
+		await get_tree().process_frame
 	_restore_actor_collisions()
+	actor_return_finished.emit()
 	queue_free()
 
 
-func _restore_player_camera() -> void:
+func _restore_player_camera(immediate: bool = false) -> void:
 	if _player_camera == null or not is_instance_valid(_player_camera):
 		return
 	# get_screen_center_position() is the camera's last rendered center. While the
@@ -1307,10 +1434,13 @@ func _restore_player_camera() -> void:
 	var target := _player.global_position if _player != null and is_instance_valid(_player) \
 			else _player_camera.global_position
 	if _camera != null and is_instance_valid(_camera):
-		var tween := create_tween()
-		tween.tween_property(_camera, "global_position", target, 0.6)\
-			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-		await tween.finished
+		if immediate:
+			_camera.global_position = target
+		else:
+			var tween := create_tween()
+			tween.tween_property(_camera, "global_position", target, 0.6)\
+				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+			await tween.finished
 	# Clear the inactive camera's stale smoothing accumulator before it takes over,
 	# then force the viewport update in the same frame for a seamless handoff.
 	_player_camera.make_current()
@@ -1333,20 +1463,50 @@ func _finalize_walked_actor(actor: Node2D, sprite: AnimatedSprite2D) -> void:
 		return
 	if sprite != null:
 		sprite.pause()
+	var can_restore := true
+	if actor.has_method("can_restore_from_scripted_return"):
+		can_restore = bool(actor.call("can_restore_from_scripted_return"))
+	if not can_restore:
+		# Dialogue outcomes may turn a returning NPC into a corpse/inactive actor.
+		# That presentation is authoritative; discard the old cutscene collision
+		# snapshot instead of resurrecting physics/collision during cleanup.
+		_collision_state.erase(actor)
+		if actor.has_method("set_scripted_return_active"):
+			actor.call("set_scripted_return_active", false)
+		elif _return_physics_state.has(actor):
+			_return_physics_state.erase(actor)
+		return
+	# The player may have stepped onto an NPC's home tile after gameplay was
+	# released. Resolve beside it before restoring collision to avoid overlap.
+	var actor_tile := _tile_of(actor.global_position)
+	var occupied := _occupied_actor_tiles(actor)
+	if occupied.has(_tile_key(actor_tile)):
+		var safe_tile := _nearest_unoccupied_tile(actor_tile, occupied)
+		actor.global_position = _tile_to_world(safe_tile)
 	_restore_collision_for(actor)
-	if actor.has_method("set_physics_process"):
-		actor.set_physics_process(true)
-	_resync_actor_ai(actor)
+	var was_scripted_return := false
+	if actor.has_method("set_scripted_return_active"):
+		if actor.has_method("is_scripted_return_active"):
+			was_scripted_return = bool(actor.call("is_scripted_return_active"))
+		actor.call("set_scripted_return_active", false)
+	elif _return_physics_state.has(actor):
+		was_scripted_return = true
+		actor.set_physics_process(bool(_return_physics_state[actor]))
+		_return_physics_state.erase(actor)
+	if was_scripted_return and actor.is_physics_processing():
+		_resync_actor_ai(actor)
 
 
-func _begin_walk_home() -> float:
+func _begin_walk_home() -> void:
 	# Start every displaced NPC walking back to its pre-cutscene spot AROUND
 	# obstacles (A*), in parallel, WITHOUT awaiting — so the cutscene can end the
 	# instant they start moving. Each NPC's own AI is paused (so it doesn't fight
 	# the tween once player control returns) and collision stays off until it
-	# arrives; a per-tween callback restores everything on arrival. Returns the
-	# longest walk duration so the caller knows when all are home.
-	var max_duration: float = 0.0
+	# arrives; a per-tween callback restores everything on arrival.
+	_walk_home_tweens.clear()
+	_walk_home_sprites.clear()
+	_walk_home_actors.clear()
+	_walk_home_paused = false
 	for actor_id in _origin_positions:
 		if actor_id == "player":
 			continue
@@ -1360,25 +1520,89 @@ func _begin_walk_home() -> float:
 				actor.global_position = origin
 			_finalize_walked_actor(actor, sprite)
 			continue
-		# Freeze the NPC's own AI for the duration of the scripted walk home.
-		if actor.has_method("set_physics_process"):
+		# Normal NPCs keep a special interaction-only physics tick. Other actors
+		# are frozen with their exact previous physics state remembered.
+		if actor.has_method("set_scripted_return_active"):
+			actor.call("set_scripted_return_active", true)
+		else:
+			_return_physics_state[actor] = actor.is_physics_processing()
 			actor.set_physics_process(false)
 		var path: Array = _path_tiles(_tile_of(actor.global_position), _tile_of(origin))
 		var tween := create_tween()
 		var prev: Vector2 = actor.global_position
-		var dur: float = 0.0
+		var return_speed := _normal_return_speed(actor)
+		var has_motion := false
 		for step_tile in path:
 			var tgt: Vector2 = _tile_to_world(step_tile)
 			var seg_dist: float = prev.distance_to(tgt)
 			if seg_dist < 1.0:
 				continue
+			has_motion = true
 			tween.tween_callback(_play_walk.bind(sprite, _dir_name(tgt - prev)))
-			tween.tween_property(actor, "global_position", tgt, seg_dist / MOVE_SPEED_PX)
-			dur += seg_dist / MOVE_SPEED_PX
+			tween.tween_property(actor, "global_position", tgt, seg_dist / return_speed)
 			prev = tgt
+		if not has_motion:
+			tween.kill()
+			_finalize_walked_actor(actor, sprite)
+			continue
 		tween.tween_callback(_finalize_walked_actor.bind(actor, sprite))
-		max_duration = maxf(max_duration, dur)
-	return max_duration
+		_walk_home_tweens.append(tween)
+		_walk_home_sprites[tween] = sprite
+		_walk_home_actors[tween] = actor
+
+
+func _normal_return_speed(actor: Node2D) -> float:
+	var enemy_data: Variant = actor.get("enemy_data")
+	if enemy_data is Dictionary and not (enemy_data as Dictionary).is_empty():
+		return DEFAULT_ENEMY_RETURN_SPEED_PX
+	var npc_data: Variant = actor.get("npc_data")
+	if npc_data is Dictionary:
+		var runtime_speed: Variant = actor.get("speed")
+		if runtime_speed is float or runtime_speed is int:
+			var value := float(runtime_speed)
+			if value > 0.0:
+				return value
+	return DEFAULT_NPC_RETURN_SPEED_PX
+
+
+func _has_active_walk_home_tweens() -> bool:
+	_cancel_invalid_walk_home_actors()
+	for index in range(_walk_home_tweens.size() - 1, -1, -1):
+		var tween := _walk_home_tweens[index]
+		if tween == null or not tween.is_valid():
+			_walk_home_sprites.erase(tween)
+			_walk_home_actors.erase(tween)
+			_walk_home_tweens.remove_at(index)
+	return not _walk_home_tweens.is_empty()
+
+
+func _cancel_invalid_walk_home_actors() -> void:
+	for index in range(_walk_home_tweens.size() - 1, -1, -1):
+		var tween := _walk_home_tweens[index]
+		var actor_ref: Variant = _walk_home_actors.get(tween)
+		var actor: Node2D = null
+		if is_instance_valid(actor_ref) and actor_ref is Node2D:
+			actor = actor_ref as Node2D
+		var can_continue := actor != null and is_instance_valid(actor) and actor.visible
+		if can_continue and actor.has_method("can_restore_from_scripted_return"):
+			can_continue = bool(actor.call("can_restore_from_scripted_return"))
+		if can_continue:
+			continue
+		if tween != null and tween.is_valid():
+			tween.kill()
+		var sprite := _valid_walk_home_sprite(tween)
+		if actor != null and is_instance_valid(actor):
+			_finalize_walked_actor(actor, sprite)
+		_walk_home_sprites.erase(tween)
+		_walk_home_actors.erase(tween)
+		_walk_home_tweens.remove_at(index)
+
+
+func _valid_walk_home_sprite(tween: Tween) -> AnimatedSprite2D:
+	var sprite_ref: Variant = _walk_home_sprites.get(tween)
+	if is_instance_valid(sprite_ref) and sprite_ref is AnimatedSprite2D:
+		return sprite_ref as AnimatedSprite2D
+	return null
 
 
 func _resync_actor_ai(actor: Node2D) -> void:

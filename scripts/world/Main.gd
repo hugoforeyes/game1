@@ -30,6 +30,7 @@ var _battle_active: bool = false
 var _zone_advancing: bool = false
 var _zone_hostiles_cleared_notified: bool = false
 var _triggered_cutscene_active: bool = false
+var _cutscene_actor_return_active: bool = false
 var _pending_triggered_cutscenes: Array = []  # queued cutscene dicts waiting to play
 
 func _ready() -> void:
@@ -1290,7 +1291,12 @@ func _maybe_start_cutscene() -> void:
 	print("[Main] starting opening cutscene actions=%d start_tiles=%d" % [actions.size(), start_tiles.size()])
 	var cutscene: CanvasLayer = CutscenePlayerScript.new()
 	add_child(cutscene)
+	_cutscene_actor_return_active = true
 	cutscene.cutscene_finished.connect(_check_zone_cleared)
+	cutscene.actor_return_finished.connect(func() -> void:
+		_cutscene_actor_return_active = false
+		_drain_triggered_cutscenes.call_deferred()
+	)
 	cutscene.play(actions, self, player, generated_characters, start_tiles)
 
 func _has_planned_opening_cutscene() -> bool:
@@ -1330,7 +1336,8 @@ func _drain_triggered_cutscenes() -> void:
 		return
 	# Wait for a calm moment: no battle, no zone transition, no other cutscene or
 	# blocking UI (the opening cutscene and dialogue set ui_blocking_input).
-	if _battle_active or _zone_advancing or _triggered_cutscene_active or GameManager.ui_blocking_input:
+	if _battle_active or _zone_advancing or _triggered_cutscene_active \
+			or _cutscene_actor_return_active or GameManager.ui_blocking_input:
 		get_tree().create_timer(0.4).timeout.connect(_drain_triggered_cutscenes, CONNECT_ONE_SHOT)
 		return
 	var cutscene: Dictionary = _pending_triggered_cutscenes.pop_front()
@@ -1343,6 +1350,7 @@ func _drain_triggered_cutscenes() -> void:
 
 func _play_triggered_cutscene(cutscene: Dictionary) -> void:
 	_triggered_cutscene_active = true
+	_cutscene_actor_return_active = true
 	var actions: Array = cutscene.get("actions", []) as Array
 	var start_tiles: Dictionary = cutscene.get("start_tiles", {}) as Dictionary
 	print("[Main] triggered cutscene id=%s actions=%d start_tiles=%d" % [str(cutscene.get("id", "")), actions.size(), start_tiles.size()])
@@ -1350,8 +1358,11 @@ func _play_triggered_cutscene(cutscene: Dictionary) -> void:
 	add_child(cutscene_player)
 	cutscene_player.cutscene_finished.connect(func() -> void:
 		_triggered_cutscene_active = false
-		_drain_triggered_cutscenes.call_deferred()
 		_check_zone_cleared.call_deferred()
+	)
+	cutscene_player.actor_return_finished.connect(func() -> void:
+		_cutscene_actor_return_active = false
+		_drain_triggered_cutscenes.call_deferred()
 	)
 	cutscene_player.play(actions, self, player, generated_characters, start_tiles)
 

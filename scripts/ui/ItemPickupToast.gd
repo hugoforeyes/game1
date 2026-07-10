@@ -12,7 +12,7 @@ const TEXT_LEFT := 92.0
 const QUANTITY_RECT := Rect2(292, 20, 46, 32)
 const PROGRESS_RECT := Rect2(82, 66, 258, 2)
 const FRAME_PATH := "res://assets/ui/item_pickup_v2/frame.png"
-const HOLD_SECONDS := 2.0
+const HOLD_SECONDS := 1.0
 
 const C_NAVY := Color("07111c")
 const C_NAVY_INNER := Color("0c1b2d")

@@ -1264,15 +1264,34 @@ func _on_journal_track_requested(quest_id: String) -> void:
 # ── choice ceremony ───────────────────────────────────────────────────────────
 
 
+## ChatBox hands a moral choice to the ceremony: mark it open (so _process
+## refuses to pop the fallback queue meanwhile) and drop the duplicate entry
+## notify_npc_talked queued for the same quest.
+func claim_choice_ceremony(quest_id: String) -> void:
+	_choice_open = true
+	_pending_choices = _pending_choices.filter(func(payload) -> bool:
+		return str(((payload as Dictionary).get("quest", {}) as Dictionary).get("id", "")) != quest_id)
+
+
+func release_choice_ceremony() -> void:
+	_choice_open = false
+
+
 ## Fallback trigger: the player talked to the choice's target NPC but the
 ## conversation tree never routed into the choice node — the ceremony still
 ## plays, just without a conversation to hand off from.
 func _open_choice(payload: Dictionary) -> void:
+	# Re-validate against live state: the queued entry may be stale (the choice
+	# already resolved through the in-dialogue ceremony hand-off).
+	var quest_id := str((payload.get("quest", {}) as Dictionary).get("id", ""))
+	var live: Dictionary = dialogue_choice_payload(quest_id)
+	if live.is_empty():
+		return
 	_choice_open = true
 	var view := MoralChoiceViewScript.new()
 	get_tree().root.add_child(view)
-	view.present(payload)
-	view.closed.connect(func() -> void: _choice_open = false)
+	view.present(live)
+	view.closed.connect(func() -> void: release_choice_ceremony())
 
 
 # ── input ─────────────────────────────────────────────────────────────────────

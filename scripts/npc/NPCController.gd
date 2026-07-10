@@ -68,6 +68,8 @@ var _default_modulate: Color = Color.WHITE
 var _default_sprite_modulate: Color = Color.WHITE
 var _default_sprite_rotation_degrees: float = 0.0
 var _default_shadow_visible: bool = true
+var _scripted_return_active: bool = false
+var _scripted_return_restore_physics: bool = false
 
 func setup(data: Dictionary, world_context: Dictionary) -> void:
 	npc_data = data
@@ -165,11 +167,18 @@ func _apply_normal_actor_state() -> void:
 	anim_sprite.rotation_degrees = _default_sprite_rotation_degrees
 	anim_sprite.modulate = _default_sprite_modulate
 	shadow.visible = _default_shadow_visible
-	_set_actor_collision_enabled(true)
 	_setup_interaction()
 	if _bubble != null:
 		_bubble.visible = true
 	update_quest_marker()
+	if _scripted_return_active:
+		# Narrative refreshes can re-apply the normal state to every actor while
+		# this NPC is still tweening home. Preserve scripted ownership: interaction
+		# stays live, but collision and ambient AI must remain off until arrival.
+		_scripted_return_restore_physics = true
+		_set_actor_collision_enabled(false)
+		return
+	_set_actor_collision_enabled(true)
 	_start_behavior()
 
 func _apply_hidden_actor_state() -> void:
@@ -256,6 +265,15 @@ func _physics_process(delta: float) -> void:
 		_update_shadow()
 		_suppress_bubble(true)
 		return
+	if _scripted_return_active:
+		# CutscenePlayer owns position + walk animation while the NPC returns home.
+		# Keep the normal physics tick alive solely for interaction presentation;
+		# running the AI/move_and_slide here would fight the scripted tween.
+		velocity = Vector2.ZERO
+		_update_shadow()
+		_update_interaction()
+		_update_bubble_alpha(delta)
+		return
 	match state:
 		State.WAITING, State.BLOCKED:
 			wait_timer -= delta
@@ -273,6 +291,38 @@ func _physics_process(delta: float) -> void:
 	_update_shadow()
 	_update_interaction()
 	_update_bubble_alpha(delta)
+
+
+func set_scripted_return_active(active: bool) -> void:
+	## Allows post-cutscene walk-home motion and player interaction to coexist.
+	## Preserve actors whose physics was already disabled (corpse/inactive state)
+	## instead of accidentally reviving their AI when the return finishes.
+	if active == _scripted_return_active:
+		return
+	if active:
+		_scripted_return_restore_physics = is_physics_processing()
+		_scripted_return_active = true
+		velocity = Vector2.ZERO
+		if _scripted_return_restore_physics:
+			set_physics_process(true)
+		return
+	_scripted_return_active = false
+	velocity = Vector2.ZERO
+	set_physics_process(_scripted_return_restore_physics and can_restore_from_scripted_return())
+	_scripted_return_restore_physics = false
+
+
+func is_scripted_return_active() -> bool:
+	return _scripted_return_active
+
+
+func can_restore_from_scripted_return() -> bool:
+	if not visible:
+		return false
+	var state_name := _actor_state_token(actor_state.get("state", ""))
+	var presentation := _actor_state_token(actor_state.get("presentation", ""))
+	return state_name not in ["dead", "hidden", "despawned", "removed", "inactive", "disabled"] \
+		and presentation not in ["corpse", "hidden", "despawn", "removed", "inactive", "none"]
 
 func _setup_interaction() -> void:
 	var inter: Dictionary = interaction

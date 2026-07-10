@@ -3,6 +3,7 @@ extends CanvasLayer
 const MenuCursorScript := preload("res://scripts/ui/MenuCursor.gd")
 const InteractionPromptScript := preload("res://scripts/npc/InteractionPrompt.gd")
 const MoralChoiceViewScript := preload("res://scripts/ui/MoralChoiceView.gd")
+const ScrollingDialogueTextScript := preload("res://scripts/ui/ScrollingDialogueText.gd")
 
 const TEX_DIALOGUE_PANEL_PATH := "res://assets/ui/dialogue_v2/dialogue_panel.png"
 const TEX_PORTRAIT_FRAME_PATH := "res://assets/ui/dialogue_v2/portrait_frame.png"
@@ -13,6 +14,7 @@ const TEX_NAMEPLATE_PATH      := "res://assets/ui/dialogue_v2/nameplate.png"
 const CHAT_V3_DIR := "res://assets/ui/chat_v3/"
 const BUST_ASPECT := 0.70    # tall visual-novel crop of the square emotion art
 const BUST_HEIGHT := 206.0   # design units (~64% of the 324-unit canvas)
+const BUST_OVERHANG := 70.0  # how far the bust juts LEFT of the panel edge
 const TEX_CHOICE_CURSOR_PATH  := "res://assets/ui/dialogue_choice_clean/choice_cursor.png"
 const TEX_CHOICE_HILITE_PATH  := "res://assets/ui/dialogue_choice_clean/choice_highlight.png"
 const TEX_CHOICE_ANCHOR_PATH  := "res://assets/ui/dialogue_choice_clean/choice_anchor.png"
@@ -105,7 +107,7 @@ var _choice_corners: Array[TextureRect] = []
 var _choice_edges: Array[TextureRect] = []
 var _screen_dim: ColorRect             = null
 var _nameplate: TextureRect            = null
-var _dialogue_label: Label             = null
+var _dialogue_label: RichTextLabel     = null  # ScrollingDialogueText — fixed font, scrolls when long
 var _divider: TextureRect              = null
 var _leaf_waiting := false
 var _dialogue_revealing := false
@@ -268,15 +270,15 @@ func _build_dialogue_v2_nodes() -> void:
 	add_child(_nameplate)
 	move_child(_nameplate, _npc_label.get_index())
 
-	_dialogue_label = Label.new()
-	_dialogue_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_dialogue_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
-	_dialogue_label.add_theme_font_size_override("font_size", DIALOGUE_FONT_SIZE)
-	_dialogue_label.add_theme_color_override("font_color", COLOR_TEXT)
+	# Long lines never shrink the font — the passage scrolls instead (intro
+	# slides mechanics: auto-follow the typewriter, wheel/drag to re-read).
+	_dialogue_label = ScrollingDialogueTextScript.new()
+	_dialogue_label.add_theme_font_size_override("normal_font_size", DIALOGUE_FONT_SIZE)
+	_dialogue_label.add_theme_color_override("default_color", COLOR_TEXT)
 	_dialogue_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.82))
 	_dialogue_label.add_theme_constant_override("shadow_offset_x", 1)
 	_dialogue_label.add_theme_constant_override("shadow_offset_y", 1)
-	_dialogue_label.add_theme_constant_override("line_spacing", 2)
+	_dialogue_label.add_theme_constant_override("line_separation", 2)
 	add_child(_dialogue_label)
 
 	_divider = TextureRect.new()
@@ -511,6 +513,11 @@ func _layout() -> void:
 	var pw := minf(vp.x - 54.0, 414.0)
 	var ph := pw * (338.0 / 1412.0)
 	var px := (vp.x - pw) * 0.5
+	if _chat_v3:
+		# Center the COMBINED block (bust + panel): the bust juts BUST_OVERHANG
+		# left of the panel, so the panel shifts right by half of that to keep
+		# the whole composition symmetric in the viewport.
+		px = minf((vp.x - pw + BUST_OVERHANG) * 0.5, vp.x - pw - 10.0)
 	var py := vp.y - ph - 17.0
 
 	_panel.size     = Vector2(pw, ph)
@@ -524,7 +531,7 @@ func _layout() -> void:
 		# lower border, standing BEHIND the panel art.
 		var bust_h := BUST_HEIGHT
 		var bust_w := bust_h * BUST_ASPECT
-		var bust_pos := Vector2(10.0, py + ph - 8.0 - bust_h)
+		var bust_pos := Vector2(maxf(6.0, px - BUST_OVERHANG), py + ph - 8.0 - bust_h)
 		_npc_portrait.size = Vector2(bust_w, bust_h)
 		_npc_portrait.position = bust_pos
 		pf_pos = bust_pos
@@ -564,19 +571,16 @@ func _layout() -> void:
 
 	if _dialogue_label != null:
 		if _chat_v3:
-			# Text clears the tall bust and sits vertically centered in the
-			# panel, with even breathing room on both sides (mockup metrics).
+			# Text clears the tall bust AND the nameplate (the plaque hangs
+			# ~20 units into the panel); short lines center vertically, long
+			# passages fill the area and scroll (font size never changes).
 			var text_x := maxf(px + 92.0, pf_pos.x + pf_w + 16.0)
-			_dialogue_label.position = Vector2(text_x, py + 15.0)
-			_dialogue_label.size = Vector2(maxf(96.0, px + pw - text_x - 30.0), maxf(36.0, ph - 32.0))
-			_dialogue_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+			_dialogue_label.set_area(
+				Rect2(text_x, py + 24.0, maxf(96.0, px + pw - text_x - 30.0), maxf(36.0, ph - 40.0)), true)
 		else:
 			var text_x := maxf(px + 104.0, pf_pos.x + pf_w + 22.0)
-			var text_y := py + 31.0
-			var text_right_pad := 36.0
-			_dialogue_label.position = Vector2(text_x, text_y - 6.0)
-			_dialogue_label.size = Vector2(maxf(96.0, px + pw - text_x - text_right_pad), maxf(36.0, ph - 53.0))
-		_fit_dialogue_label(_dialogue_label.text)
+			_dialogue_label.set_area(
+				Rect2(text_x, py + 25.0, maxf(96.0, px + pw - text_x - 36.0), maxf(36.0, ph - 53.0)), false)
 
 	if _divider != null and not _chat_v3:
 		_divider.size = Vector2(104.0, 16.0)
@@ -664,42 +668,9 @@ func _apply_nameplate_layout(px: float, py: float, pw: float, pf_pos: Vector2, p
 	_npc_label.add_theme_constant_override("shadow_offset_x", 1)
 	_npc_label.add_theme_constant_override("shadow_offset_y", 1)
 
-func _fit_dialogue_label(text: String) -> void:
-	if _dialogue_label == null:
-		return
-	var font := ThemeDB.fallback_font
-	var font_size := DIALOGUE_FONT_SIZE
-	var available_h := maxf(1.0, _dialogue_label.size.y)
-	var available_w := maxf(1.0, _dialogue_label.size.x)
-	while font_size > 7:
-		var line_h := font.get_height(font_size) + 2.0
-		var required_h := _estimate_wrapped_line_count(text, font, font_size, available_w) * line_h
-		if required_h <= available_h:
-			break
-		font_size -= 1
-	_dialogue_label.add_theme_font_size_override("font_size", font_size)
-
-func _estimate_wrapped_line_count(text: String, font: Font, font_size: int, width: float) -> int:
-	if text.strip_edges().is_empty():
-		return 1
-	var lines := 1
-	var current_w := 0.0
-	var space_w := font.get_string_size(" ", HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x
-	for paragraph in text.split("\n"):
-		if paragraph.is_empty():
-			lines += 1
-			current_w = 0.0
-			continue
-		for word in paragraph.split(" ", false):
-			var word_w := font.get_string_size(word, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x
-			var extra_w := 0.0 if current_w <= 0.0 else space_w
-			if current_w > 0.0 and current_w + extra_w + word_w > width:
-				lines += 1
-				current_w = word_w
-			else:
-				current_w += extra_w + word_w
-		current_w = 0.0
-	return maxi(1, lines)
+# (The old _fit_dialogue_label font-shrinking was retired: the passage keeps
+# its font size and SCROLLS via ScrollingDialogueText when it outgrows the
+# panel — the same mechanics the intro slides use.)
 
 func _style_input() -> void:
 	var style := StyleBoxFlat.new()
@@ -1440,8 +1411,7 @@ func _refresh_tree_if_due_at(node_id: String) -> String:
 func _set_dialogue_text(text: String, queued_labels: Array = [], queued_leaf: bool = false, instant: bool = false) -> void:
 	if _dialogue_label == null:
 		return
-	_dialogue_label.text = text
-	_fit_dialogue_label(text)
+	_dialogue_label.set_passage(text)
 	_pending_tree_labels = queued_labels.duplicate()
 	_pending_tree_leaf = queued_leaf
 	_leaf_waiting = false
@@ -1464,7 +1434,9 @@ func _set_dialogue_text(text: String, queued_labels: Array = [], queued_leaf: bo
 func _finish_dialogue_reveal() -> void:
 	_dialogue_revealing = false
 	if _dialogue_label != null:
-		_dialogue_label.visible_characters = -1
+		# Show everything and land on the LAST lines (a long passage scrolls;
+		# the reader can wheel/drag back up to re-read).
+		_dialogue_label.reveal_finished()
 	if _continue_gem != null:
 		# The line is fully readable — invite the next press.
 		_continue_gem.visible = _tree_mode and visible
@@ -1581,10 +1553,19 @@ func _pending_choice_quest_of(node: Dictionary) -> String:
 func _open_choice_ceremony(quest_id: String) -> void:
 	var payload: Dictionary = QuestManager.dialogue_choice_payload(quest_id)
 	var portrait: Texture2D = _npc_portrait.texture if _npc_portrait != null else null
-	var view := MoralChoiceViewScript.new()
-	get_tree().root.add_child(view)
-	view.present(payload, _npc_name, portrait)
+	var npc_name := _npc_name
+	var tree := get_tree()
+	# Claim BEFORE closing: marks the ceremony open and drops the duplicate this
+	# quest queued into _pending_choices (notify_npc_talked queues the choice as
+	# a fallback the moment the quest-beat node revealed it — without the claim,
+	# QuestManager._process would pop that entry and open a SECOND ceremony the
+	# instant close() drops ui_blocking_input).
+	QuestManager.claim_choice_ceremony(quest_id)
 	close(true)  # hand-off: the ceremony owns AnnouncementCenter's window now
+	var view := MoralChoiceViewScript.new()
+	tree.root.add_child(view)
+	view.present(payload, npc_name, portrait)  # re-raises ui_blocking_input
+	view.closed.connect(func() -> void: QuestManager.release_choice_ceremony())
 
 
 # True when a dialogue effect has removed the NPC we're talking to from the world

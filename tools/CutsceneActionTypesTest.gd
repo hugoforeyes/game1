@@ -69,5 +69,6 @@ func _ready() -> void:
 
 	assert(_finished)
 	assert(not victim.visible)
+	await cutscene.actor_return_finished
 	print("[CutsceneActionTypesTest] cinematic action primitives passed")
 	get_tree().quit()
