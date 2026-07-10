@@ -54,6 +54,7 @@ const COLOR_OPT_BORDER_DIM := Color(0, 0, 0, 0)
 const COLOR_OPT_BORDER_LIT := Color(1.00, 0.77, 0.30, 0.80)
 const COLOR_OPT_TEXT_DIM   := Color(0.84, 0.78, 0.64, 0.88)
 const COLOR_OPT_TEXT_LIT := Color(0.10, 0.08, 0.03, 1.0)
+const COLOR_OPT_TEXT_LIT_GLOW := Color(1.0, 0.87, 0.58, 1.0)  # frameless menu: gold text over the soft glow
 const COLOR_OPT_TEXT_SEEN  := Color(0.55, 0.51, 0.44, 0.70)  # an option already explored
 const COLOR_OPT_ARROW      := Color(1.00, 0.85, 0.45, 1.00)
 
@@ -131,6 +132,15 @@ var _tex_highlight_v3: Texture2D = null
 var _nameplate_v3: Control = null
 var _continue_gem: TextureRect = null
 var _bust_cache: Dictionary = {}  # source texture rid -> cropped tall-bust texture
+
+# ── frameless option menu (user-approved mockup): no frame at all — a soft
+# edge-fading haze keeps the floating text readable, the selected row gets a
+# warm gold glow wash plus a decorative tapered-gold underline. ──
+var _tex_option_haze: Texture2D = null
+var _tex_option_glow: Texture2D = null
+var _tex_option_underline: Texture2D = null
+var _choice_haze: TextureRect = null
+var _opt_sep: float = OPT_SEP  # frameless menu opens this up for breathing room
 var _player_camera: Camera2D = null
 var _staged_camera: Camera2D = null
 var _conversation_player: Node2D = null
@@ -232,6 +242,11 @@ func _build_dialogue_v2_nodes() -> void:
 			]
 			_tex_choice_fill = _atlas(menu_tex, Rect2(t, t, mw - 2.0 * t, mh - 2.0 * t))
 		_tex_choice_jewel = _v3_tex("edge_ornament.png", _tex_choice_jewel)
+		# Frameless option menu pieces — when the haze exists, the nine-slice
+		# frame above stays loaded but unused (legacy fallback only).
+		_tex_option_haze = _v3_tex("option_haze.png", null)
+		_tex_option_glow = _v3_tex("option_glow.png", null)
+		_tex_option_underline = _v3_tex("option_underline.png", null)
 
 	_screen_dim = ColorRect.new()
 	_screen_dim.color = Color(0.0, 0.0, 0.0, 0.42)
@@ -327,6 +342,26 @@ func _build_dialogue_v2_nodes() -> void:
 	_choice_prompt.visible = false
 	_choice_prompt.item_confirmed.connect(_on_choice_prompt_confirmed)
 	add_child(_choice_prompt)
+
+	if _chat_v3 and _tex_option_haze != null:
+		# Soft backdrop for the frameless response menu: pure gradient art, so
+		# stretching to any menu size is invisible.
+		_choice_haze = TextureRect.new()
+		_choice_haze.texture = _tex_option_haze
+		_choice_haze.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		_choice_haze.stretch_mode = TextureRect.STRETCH_SCALE
+		_choice_haze.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_choice_haze.visible = false
+		add_child(_choice_haze)
+		# The option text container was created in _ready — slot the haze under it.
+		if _opt_container != null:
+			move_child(_choice_haze, _opt_container.get_index())
+		# Floating rows have no hairlines to separate them — extra spacing
+		# does that job instead (also leaves room for the underline, which
+		# hangs a few units below the selected row).
+		_opt_sep = 9.0
+		if _opt_container != null:
+			_opt_container.add_theme_constant_override("separation", int(_opt_sep))
 
 	if _chat_v3:
 		# Frameless tall portrait (visual-novel bust) standing ON TOP of the
@@ -592,8 +627,11 @@ func _apply_nameplate_layout(px: float, py: float, pw: float, pf_pos: Vector2, p
 	while font_size > 7 and font.get_string_size(name_text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x > name_w - (44.0 if _chat_v3 else 22.0):
 		font_size -= 1
 
+	# The panel art bakes its visible gold border ~8 design units below the
+	# rect top — the plaque centers on that LINE, straddling it evenly.
+	var plate_y := py + 8.0 - 11.5
 	if _nameplate_v3 != null:
-		_nameplate_v3.position = Vector2(name_left, py - 12.0)
+		_nameplate_v3.position = Vector2(name_left, plate_y)
 		_nameplate_v3.size = Vector2(name_w, 23.0)
 	else:
 		_nameplate.size = Vector2(name_w, 23.0)
@@ -606,7 +644,7 @@ func _apply_nameplate_layout(px: float, py: float, pw: float, pf_pos: Vector2, p
 		var cap_l := name_w * 0.16
 		var cap_r := name_w * 0.22
 		_npc_label.size = Vector2(maxf(24.0, name_w - cap_l - cap_r), label_h)
-		_npc_label.position = Vector2(name_left + cap_l, py - 12.0 + (23.0 - label_h) * 0.5)
+		_npc_label.position = Vector2(name_left + cap_l, plate_y + (23.0 - label_h) * 0.5)
 	else:
 		_npc_label.size = Vector2(maxf(24.0, name_w - 20.0), label_h)
 		_npc_label.position = Vector2(name_left + 10.0, py - 2.0)
@@ -840,18 +878,24 @@ func _show_options(raw_options: Array) -> void:
 		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		panel.mouse_filter = Control.MOUSE_FILTER_STOP
 
+		var frameless := _choice_haze != null
 		var sbox := StyleBoxFlat.new()
 		sbox.bg_color = Color(0, 0, 0, 0)
-		sbox.border_color = Color(0.72, 0.64, 0.50, 0.20)
-		sbox.border_width_bottom = 1
-		sbox.content_margin_left   = 6.0
-		sbox.content_margin_right  = 6.0
-		sbox.content_margin_top    = 1.0
-		sbox.content_margin_bottom = 1.0
+		# Frameless menu: floating text, no hairline separators between rows,
+		# slightly wider side padding so the glow/underline get room to breathe.
+		sbox.border_color = Color(0, 0, 0, 0) if frameless else Color(0.72, 0.64, 0.50, 0.20)
+		sbox.border_width_bottom = 0 if frameless else 1
+		sbox.content_margin_left   = 10.0 if frameless else 6.0
+		sbox.content_margin_right  = 10.0 if frameless else 6.0
+		sbox.content_margin_top    = 2.0 if frameless else 1.0
+		sbox.content_margin_bottom = 2.0 if frameless else 1.0
 		panel.add_theme_stylebox_override("panel", sbox)
 
 		var highlight := Panel.new()
-		if _chat_v3 and _tex_highlight_v3 != null:
+		if frameless and _tex_option_glow != null:
+			# Soft warm-gold wash fading out at the edges — a glow, not a bar.
+			highlight.add_theme_stylebox_override("panel", _make_texture_style(_tex_option_glow, 0.0, 0.0, 0.0, 0.0))
+		elif _chat_v3 and _tex_highlight_v3 != null:
 			# 3-slice gold bar: ornate pointed caps stay 1:1, only the uniform
 			# gradient middle stretches with the row width.
 			highlight.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
@@ -865,6 +909,26 @@ func _show_options(raw_options: Array) -> void:
 		highlight.offset_bottom = 2.0
 		highlight.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		panel.add_child(highlight)
+
+		# Simple gold underline beneath the SELECTED option: brightest at the
+		# center, fading out to both ends — a pure smooth gradient, so a plain
+		# stretched TextureRect is distortion-free at any width. It lives
+		# INSIDE the highlight (a plain Panel, not a container — a
+		# PanelContainer would force-fit it to the whole row) and inherits its
+		# lit-only visibility.
+		if frameless and _tex_option_underline != null:
+			var underline := TextureRect.new()
+			underline.texture = _tex_option_underline
+			underline.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			underline.stretch_mode = TextureRect.STRETCH_SCALE
+			underline.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			underline.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+			underline.offset_left = 8.0
+			underline.offset_right = -8.0
+			# Hangs just below the glow's bottom edge, clear of the text.
+			underline.offset_top = -1.0
+			underline.offset_bottom = 4.0
+			highlight.add_child(underline)
 
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 5)
@@ -944,7 +1008,7 @@ func _apply_options_layout() -> void:
 		var row_h := maxf(OPT_ROW_H, lines * line_h + 4.0)
 		row_heights.append(row_h)
 		opt_h += row_h
-	opt_h += maxf(0.0, float(n - 1)) * OPT_SEP
+	opt_h += maxf(0.0, float(n - 1)) * _opt_sep
 	var choice_h := maxf(opt_h + 54.0, 104.0)
 	var choice_x := vp.x - choice_w - 18.0
 	var choice_y := maxf(20.0, _panel.position.y - choice_h - 20.0)
@@ -1000,10 +1064,16 @@ func _layout_choice_frame(rect: Rect2) -> void:
 		_choice_anchor.size = Vector2(18.0, 14.0)
 
 
-## chat_v3 nine-slice: corner pieces drawn at their true texture aspect
-## (96 tex px = 27 design units at the 3.56 tex-per-unit density), straight
-## rails stretched between them, glass fill inset behind everything.
+## chat_v3 layout. Frameless mode (user-approved mockup): no frame at all —
+## only the soft haze backdrop, expanded past the rect so its fade bleeds out.
+## The nine-slice path below remains as the fallback when the haze art is
+## missing: corner pieces at their true texture aspect (96 tex px = 27 design
+## units at the 3.56 tex-per-unit density), straight rails stretched between.
 func _layout_choice_frame_v3(rect: Rect2) -> void:
+	if _choice_haze != null:
+		_choice_haze.position = rect.position - Vector2(16.0, 12.0)
+		_choice_haze.size = rect.size + Vector2(32.0, 24.0)
+		return
 	var cs := 27.0   # 96 / 3.56
 	var th := 12.4   # 44 / 3.56
 	var x := rect.position.x
@@ -1043,14 +1113,18 @@ func _set_edge(edge: TextureRect, position: Vector2, size: Vector2) -> void:
 	edge.size = size
 
 func _set_choice_frame_visible(show: bool) -> void:
+	# Frameless mode: the haze IS the whole backdrop — every frame piece stays off.
+	var framed := show and _choice_haze == null
+	if _choice_haze != null:
+		_choice_haze.visible = show
 	if _choice_panel_bg != null:
-		_choice_panel_bg.visible = show
+		_choice_panel_bg.visible = framed
 	for edge in _choice_edges:
-		edge.visible = show
+		edge.visible = framed
 	for corner in _choice_corners:
-		corner.visible = show
+		corner.visible = framed
 	if _choice_jewel != null:
-		_choice_jewel.visible = show
+		_choice_jewel.visible = framed
 	if _choice_anchor != null:
 		_choice_anchor.visible = false  # anchor arrow retired in the aaa_kit redesign
 
@@ -1073,21 +1147,28 @@ func _clear_options() -> void:
 	_chat_scroll.size.y = _scroll_normal_h
 
 func _update_option_highlight() -> void:
+	var frameless := _choice_haze != null
 	for i in range(_opt_labels.size()):
 		var lit := (i == _selected_opt)
 		var seen := _option_leads_to_seen(i)
 		_opt_styles[i].bg_color = Color(0, 0, 0, 0)
-		_opt_styles[i].border_color = Color(0, 0, 0, 0) if lit else Color(0.72, 0.64, 0.50, 0.20)
+		if frameless:
+			_opt_styles[i].border_color = Color(0, 0, 0, 0)
+		else:
+			_opt_styles[i].border_color = Color(0, 0, 0, 0) if lit else Color(0.72, 0.64, 0.50, 0.20)
 		_opt_cursors[i].visible = true
 		_opt_cursors[i].modulate.a = 1.0 if lit else 0.0
 		_opt_highlights[i].visible = lit
 		_opt_labels[i].text = _format_option_label(i)
-		var col := COLOR_OPT_TEXT_LIT
+		# Over a soft glow the selected line reads best in bright warm gold;
+		# on the solid gold bar (framed fallback) it stays dark-on-gold.
+		var col := COLOR_OPT_TEXT_LIT_GLOW if frameless else COLOR_OPT_TEXT_LIT
 		if not lit:
 			col = COLOR_OPT_TEXT_SEEN if seen else COLOR_OPT_TEXT_DIM
 		_opt_labels[i].add_theme_color_override("font_color", col)
+		var lit_shadow := Color(0, 0, 0, 0.78) if frameless else Color(1, 0.92, 0.72, 0.35)
 		_opt_labels[i].add_theme_color_override("font_shadow_color",
-			Color(1, 0.92, 0.72, 0.35) if lit else Color(0, 0, 0, 0))
+			lit_shadow if lit else (Color(0, 0, 0, 0.66) if frameless else Color(0, 0, 0, 0)))
 
 # True if this option leads to a content node the player already explored — used
 # to grey it out + tick it so the player can see which topics they've covered.
