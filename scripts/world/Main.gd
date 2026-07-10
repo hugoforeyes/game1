@@ -118,10 +118,15 @@ func _build_imported_world() -> void:
 
 	var npc_occupied_tiles: Dictionary = {}
 	var tile_context: Dictionary = _build_tile_context(package_data, background.texture)
+	var npc_map_size: Vector2i = tile_context.get("map_tile_size", Vector2i.ZERO) as Vector2i
+	var npc_blocked: Dictionary = (tile_context.get("blocked_tiles", {}) as Dictionary).duplicate()
+	var authored_player_tile := _find_player_spawn_tile(package_data)
+	if authored_player_tile != Vector2i.ZERO:
+		npc_blocked[_tile_key(authored_player_tile)] = true
 	var spawned_count := 0
 	for npc in npcs:
 		if npc is Dictionary:
-			var npc_data: Dictionary = npc as Dictionary
+			var npc_data: Dictionary = (npc as Dictionary).duplicate(true)
 			var npc_id: String = str(npc_data.get("id", "")).strip_edges()
 			if NarrativeState.should_hide_actor(npc_id):
 				continue
@@ -129,8 +134,22 @@ func _build_imported_world() -> void:
 			# stationary NPC — skip their authored NPC so there aren't two of them.
 			if PartyManager.is_member(npc_id):
 				continue
+			var authored_tile := _read_tile_position(npc_data)
+			var resolved_tile := authored_tile
+			if npc_map_size != Vector2i.ZERO:
+				resolved_tile = _nearest_open_tile(authored_tile, npc_map_size, npc_blocked)
+			if resolved_tile != authored_tile:
+				print("[Main] adjusted occupied npc spawn id='%s': %s -> %s" % [npc_id, authored_tile, resolved_tile])
+				npc_data["position_tile"] = {"x": resolved_tile.x, "y": resolved_tile.y}
+				var movement: Dictionary = (npc_data.get("movement", {}) as Dictionary).duplicate(true)
+				var raw_anchor: Dictionary = movement.get("anchor_tile", {}) as Dictionary
+				var anchor := Vector2i(int(raw_anchor.get("x", 0)), int(raw_anchor.get("y", 0)))
+				if anchor == authored_tile:
+					movement["anchor_tile"] = {"x": resolved_tile.x, "y": resolved_tile.y}
+					npc_data["movement"] = movement
 			_spawn_npc(npc_data, tile_context, npc_occupied_tiles)
-			npc_occupied_tiles[_tile_key(_read_tile_position(npc_data))] = true
+			npc_occupied_tiles[_tile_key(resolved_tile)] = true
+			npc_blocked[_tile_key(resolved_tile)] = true
 			spawned_count += 1
 	print("[Main] spawned_npcs=%d generated_children=%d" % [spawned_count, generated_characters.get_child_count()])
 
@@ -144,10 +163,13 @@ func _build_imported_world() -> void:
 	var spawn_tile: Vector2i = _resolve_player_spawn_tile(package_data, tile_context)
 	# Final guarantee across ALL spawn paths (entry / authored / center-fallback):
 	# never drop the player onto a solid tile or a walled-in pocket they can't leave.
+	var player_spawn_blocked: Dictionary = (tile_context.get("blocked_tiles", {}) as Dictionary).duplicate()
+	for key in npc_occupied_tiles:
+		player_spawn_blocked[key] = true
 	spawn_tile = _nearest_open_tile(
 		spawn_tile,
 		tile_context.get("map_tile_size", Vector2i.ZERO) as Vector2i,
-		tile_context.get("blocked_tiles", {}) as Dictionary,
+		player_spawn_blocked,
 	)
 	_player_spawn_tile = spawn_tile
 	player.global_position = _tile_to_pixel_center(spawn_tile)
@@ -970,6 +992,32 @@ func find_entity_global_position(kind: String, entity_id: String) -> Vector2:
 				if item_id != null and str(item_id) == entity_id:
 					return (child as Node2D).global_position
 	return Vector2.INF
+
+
+## Public: nearest currently hostile enemy to a world position. Count-based
+## defeat objectives have no target_enemy_id, so QuestCompassView re-evaluates
+## this every frame and naturally advances to the next enemy after a defeat or
+## spare without keeping a stale entity reference.
+func find_nearest_hostile_global_position(from_position: Vector2) -> Vector2:
+	var nearest_position := Vector2.INF
+	var nearest_distance_sq := INF
+	for child in generated_characters.get_children():
+		if not (child is Node2D) or not is_instance_valid(child) or child.is_queued_for_deletion():
+			continue
+		var enemy_data: Variant = child.get("enemy_data")
+		if not (enemy_data is Dictionary):
+			continue
+		var enemy_id := str((enemy_data as Dictionary).get("id", ""))
+		if enemy_id.is_empty() or GameManager.defeated_enemy_ids.has(enemy_id) or GameManager.spared_enemy_ids.has(enemy_id):
+			continue
+		if child.has_method("is_hostile") and not bool(child.call("is_hostile")):
+			continue
+		var child_position := (child as Node2D).global_position
+		var distance_sq := from_position.distance_squared_to(child_position)
+		if distance_sq < nearest_distance_sq:
+			nearest_distance_sq = distance_sq
+			nearest_position = child_position
+	return nearest_position
 
 
 ## Public: the global_position of the exit door in THIS zone that leads (directly,

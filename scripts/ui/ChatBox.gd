@@ -7,6 +7,12 @@ const MoralChoiceViewScript := preload("res://scripts/ui/MoralChoiceView.gd")
 const TEX_DIALOGUE_PANEL_PATH := "res://assets/ui/dialogue_v2/dialogue_panel.png"
 const TEX_PORTRAIT_FRAME_PATH := "res://assets/ui/dialogue_v2/portrait_frame.png"
 const TEX_NAMEPLATE_PATH      := "res://assets/ui/dialogue_v2/nameplate.png"
+# chat_v3 — the gold+cyan redesign (user-approved mockup): frameless tall
+# portrait, refined panel, 3-slice nameplate/highlight, nine-slice menu frame.
+# Every piece is optional: a missing file falls back to the dialogue_v2 look.
+const CHAT_V3_DIR := "res://assets/ui/chat_v3/"
+const BUST_ASPECT := 0.70    # tall visual-novel crop of the square emotion art
+const BUST_HEIGHT := 206.0   # design units (~64% of the 324-unit canvas)
 const TEX_CHOICE_CURSOR_PATH  := "res://assets/ui/dialogue_choice_clean/choice_cursor.png"
 const TEX_CHOICE_HILITE_PATH  := "res://assets/ui/dialogue_choice_clean/choice_highlight.png"
 const TEX_CHOICE_ANCHOR_PATH  := "res://assets/ui/dialogue_choice_clean/choice_anchor.png"
@@ -117,6 +123,14 @@ var _tex_choice_fill: Texture2D = null
 var _tex_choice_corners: Array[Texture2D] = []
 var _tex_choice_edges: Array[Texture2D] = []
 var _tex_divider: Texture2D = null
+
+# ── chat_v3 (gold+cyan redesign) ──
+var _chat_v3 := false
+var _tex_nameplate_v3: Texture2D = null
+var _tex_highlight_v3: Texture2D = null
+var _nameplate_v3: Control = null
+var _continue_gem: TextureRect = null
+var _bust_cache: Dictionary = {}  # source texture rid -> cropped tall-bust texture
 var _player_camera: Camera2D = null
 var _staged_camera: Camera2D = null
 var _conversation_player: Node2D = null
@@ -188,6 +202,37 @@ func _build_dialogue_v2_nodes() -> void:
 	]
 	_tex_divider = load(TEX_DIVIDER_PATH) as Texture2D
 
+	# ── chat_v3 overrides (user-approved mockup: gold + cyan gems, frameless
+	# tall portrait). Any missing piece keeps the dialogue_v2 fallback. ──
+	_chat_v3 = ResourceLoader.exists(CHAT_V3_DIR + "dialogue_panel.png")
+	if _chat_v3:
+		_tex_dialogue_panel = _v3_tex("dialogue_panel.png", _tex_dialogue_panel)
+		_tex_choice_cursor = _v3_tex("cursor_gem.png", _tex_choice_cursor)
+		_tex_nameplate_v3 = _v3_tex("nameplate.png", null)
+		_tex_highlight_v3 = _v3_tex("option_highlight.png", null)
+		var menu_tex := _v3_tex("menu_frame.png", null)
+		if menu_tex != null:
+			# One nine-slice sheet feeds the existing modular frame nodes:
+			# corners stay 1:1, the straight rails stretch invisibly.
+			var mw := float(menu_tex.get_width())
+			var mh := float(menu_tex.get_height())
+			var c := 96.0   # corner extent in texture px
+			var t := 44.0   # rail thickness in texture px
+			_tex_choice_corners = [
+				_atlas(menu_tex, Rect2(0, 0, c, c)),
+				_atlas(menu_tex, Rect2(mw - c, 0, c, c)),
+				_atlas(menu_tex, Rect2(0, mh - c, c, c)),
+				_atlas(menu_tex, Rect2(mw - c, mh - c, c, c)),
+			]
+			_tex_choice_edges = [
+				_atlas(menu_tex, Rect2(c, 0, mw - 2.0 * c, t)),
+				_atlas(menu_tex, Rect2(c, mh - t, mw - 2.0 * c, t)),
+				_atlas(menu_tex, Rect2(0, c, t, mh - 2.0 * c)),
+				_atlas(menu_tex, Rect2(mw - t, c, t, mh - 2.0 * c)),
+			]
+			_tex_choice_fill = _atlas(menu_tex, Rect2(t, t, mw - 2.0 * t, mh - 2.0 * t))
+		_tex_choice_jewel = _v3_tex("edge_ornament.png", _tex_choice_jewel)
+
 	_screen_dim = ColorRect.new()
 	_screen_dim.color = Color(0.0, 0.0, 0.0, 0.42)
 	_screen_dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -242,7 +287,9 @@ func _build_dialogue_v2_nodes() -> void:
 		var edge := TextureRect.new()
 		edge.texture = texture
 		edge.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-		edge.stretch_mode = TextureRect.STRETCH_TILE
+		# v3 rails are straight by design — plain scaling never shows a seam;
+		# the legacy edge strips are patterned and still need tiling.
+		edge.stretch_mode = TextureRect.STRETCH_SCALE if _chat_v3 else TextureRect.STRETCH_TILE
 		edge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		edge.visible = false
 		add_child(edge)
@@ -280,6 +327,124 @@ func _build_dialogue_v2_nodes() -> void:
 	_choice_prompt.visible = false
 	_choice_prompt.item_confirmed.connect(_on_choice_prompt_confirmed)
 	add_child(_choice_prompt)
+
+	if _chat_v3:
+		# Frameless tall portrait (visual-novel bust) standing ON TOP of the
+		# panel, like the cutscene presentation — the text area starts to its
+		# right, so nothing readable ever sits underneath it.
+		_portrait_fg.visible = false
+		_npc_portrait.clip_contents = false
+		_npc_portrait.stretch_mode = TextureRect.STRETCH_SCALE
+		_npc_portrait.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+		move_child(_npc_portrait, _panel.get_index() + 1)
+		# The panel art bakes its own edge ornaments — the loose divider retires.
+		if _divider != null:
+			_divider.visible = false
+
+		# 3-slice nameplate host (ornate end caps stay 1:1 at any name width).
+		if _tex_nameplate_v3 != null:
+			_nameplate.visible = false
+			_nameplate_v3 = Control.new()
+			_nameplate_v3.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			_mount_three_slice(_nameplate_v3, _tex_nameplate_v3, 0.16, 0.22)
+			add_child(_nameplate_v3)
+		# Name plaque + name render ABOVE the bust so the name never hides.
+		if _nameplate_v3 != null:
+			move_child(_nameplate_v3, get_child_count() - 1)
+		move_child(_npc_label, get_child_count() - 1)
+
+		# Soft-pulsing cyan "continue" indicator, bottom-right of the panel.
+		var continue_tex := _v3_tex("continue_gem.png", null)
+		if continue_tex != null:
+			_continue_gem = TextureRect.new()
+			_continue_gem.texture = continue_tex
+			_continue_gem.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			_continue_gem.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			_continue_gem.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			_continue_gem.visible = false
+			add_child(_continue_gem)
+			var pulse := create_tween().set_loops()
+			pulse.tween_property(_continue_gem, "modulate:a", 0.45, 0.75).set_trans(Tween.TRANS_SINE)
+			pulse.tween_property(_continue_gem, "modulate:a", 1.0, 0.75).set_trans(Tween.TRANS_SINE)
+
+
+func _v3_tex(file_name: String, fallback: Texture2D) -> Texture2D:
+	var path := CHAT_V3_DIR + file_name
+	if ResourceLoader.exists(path):
+		var texture := load(path) as Texture2D
+		if texture != null:
+			return texture
+	return fallback
+
+
+func _atlas(texture: Texture2D, region: Rect2) -> AtlasTexture:
+	var piece := AtlasTexture.new()
+	piece.atlas = texture
+	piece.region = region
+	return piece
+
+
+## Mount a 3-slice strip into `host`: ornate end caps keep their exact aspect
+## (width derived from the host's height), only the straight middle stretches.
+## Caps re-derive from the host size on every resize, so any width/height works.
+func _mount_three_slice(host: Control, texture: Texture2D, cap_frac_l: float, cap_frac_r: float) -> void:
+	var tw := float(texture.get_width())
+	var th := float(texture.get_height())
+	var cap_l_tex := tw * cap_frac_l
+	var cap_r_tex := tw * cap_frac_r
+
+	var left := TextureRect.new()
+	left.texture = _atlas(texture, Rect2(0, 0, cap_l_tex, th))
+	var mid := TextureRect.new()
+	mid.texture = _atlas(texture, Rect2(cap_l_tex, 0, tw - cap_l_tex - cap_r_tex, th))
+	var right := TextureRect.new()
+	right.texture = _atlas(texture, Rect2(tw - cap_r_tex, 0, cap_r_tex, th))
+	for piece in [left, mid, right]:
+		(piece as TextureRect).expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		(piece as TextureRect).stretch_mode = TextureRect.STRETCH_SCALE
+		(piece as TextureRect).mouse_filter = Control.MOUSE_FILTER_IGNORE
+		host.add_child(piece)
+
+	var relayout := func() -> void:
+		var h := host.size.y
+		var cap_l_w := h * cap_l_tex / th
+		var cap_r_w := h * cap_r_tex / th
+		left.position = Vector2.ZERO
+		left.size = Vector2(cap_l_w, h)
+		right.position = Vector2(host.size.x - cap_r_w, 0)
+		right.size = Vector2(cap_r_w, h)
+		mid.position = Vector2(cap_l_w, 0)
+		mid.size = Vector2(maxf(1.0, host.size.x - cap_l_w - cap_r_w), h)
+	host.resized.connect(relayout)
+	relayout.call()
+
+
+## Center-crop an emotion portrait (square bust art) to a tall visual-novel
+## aspect in Image space — STRETCH_SCALE then never distorts and we never rely
+## on KEEP_ASPECT_COVERED (known unreliable). Cached per source texture.
+func _bust_texture(texture: Texture2D) -> Texture2D:
+	if texture == null:
+		return null
+	var key := texture.get_rid().get_id()
+	if _bust_cache.has(key):
+		return _bust_cache[key]
+	var image := texture.get_image()
+	if image == null:
+		return texture
+	image = image.duplicate() as Image
+	if image.is_compressed():
+		image.decompress()
+	image.convert(Image.FORMAT_RGBA8)
+	var w := image.get_width()
+	var h := image.get_height()
+	var target_w := int(round(h * BUST_ASPECT))
+	if target_w < w:
+		var crop := Image.create(target_w, h, false, Image.FORMAT_RGBA8)
+		crop.blit_rect(image, Rect2i(int((w - target_w) * 0.5), 0, target_w, h), Vector2i.ZERO)
+		image = crop
+	var result := ImageTexture.create_from_image(image)
+	_bust_cache[key] = result
+	return result
 
 func _make_texture_style(
 	texture: Texture2D,
@@ -319,18 +484,29 @@ func _layout() -> void:
 	var pf_h := minf(ph + 22.0, 108.0)
 	var pf_w := pf_h * (346.0 / 436.0)
 	var pf_pos := Vector2(px + 8.0, py - 8.0)
-	_portrait_fg.size     = Vector2(pf_w, pf_h)
-	_portrait_fg.position = pf_pos
+	if _chat_v3:
+		# Frameless visual-novel bust: tall, seated just above the panel's
+		# lower border, standing BEHIND the panel art.
+		var bust_h := BUST_HEIGHT
+		var bust_w := bust_h * BUST_ASPECT
+		var bust_pos := Vector2(10.0, py + ph - 8.0 - bust_h)
+		_npc_portrait.size = Vector2(bust_w, bust_h)
+		_npc_portrait.position = bust_pos
+		pf_pos = bust_pos
+		pf_w = bust_w
+	else:
+		_portrait_fg.size     = Vector2(pf_w, pf_h)
+		_portrait_fg.position = pf_pos
 
-	var np_w := pf_w * 0.70
-	var np_h := pf_h * 0.95
-	_npc_portrait.size = Vector2(np_w, np_h)
-	_npc_portrait.position = Vector2(
-		pf_pos.x + (pf_w - np_w) * 0.5,
-		pf_pos.y + (pf_h - np_h) * 0.5
-	)
-	_npc_portrait.clip_contents = true
-	_npc_portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+		var np_w := pf_w * 0.70
+		var np_h := pf_h * 0.95
+		_npc_portrait.size = Vector2(np_w, np_h)
+		_npc_portrait.position = Vector2(
+			pf_pos.x + (pf_w - np_w) * 0.5,
+			pf_pos.y + (pf_h - np_h) * 0.5
+		)
+		_npc_portrait.clip_contents = true
+		_npc_portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 
 	var ib_x := px + 76.0
 	var ib_w := px + pw - ib_x - 22.0
@@ -352,16 +528,28 @@ func _layout() -> void:
 	_apply_nameplate_layout(px, py, pw, pf_pos, pf_w)
 
 	if _dialogue_label != null:
-		var text_x := maxf(px + 104.0, pf_pos.x + pf_w + 22.0)
-		var text_y := py + 31.0
-		var text_right_pad := 36.0
-		_dialogue_label.position = Vector2(text_x, text_y - 6.0)
-		_dialogue_label.size = Vector2(maxf(96.0, px + pw - text_x - text_right_pad), maxf(36.0, ph - 53.0))
+		if _chat_v3:
+			# Text clears the tall bust and sits vertically centered in the
+			# panel, with even breathing room on both sides (mockup metrics).
+			var text_x := maxf(px + 92.0, pf_pos.x + pf_w + 16.0)
+			_dialogue_label.position = Vector2(text_x, py + 15.0)
+			_dialogue_label.size = Vector2(maxf(96.0, px + pw - text_x - 30.0), maxf(36.0, ph - 32.0))
+			_dialogue_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		else:
+			var text_x := maxf(px + 104.0, pf_pos.x + pf_w + 22.0)
+			var text_y := py + 31.0
+			var text_right_pad := 36.0
+			_dialogue_label.position = Vector2(text_x, text_y - 6.0)
+			_dialogue_label.size = Vector2(maxf(96.0, px + pw - text_x - text_right_pad), maxf(36.0, ph - 53.0))
 		_fit_dialogue_label(_dialogue_label.text)
 
-	if _divider != null:
+	if _divider != null and not _chat_v3:
 		_divider.size = Vector2(104.0, 16.0)
 		_divider.position = Vector2(px + pw * 0.5 - 52.0, py + ph - 24.0)
+
+	if _continue_gem != null:
+		_continue_gem.size = Vector2(20.0, 26.0)
+		_continue_gem.position = Vector2(px + pw - 34.0, py + ph - 36.0)
 
 	var choice_w := minf(210.0, vp.x * 0.45)
 	var choice_h := 108.0
@@ -392,20 +580,36 @@ func _apply_nameplate_layout(px: float, py: float, pw: float, pf_pos: Vector2, p
 	var name_text := _npc_label.text.strip_edges()
 	var font_size := NAME_FONT_SIZE
 	var name_left := pf_pos.x + pf_w - 14.0
+	if _chat_v3:
+		# The bust now stands OVER the panel, so the plaque tucks just right of
+		# it (cutscene style) — the name itself always stays clear of the art.
+		name_left = pf_pos.x + pf_w - 10.0
 	var name_max_w := maxf(98.0, minf(pw * 0.48, maxf(98.0, px + pw - name_left - 92.0)))
 	var desired_w := 98.0
 	if not name_text.is_empty():
-		desired_w = font.get_string_size(name_text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x + 30.0
+		desired_w = font.get_string_size(name_text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x + (56.0 if _chat_v3 else 30.0)
 	var name_w := clampf(desired_w, 98.0, name_max_w)
-	while font_size > 7 and font.get_string_size(name_text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x > name_w - 22.0:
+	while font_size > 7 and font.get_string_size(name_text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x > name_w - (44.0 if _chat_v3 else 22.0):
 		font_size -= 1
 
-	_nameplate.size = Vector2(name_w, 23.0)
-	_nameplate.position = Vector2(name_left, py - 6.0)
+	if _nameplate_v3 != null:
+		_nameplate_v3.position = Vector2(name_left, py - 12.0)
+		_nameplate_v3.size = Vector2(name_w, 23.0)
+	else:
+		_nameplate.size = Vector2(name_w, 23.0)
+		_nameplate.position = Vector2(name_left, py - 6.0)
 
 	var label_h := 12.0
-	_npc_label.size = Vector2(maxf(24.0, name_w - 20.0), label_h)
-	_npc_label.position = Vector2(name_left + 10.0, py - 2.0)
+	if _chat_v3:
+		# Center the name across the plaque's straight middle (between the
+		# asymmetric end caps: left ~16%, right ~22% of the width).
+		var cap_l := name_w * 0.16
+		var cap_r := name_w * 0.22
+		_npc_label.size = Vector2(maxf(24.0, name_w - cap_l - cap_r), label_h)
+		_npc_label.position = Vector2(name_left + cap_l, py - 12.0 + (23.0 - label_h) * 0.5)
+	else:
+		_npc_label.size = Vector2(maxf(24.0, name_w - 20.0), label_h)
+		_npc_label.position = Vector2(name_left + 10.0, py - 2.0)
 	_npc_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_npc_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_npc_label.clip_text = true
@@ -601,7 +805,9 @@ func _set_portrait_for_emotion(emotion: String) -> void:
 		normalized = "neutral"
 	if texture == null:
 		texture = _default_portrait_texture
-	_npc_portrait.texture = texture
+	# v3 shows the portrait as a frameless tall bust — crop once in Image space
+	# (cached) so STRETCH_SCALE never distorts the art.
+	_npc_portrait.texture = _bust_texture(texture) if _chat_v3 else texture
 	if not normalized.is_empty():
 		print("[ChatBox] portrait npc=%s emotion=%s" % [_npc_id, normalized])
 
@@ -645,7 +851,13 @@ func _show_options(raw_options: Array) -> void:
 		panel.add_theme_stylebox_override("panel", sbox)
 
 		var highlight := Panel.new()
-		highlight.add_theme_stylebox_override("panel", _make_texture_style(_tex_choice_hilite, 13.0, 5.0, 13.0, 5.0))
+		if _chat_v3 and _tex_highlight_v3 != null:
+			# 3-slice gold bar: ornate pointed caps stay 1:1, only the uniform
+			# gradient middle stretches with the row width.
+			highlight.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
+			_mount_three_slice(highlight, _tex_highlight_v3, 0.11, 0.11)
+		else:
+			highlight.add_theme_stylebox_override("panel", _make_texture_style(_tex_choice_hilite, 13.0, 5.0, 13.0, 5.0))
 		highlight.set_anchors_preset(Control.PRESET_FULL_RECT)
 		highlight.offset_left = -3.0
 		highlight.offset_top = -2.0
@@ -753,6 +965,9 @@ func _apply_options_layout() -> void:
 	_scroll_to_bottom()
 
 func _layout_choice_frame(rect: Rect2) -> void:
+	if _chat_v3:
+		_layout_choice_frame_v3(rect)
+		return
 	if _choice_panel_bg != null:
 		_choice_panel_bg.position = rect.position + Vector2(11.0, 10.0)
 		_choice_panel_bg.size = Vector2(maxf(1.0, rect.size.x - 22.0), maxf(1.0, rect.size.y - 20.0))
@@ -783,6 +998,45 @@ func _layout_choice_frame(rect: Rect2) -> void:
 	if _choice_anchor != null:
 		_choice_anchor.position = rect.position + Vector2(-13.0, rect.size.y * 0.5 - 7.0)
 		_choice_anchor.size = Vector2(18.0, 14.0)
+
+
+## chat_v3 nine-slice: corner pieces drawn at their true texture aspect
+## (96 tex px = 27 design units at the 3.56 tex-per-unit density), straight
+## rails stretched between them, glass fill inset behind everything.
+func _layout_choice_frame_v3(rect: Rect2) -> void:
+	var cs := 27.0   # 96 / 3.56
+	var th := 12.4   # 44 / 3.56
+	var x := rect.position.x
+	var y := rect.position.y
+	var w := rect.size.x
+	var h := rect.size.y
+
+	if _choice_panel_bg != null:
+		_choice_panel_bg.position = rect.position + Vector2(8.0, 8.0)
+		_choice_panel_bg.size = Vector2(maxf(1.0, w - 16.0), maxf(1.0, h - 16.0))
+
+	if _choice_edges.size() >= 4:
+		_set_edge(_choice_edges[0], Vector2(x + cs, y), Vector2(maxf(1.0, w - 2.0 * cs), th))
+		_set_edge(_choice_edges[1], Vector2(x + cs, y + h - th), Vector2(maxf(1.0, w - 2.0 * cs), th))
+		_set_edge(_choice_edges[2], Vector2(x, y + cs), Vector2(th, maxf(1.0, h - 2.0 * cs)))
+		_set_edge(_choice_edges[3], Vector2(x + w - th, y + cs), Vector2(th, maxf(1.0, h - 2.0 * cs)))
+
+	if _choice_corners.size() >= 4:
+		var corner_size := Vector2(cs, cs)
+		_choice_corners[0].position = Vector2(x, y)
+		_choice_corners[1].position = Vector2(x + w - cs, y)
+		_choice_corners[2].position = Vector2(x, y + h - cs)
+		_choice_corners[3].position = Vector2(x + w - cs, y + h - cs)
+		for corner in _choice_corners:
+			corner.size = corner_size
+
+	if _choice_jewel != null:
+		# The edge ornament (gold scrollwork + cyan gem) crowns the top edge.
+		_choice_jewel.size = Vector2(56.0, 18.0)
+		_choice_jewel.position = Vector2(x + w * 0.5 - 28.0, y - 9.0)
+
+	if _choice_anchor != null:
+		_choice_anchor.visible = false
 
 func _set_edge(edge: TextureRect, position: Vector2, size: Vector2) -> void:
 	edge.position = position
@@ -1110,6 +1364,8 @@ func _set_dialogue_text(text: String, queued_labels: Array = [], queued_leaf: bo
 	_pending_tree_labels = queued_labels.duplicate()
 	_pending_tree_leaf = queued_leaf
 	_leaf_waiting = false
+	if _continue_gem != null:
+		_continue_gem.visible = false
 	if instant:
 		# Going back to a node already seen: no typewriter, no waiting — show the
 		# line fully and the options/menu immediately.
@@ -1128,6 +1384,9 @@ func _finish_dialogue_reveal() -> void:
 	_dialogue_revealing = false
 	if _dialogue_label != null:
 		_dialogue_label.visible_characters = -1
+	if _continue_gem != null:
+		# The line is fully readable — invite the next press.
+		_continue_gem.visible = _tree_mode and visible
 	# Rewards earned on this beat (items / hints / quests / companions) play as
 	# full-screen ceremonies now that the line has been read: hide the chat,
 	# run the queue one by one, then come back to exactly this spot.

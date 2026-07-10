@@ -12,9 +12,10 @@ extends CanvasLayer
 ##    basic "which way do I even go" wayfinding shouldn't be locked behind a
 ##    hint reward the way precise in-zone pinpointing is.
 ##
-## Hidden whenever the target is already comfortably on-screen (its own glow/
-## "!" marker/proximity prompt takes over from there) or while
-## GameManager.ui_blocking_input is true (dialogue/battle/cutscene/menus).
+## Off-screen targets use an edge pointer. Once a target enters the viewport,
+## the pointer moves beside it and keeps pointing at its exact position instead
+## of disappearing. Hidden only while GameManager.ui_blocking_input is true
+## (dialogue/battle/cutscene/menus).
 
 const ICON_DIR := "res://assets/ui/objective_compass_v1/icons/"
 const ARROW_PATH := ICON_DIR + "compass_arrow.png"
@@ -23,12 +24,13 @@ const BADGE_PATHS := {
 	"object": ICON_DIR + "target_object.png",
 	"item": ICON_DIR + "target_item.png",
 	"enemy": "res://assets/ui/minimap_v1/icons/zone_boss_arena.png",
+	"enemy_any": "res://assets/ui/minimap_v1/icons/zone_boss_arena.png",
 }
 
 const ARROW_SIZE := 30.0
 const BADGE_SIZE := 20.0
 const EDGE_MARGIN := 64.0
-const ONSCREEN_MARGIN := 90.0  # inside this rect, the target's own glow/marker suffices
+const TARGET_POINTER_GAP := 42.0
 const FADE_SPEED := 8.0
 
 var _main: Node = null
@@ -145,6 +147,11 @@ func _resolve_intent(quest: Dictionary, objective: Dictionary) -> Dictionary:
 		"defeat":
 			var enemy_id := str(objective.get("target_enemy_id", ""))
 			if enemy_id.is_empty():
+				# Count-based defeat objectives mean "any N hostiles" and therefore
+				# have no single authored target_enemy_id. Track the nearest remaining
+				# hostile and resolve it again every frame as enemies are cleared.
+				if int(objective.get("count", 0)) > 0:
+					return {"entity_kind": "enemy_any", "entity_id": "", "zone_id": zone_id}
 				return {}
 			return {"entity_kind": "enemy", "entity_id": enemy_id, "zone_id": zone_id}
 		"reach":
@@ -162,6 +169,10 @@ func _resolve_target_position() -> Vector2:
 	var entity_kind := str(_intent.get("entity_kind", ""))
 	if entity_kind.is_empty() or entity_kind == "exit":
 		return Vector2.INF
+	if entity_kind == "enemy_any":
+		if _player == null or not is_instance_valid(_player) or not _main.has_method("find_nearest_hostile_global_position"):
+			return Vector2.INF
+		return _main.call("find_nearest_hostile_global_position", _player.global_position) as Vector2
 	return _main.find_entity_global_position(entity_kind, str(_intent.get("entity_id", "")))
 
 
@@ -181,32 +192,47 @@ func _process(delta: float) -> void:
 	_arrow.scale = Vector2.ONE * pulse
 
 
-## Returns true if the arrow should be visible (target off-screen enough to
-## need pointing at). Also lays out the arrow/badge when true.
+## Lays out a persistent pointer. Off-screen it hugs the viewport edge; on-screen
+## it sits just inward from the target and points at the target's exact center.
 func _update_pointer(target_world: Vector2) -> bool:
 	var vp_size := get_viewport().get_visible_rect().size
 	var screen_pos: Vector2 = get_viewport().get_canvas_transform() * target_world
 	var center := vp_size * 0.5
-	var onscreen_rect := Rect2(
-		Vector2(ONSCREEN_MARGIN, ONSCREEN_MARGIN),
-		vp_size - Vector2(ONSCREEN_MARGIN, ONSCREEN_MARGIN) * 2.0,
-	)
-	if onscreen_rect.has_point(screen_pos):
-		return false  # close enough that the target's own glow/marker takes over
+	var viewport_rect := Rect2(Vector2.ZERO, vp_size)
+	var pointer_center: Vector2
+	var target_direction: Vector2
 
-	var half_size := vp_size * 0.5 - Vector2.ONE * EDGE_MARGIN
-	var direction: Vector2 = screen_pos - center
-	if direction == Vector2.ZERO:
-		return false
-	var scale_x: float = INF if direction.x == 0.0 else half_size.x / absf(direction.x)
-	var scale_y: float = INF if direction.y == 0.0 else half_size.y / absf(direction.y)
-	var edge_point: Vector2 = center + direction * minf(scale_x, scale_y)
+	if viewport_rect.has_point(screen_pos):
+		# Place the pointer on the side facing the screen centre. This keeps it
+		# readable at every edge and leaves the target sprite unobstructed.
+		var inward := center - screen_pos
+		if inward.length_squared() < 1.0:
+			inward = Vector2.UP
+		inward = inward.normalized()
+		pointer_center = screen_pos + inward * TARGET_POINTER_GAP
+		pointer_center.x = clampf(pointer_center.x, EDGE_MARGIN, vp_size.x - EDGE_MARGIN)
+		pointer_center.y = clampf(pointer_center.y, EDGE_MARGIN, vp_size.y - EDGE_MARGIN)
+		target_direction = screen_pos - pointer_center
+	else:
+		var half_size := vp_size * 0.5 - Vector2.ONE * EDGE_MARGIN
+		var outward := screen_pos - center
+		if outward.length_squared() < 1.0:
+			outward = Vector2.UP
+		var scale_x: float = INF if outward.x == 0.0 else half_size.x / absf(outward.x)
+		var scale_y: float = INF if outward.y == 0.0 else half_size.y / absf(outward.y)
+		pointer_center = center + outward * minf(scale_x, scale_y)
+		target_direction = screen_pos - pointer_center
 
-	_arrow.position = (edge_point - _arrow.size * 0.5).round()
-	_arrow.rotation = direction.angle() + PI * 0.5  # arrow art points up by default
+	if target_direction.length_squared() < 1.0:
+		target_direction = screen_pos - center
+	if target_direction.length_squared() < 1.0:
+		target_direction = Vector2.DOWN
+	var target_normal := target_direction.normalized()
+	_arrow.position = (pointer_center - _arrow.size * 0.5).round()
+	_arrow.rotation = target_normal.angle() + PI * 0.5  # arrow art points up by default
 
-	var badge_offset: Vector2 = direction.normalized() * -22.0
-	_badge.position = (edge_point + badge_offset - _badge.size * 0.5).round()
+	var badge_center := pointer_center - target_normal * 24.0
+	_badge.position = (badge_center - _badge.size * 0.5).round()
 	var badge_path: String = BADGE_PATHS.get(str(_intent.get("entity_kind", "")), "")
 	if not badge_path.is_empty() and _has(badge_path):
 		_badge.texture = load(badge_path) as Texture2D

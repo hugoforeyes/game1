@@ -38,7 +38,7 @@ func _ready() -> void:
 	assert(toast.name_label.text == "Cánh Hoa Xám")
 	assert(toast.quantity_label.text == "+3")
 
-	await get_tree().create_timer(3.15).timeout
+	await get_tree().create_timer(2.8).timeout
 	await get_tree().process_frame
 	assert(not InventoryManager._toast_busy)
 	assert(InventoryManager._toast_host.get_child_count() == 0)

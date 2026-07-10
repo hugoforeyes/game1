@@ -1,16 +1,27 @@
 extends Node2D
 ## Scripted QA for QuestCompassView: drives the REAL QuestManager hint-reveal
-## flow (production code) plus a fake "Main" stub exposing the same two
+## flow (production code) plus a fake "Main" stub exposing the same
 ## lookup methods Main.gd provides, so the compass's own logic (intent
-## resolution, hint-gating, edge-clamp math, on-screen hide) is exercised
+## resolution, hint-gating, dynamic enemy targeting, edge-clamp math, and
+## persistent exact-target pointing) is exercised
 ## for real while the entity-position source is fully controlled.
 
 const QuestCompassViewScript := preload("res://scripts/ui/QuestCompassView.gd")
+const MainScript := preload("res://scripts/world/Main.gd")
 
 var _camera: Camera2D
 var _compass: QuestCompassView
 var _fake_main: Node
 var _target_world_pos := Vector2(4000, 4000)
+
+
+class FakeEnemy:
+	extends Node2D
+	var enemy_data: Dictionary = {}
+	var hostile := true
+
+	func is_hostile() -> bool:
+		return hostile
 
 
 func _ready() -> void:
@@ -96,20 +107,21 @@ func _ready() -> void:
 	# Case 1: target far off-screen (bottom-right) -> arrow visible, pointing outward.
 	_camera.global_position = Vector2.ZERO
 	await _settle_frames(20)
-	get_viewport().get_texture().get_image().save_png(
-		ProjectSettings.globalize_path("res://tools/qa_compass_offscreen.png")
-	)
+	_save_viewport_if_available("res://tools/qa_compass_offscreen.png")
 	assert(_compass._target_alpha > 0.5, "arrow should be visible when target is far off-screen")
 	print("[QuestCompassPreview] OK: visible + wrote qa_compass_offscreen.png, arrow rotation=%.2f rad" % _compass._arrow.rotation)
 
-	# Case 2: camera moved so the target is now centered on-screen -> arrow hides.
+	# Case 2: camera moved so the target is now centered on-screen -> arrow stays
+	# beside it and points at its exact screen position instead of disappearing.
 	_camera.global_position = _target_world_pos
 	await _settle_frames(20)
-	get_viewport().get_texture().get_image().save_png(
-		ProjectSettings.globalize_path("res://tools/qa_compass_onscreen.png")
-	)
-	assert(_compass._target_alpha < 0.5, "arrow should hide once the target is on-screen")
-	print("[QuestCompassPreview] OK: hidden once target on-screen + wrote qa_compass_onscreen.png")
+	_save_viewport_if_available("res://tools/qa_compass_onscreen.png")
+	assert(_compass._target_alpha > 0.5, "arrow should remain visible once the target is on-screen")
+	var screen_center := get_viewport_rect().size * 0.5
+	var arrow_center := _compass._arrow.position + _compass._arrow.size * 0.5
+	var arrow_forward := Vector2.UP.rotated(_compass._arrow.rotation)
+	assert(arrow_forward.dot(arrow_center.direction_to(screen_center)) > 0.98, "on-screen arrow should point directly at target")
+	print("[QuestCompassPreview] OK: persistent exact-target pointer + wrote qa_compass_onscreen.png")
 
 	# Case 3: target off-screen to the UPPER-LEFT -> arrow should point up-left, not the
 	# same direction as case 1 (sanity check the angle math actually reacts to direction).
@@ -119,6 +131,20 @@ func _ready() -> void:
 	assert(_compass._target_alpha > 0.5, "arrow should be visible again for case 3")
 	print("[QuestCompassPreview] OK: case 3 rotation=%.2f rad (case 1 was different direction)" % rot_case3)
 
+	# ── Count-based defeat objective: nearest remaining hostile ────────────────
+	_setup_count_defeat_quest()
+	GameManager.imported_scene_context = {"zone_id": "zone_03"}
+	_fake_main.hostile_positions = [Vector2(1800, 0), Vector2(900, 0), Vector2(2400, 0)]
+	for level in [1, 2, 3]:
+		QuestManager.reveal_hint("Scout", {"quest_id": "quest_count", "objective_id": "o1", "level": level}, "Gợi ý %d" % level)
+	await get_tree().process_frame
+	assert(str(_compass._intent.get("entity_kind", "")) == "enemy_any", "count defeat should resolve a dynamic hostile intent")
+	assert(_compass._resolve_target_position() == Vector2(900, 0), "count defeat should point to nearest hostile")
+	_fake_main.hostile_positions.erase(Vector2(900, 0))
+	assert(_compass._resolve_target_position() == Vector2(1800, 0), "pointer should advance after the nearest hostile is removed")
+	print("[QuestCompassPreview] OK: count-based defeat retargets nearest remaining hostile")
+	_test_real_main_nearest_hostile_lookup()
+
 	print("[QuestCompassPreview] ALL CHECKS PASSED")
 	get_tree().quit()
 
@@ -126,6 +152,35 @@ func _ready() -> void:
 func _settle_frames(count: int) -> void:
 	for _i in range(count):
 		await get_tree().process_frame
+
+
+func _save_viewport_if_available(path: String) -> void:
+	# The headless display driver has no framebuffer. Visual preview runs still
+	# write PNGs normally; automated headless assertions skip only the capture.
+	if DisplayServer.get_name() == "headless":
+		return
+	get_viewport().get_texture().get_image().save_png(ProjectSettings.globalize_path(path))
+
+
+func _test_real_main_nearest_hostile_lookup() -> void:
+	var main = MainScript.new()
+	var characters := Node2D.new()
+	main.generated_characters = characters
+	var farther := FakeEnemy.new()
+	farther.enemy_data = {"id": "qa_farther"}
+	farther.position = Vector2(1200, 0)
+	characters.add_child(farther)
+	var nearer := FakeEnemy.new()
+	nearer.enemy_data = {"id": "qa_nearer"}
+	nearer.position = Vector2(400, 0)
+	characters.add_child(nearer)
+
+	assert(main.find_nearest_hostile_global_position(Vector2.ZERO) == Vector2(400, 0))
+	nearer.hostile = false
+	assert(main.find_nearest_hostile_global_position(Vector2.ZERO) == Vector2(1200, 0))
+	characters.free()
+	main.free()
+	print("[QuestCompassPreview] OK: Main skips enemies that are no longer hostile")
 
 
 func _setup_quest() -> void:
@@ -163,3 +218,22 @@ func _setup_cross_zone_quest() -> void:
 	}
 	QuestManager.quests.append(quest)
 	QuestManager.quest_states["quest_03"] = {"state": "active", "objective_index": 0, "progress": 0, "choices": {}}
+
+
+func _setup_count_defeat_quest() -> void:
+	var quest := {
+		"id": "quest_count",
+		"title": "Giữ chiến hào",
+		"type": "main",
+		"objectives": [{
+			"kind": "defeat",
+			"zone_id": "zone_03",
+			"count": 3,
+			"id": "o1",
+			"description": "Đánh bại hoặc tha mạng ba kẻ địch.",
+		}],
+	}
+	QuestManager.load_chapter_quests([quest])
+	QuestManager.quest_states["quest_count"] = {"state": "active", "objective_index": 0, "progress": 0, "choices": {}}
+	QuestManager.tracked_quest_id = "quest_count"
+	QuestManager.quests_changed.emit()

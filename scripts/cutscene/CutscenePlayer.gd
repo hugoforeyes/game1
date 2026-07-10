@@ -177,23 +177,46 @@ func _tile_to_world(tile: Vector2i) -> Vector2:
 
 func _prestage_from_start_tiles() -> bool:
 	# Preferred path: the backend pre-placed everyone near the action and arranged
-	# them by where they naturally come from (origin direction), spread out. Just
-	# apply those tiles — minimal movement, no clumping. Returns false if no data.
+	# them by where they naturally come from (origin direction). Treat those tiles
+	# as preferences rather than guarantees: malformed/partial data can contain
+	# duplicates, which previously put multiple actors on the exact same spot.
 	if _start_tiles.is_empty():
 		return false
 	var player_tile := _tile_of(_player.global_position)
 	if _start_tiles.has("player"):
 		var pt: Dictionary = _start_tiles["player"] as Dictionary
-		player_tile = Vector2i(int(pt.get("x", player_tile.x)), int(pt.get("y", player_tile.y)))
-		_player.global_position = _tile_to_world(player_tile)
+		var authored_player := Vector2i(int(pt.get("x", player_tile.x)), int(pt.get("y", player_tile.y)))
+		if _is_open(authored_player):
+			player_tile = authored_player
+			_player.global_position = _tile_to_world(player_tile)
+	var used: Dictionary = {_tile_key(player_tile): true}
+	var ring_index := 0
 	for actor_id in _cutscene_participants():
-		if not _start_tiles.has(actor_id):
-			continue
 		var actor: Node2D = _find_actor(actor_id)
 		if actor == null:
 			continue
-		var st: Dictionary = _start_tiles[actor_id] as Dictionary
-		var tile := Vector2i(int(st.get("x", 0)), int(st.get("y", 0)))
+		var actor_tile := _tile_of(actor.global_position)
+		var tile := actor_tile
+		var has_authored_tile := _start_tiles.has(actor_id) and _start_tiles[actor_id] is Dictionary
+		if has_authored_tile:
+			var st: Dictionary = _start_tiles[actor_id] as Dictionary
+			tile = Vector2i(int(st.get("x", actor_tile.x)), int(st.get("y", actor_tile.y)))
+
+		var tile_is_usable := _is_open(tile) and not used.has(_tile_key(tile))
+		if not tile_is_usable:
+			# A missing/duplicate authored tile may still have a good live position.
+			var current_is_usable := _is_open(actor_tile) \
+					and not used.has(_tile_key(actor_tile)) \
+					and Vector2(player_tile).distance_to(Vector2(actor_tile)) <= PRESTAGE_DISTANCE_TILES
+			if current_is_usable:
+				tile = actor_tile
+			else:
+				tile = _pick_prestage_tile(player_tile, used, ring_index)
+				ring_index += 1
+			if has_authored_tile:
+				print("[Cutscene] adjusted occupied start_tile for %s -> %s" % [actor_id, tile])
+
+		used[_tile_key(tile)] = true
 		actor.global_position = _tile_to_world(tile)
 		_face_actor_toward(actor, player_tile)
 		print("[Cutscene] pre-placed %s at %s (backend start_tile)" % [actor_id, tile])
@@ -290,6 +313,32 @@ func _tile_key(tile: Vector2i) -> String:
 
 func _is_open(tile: Vector2i) -> bool:
 	return tile.x >= 0 and tile.y >= 0 and not _blocked_tiles.has(_tile_key(tile))
+
+
+func _occupied_actor_tiles(exclude: Node2D = null) -> Dictionary:
+	var occupied: Dictionary = {}
+	if _player != null and is_instance_valid(_player) and _player != exclude and _player.visible:
+		occupied[_tile_key(_tile_of(_player.global_position))] = true
+	if _characters_root == null:
+		return occupied
+	for child in _characters_root.get_children():
+		if child is Node2D and child != exclude and (child as Node2D).visible:
+			occupied[_tile_key(_tile_of((child as Node2D).global_position))] = true
+	return occupied
+
+
+func _nearest_unoccupied_tile(preferred: Vector2i, occupied: Dictionary) -> Vector2i:
+	if _is_open(preferred) and not occupied.has(_tile_key(preferred)):
+		return preferred
+	for radius in range(1, 7):
+		for dx in range(-radius, radius + 1):
+			for dy in range(-radius, radius + 1):
+				if max(abs(dx), abs(dy)) != radius:
+					continue
+				var candidate := preferred + Vector2i(dx, dy)
+				if _is_open(candidate) and not occupied.has(_tile_key(candidate)):
+					return candidate
+	return preferred
 
 
 func _map_tile_size() -> Vector2i:
@@ -847,8 +896,22 @@ func _do_move(actor_id: String, to_tile: Dictionary) -> void:
 	var actor: Node2D = _find_actor(actor_id)
 	if actor == null or to_tile.is_empty():
 		return
-	var target_tile := Vector2i(int(to_tile.get("x", 0)), int(to_tile.get("y", 0)))
+	var requested_tile := Vector2i(int(to_tile.get("x", 0)), int(to_tile.get("y", 0)))
 	var start_tile := _tile_of(actor.global_position)
+	var occupied := _occupied_actor_tiles(actor)
+	var target_tile := requested_tile
+	if occupied.has(_tile_key(requested_tile)):
+		# If the actor is already beside the requested conversation/attack point,
+		# staying put is less disruptive than hopping to an arbitrary neighbour.
+		var delta := requested_tile - start_tile
+		if maxi(abs(delta.x), abs(delta.y)) <= 1 and _is_open(start_tile):
+			target_tile = start_tile
+		else:
+			target_tile = _nearest_unoccupied_tile(requested_tile, occupied)
+	elif not _is_open(requested_tile):
+		target_tile = _nearest_unoccupied_tile(requested_tile, occupied)
+	if target_tile != requested_tile:
+		print("[Cutscene] adjusted occupied move target for %s: %s -> %s" % [actor_id, requested_tile, target_tile])
 	if target_tile == start_tile:
 		return
 	# Walk the A* path tile-by-tile so the actor goes around walls/objects rather
@@ -1071,13 +1134,19 @@ func _emote_color(emotion: String) -> Color:
 			return Color(1.0, 0.92, 0.45, 1.0)
 
 
-func _face_pair(speaker_id: String) -> void:
+func _face_pair(speaker_id: String, target_id: String = "") -> void:
 	# Safety net for scripts without staged face actions: speaker and the
-	# previous speaker turn toward each other.
-	if speaker_id in ["", "narrator"] or _last_speaker in ["", "narrator"] or _last_speaker == speaker_id:
+	# explicit dialogue target turn toward each other. Older scripts fall back
+	# to the previous speaker.
+	if speaker_id in ["", "narrator"]:
+		return
+	var partner_id := target_id
+	if partner_id in ["", "narrator"] or partner_id == speaker_id or _find_actor(partner_id) == null:
+		partner_id = _last_speaker
+	if partner_id in ["", "narrator"] or partner_id == speaker_id:
 		return
 	var speaker: Node2D = _find_actor(speaker_id)
-	var partner: Node2D = _find_actor(_last_speaker)
+	var partner: Node2D = _find_actor(partner_id)
 	if speaker == null or partner == null:
 		return
 	var delta: Vector2 = partner.global_position - speaker.global_position
@@ -1092,7 +1161,7 @@ func _face_pair(speaker_id: String) -> void:
 		speaker_direction = "down" if delta.y > 0 else "up"
 		partner_direction = "up" if delta.y > 0 else "down"
 	_do_face(speaker_id, speaker_direction)
-	_do_face(_last_speaker, partner_direction)
+	_do_face(partner_id, partner_direction)
 
 
 func _do_say(action: Dictionary) -> void:
@@ -1103,7 +1172,7 @@ func _do_say(action: Dictionary) -> void:
 	var speaker: String = str(action.get("speaker_name", actor_id))
 	var emotion: String = str(action.get("emotion", "neutral"))
 
-	_face_pair(actor_id)
+	_face_pair(actor_id, str(action.get("target", "")))
 	if actor_id not in ["", "narrator"]:
 		_last_speaker = actor_id
 
@@ -1207,12 +1276,7 @@ func _finish() -> void:
 	# We hand control back right away; they finish the walk in the background.
 	var walk_duration: float = _begin_walk_home()
 
-	if _player_camera != null:
-		var tween := create_tween()
-		tween.tween_property(_camera, "global_position", _player_camera.get_screen_center_position(), 0.6)\
-			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-		await tween.finished
-		_player_camera.make_current()
+	await _restore_player_camera()
 
 	var bars := create_tween()
 	bars.tween_property(_top_bar, "position:y", -LETTERBOX_H, 0.5)
@@ -1232,6 +1296,26 @@ func _finish() -> void:
 		await get_tree().create_timer(walk_duration + 0.3).timeout
 	_restore_actor_collisions()
 	queue_free()
+
+
+func _restore_player_camera() -> void:
+	if _player_camera == null or not is_instance_valid(_player_camera):
+		return
+	# get_screen_center_position() is the camera's last rendered center. While the
+	# cinematic camera is current that value can remain at the player's old/origin
+	# position. The player node itself is the authoritative live handoff target.
+	var target := _player.global_position if _player != null and is_instance_valid(_player) \
+			else _player_camera.global_position
+	if _camera != null and is_instance_valid(_camera):
+		var tween := create_tween()
+		tween.tween_property(_camera, "global_position", target, 0.6)\
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		await tween.finished
+	# Clear the inactive camera's stale smoothing accumulator before it takes over,
+	# then force the viewport update in the same frame for a seamless handoff.
+	_player_camera.make_current()
+	_player_camera.reset_smoothing()
+	_player_camera.force_update_scroll()
 
 
 func _restore_collision_for(node: Node) -> void:
