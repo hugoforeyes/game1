@@ -55,25 +55,43 @@ const TEX_B2_ICON_FLEE: = "res://assets/ui/battle_v2/icons/icon_flee.png"
 const TEX_B2_ICON_FINISHER: = "res://assets/ui/battle_v2/icons/icon_finisher.png"
 const TEX_B2_ICON_SPARE: = "res://assets/ui/battle_v2/icons/icon_spare.png"
 
-enum UiMode{NONE, TYPING, CONFIRM, MENU}
+enum UiMode{NONE, TYPING, CONFIRM, MENU, TARGET}
+
+# Party-balance constants mirror SceneBuilder/utils/enemy_balance.py.
+const PARTY_ECHO_XP_FACTOR: = 0.5
+const BOSS_HP_PER_EXTRA_ALLY: = 0.55
+const BOSS_MAX_ACTIONS_PER_ROUND: = 3
+const ELITE_HARD_CC_RESISTANCE: = 0.35
+const BOSS_HARD_CC_RESISTANCE: = 0.65
+const HARD_CC_STATUS_IDS: = {
+    "freeze": true,
+    "sleep": true,
+    "paralyze": true,
+    "stun": true,
+}
 
 signal _confirmed
 signal _menu_picked(id: String)
 
 
+# ── multi-actor battle state ─────────────────────────────────────────────────
+# The battle is party-vs-group: every combatant is an "actor" Dictionary.
+# Ally actor: {kind:"player"|"companion", id, name, level, max_hp, attack, defense,
+#   speed, sp, sp_max, statuses:[], skills:[], downed, focus, guarding, portrait}
+# Foe actor: {id, name, level, rank, data, max_hp, hp, attack, defense, speed,
+#   statuses:[], xp_reward, synthetic, intent, turns_since_heavy, ui:{...}}
+# Status instance (on actor.statuses): {id, turns_left, magnitude} — definitions
+# live in GameManager.STATUS_LIBRARY.
+var _allies: Array[Dictionary] = []
+var _foes: Array[Dictionary] = []
+
+# The PRIMARY foe = the world enemy the player touched. Story systems (weakness
+# probe, HP phases, spare, dialogue) stay anchored to it; reinforcement echoes
+# are pure combat filler.
 var enemy: Dictionary = {}
 var enemy_id: String = ""
-var enemy_hp: int = 1
-var enemy_max_hp: int = 1
-var enemy_attack: int = 1
-var enemy_defense: int = 0
-var enemy_speed: int = 1
 
 var player_stats: Dictionary = {}
-var player_sp: int = 0
-var focus_active: bool = false
-var hexed: bool = false
-var guarding: bool = false
 var _companion_levelups: Array = []
 
 var exposed_turns: int = 0
@@ -83,8 +101,6 @@ var probe_options: Array = []
 var triggered_phases: Dictionary = {}
 var phase_damage_bonus: float = 1.0
 var phase_defense_factor: float = 1.0
-var intent: Dictionary = {}
-var turns_since_heavy: int = 99
 var flee_failed_count: int = 0
 
 var _ui_mode: UiMode = UiMode.NONE
@@ -115,16 +131,12 @@ var _enemy_name_label: Label
 var _enemy_rank_label: Label
 var _enemy_hp_bar: Control
 var _enemy_hp_ghost: Control
-var _enemy_status_label: Label
+var _enemy_status_row: HBoxContainer
 var _intent_label: Label
 var _intent_icon: TextureRect
 var _turn_stack: Control
 var _turn_cards: Array[Control] = []
 var _turn_active_actor: = "player"
-var _portrait_holder: Control
-var _portrait: TextureRect
-var _portrait_flash: TextureRect
-var _portrait_glow: TextureRect
 var _log_panel: Panel
 var _log_label: RichTextLabel
 var _continue_marker: Label
@@ -136,19 +148,27 @@ var _menu_info_icon: TextureRect
 var _menu_info_name: Label
 var _menu_info_desc: Label
 var _hint_label: Label
-var _player_panel: Panel
-var _player_panel_label: Label
 var _enemy_lv_label: Label
 var _enemy_hp_text: Label
-var _player_lv_label: Label
-var _player_hp_text: Label
-var _player_xp_text: Label
-var _player_status_label: Label
-var _player_hp_bar: Control
-var _player_hp_ghost: Control
-var _xp_bar: Control
-var _sp_pips: Array[CanvasItem] = []
-var _sp_pip_row: Control
+
+# Per-ally status cards (index-parallel with _allies):
+# {root, name_label, lv_label, hp_bar, hp_ghost, hp_text, status_row, sp_pips,
+#  xp_bar, xp_text, fx_center: Vector2}
+var _ally_cards: Array[Dictionary] = []
+
+# Round-based turn queue: [{"side": "ally"|"foe", "index": int}, ...]
+var _round_queue: Array[Dictionary] = []
+var _queue_pos: int = 0
+var _round_serial: int = 0
+
+# Target-selection overlay state (gold arrows over foe portraits / ally cards).
+var _target_arrows: Array[Control] = []
+# The foe the top-left readout panel describes (follows the last selected target).
+var _target_foe_index: int = 0
+var _enemy_medallion: TextureRect
+
+# Per-skill FX sheets (assets/fx/skills/<id>_sheet.png), cached SpriteFrames.
+var _skill_fx_cache: Dictionary = {}
 
 const ENEMY_HP_BAR_W: = 170.0
 const PLAYER_HP_BAR_W: = 130.0
@@ -174,16 +194,11 @@ const SCREEN_CENTER: = Vector2(480, 270)
 func open(enemy_data: Dictionary) -> void :
     enemy = _with_choice_scaling(enemy_data)
     enemy_id = str(enemy.get("id", ""))
-    var stats: Dictionary = enemy.get("stats", {}) as Dictionary
-    enemy_max_hp = max(int(stats.get("max_hp", 40)), 1)
-    enemy_hp = enemy_max_hp
-    enemy_attack = max(int(stats.get("attack", 8)), 1)
-    enemy_defense = max(int(stats.get("defense", 2)), 0)
-    enemy_speed = max(int(stats.get("speed", 6)), 1)
+    probe_options = ((enemy.get("weakness", {}) as Dictionary).get("probe_options", []) as Array).duplicate(true)
 
     player_stats = GameManager.player_battle_stats()
-    player_sp = int(player_stats.get("sp_max", 3))
-    probe_options = ((enemy.get("weakness", {}) as Dictionary).get("probe_options", []) as Array).duplicate(true)
+    _build_allies()
+    _build_foes()
 
     GameManager.ui_blocking_input = true
     layer = 80
@@ -194,6 +209,519 @@ func open(enemy_data: Dictionary) -> void :
     _load_ui_kit()
     _build_ui()
     _run_battle()
+
+
+## The player's side: the protagonist plus every companion currently travelling
+## with them. Companions bring their own persistent HP, level-derived stats and
+## their LLM-authored skill set (GameManager.companion_skills).
+func _build_allies() -> void :
+    _allies.clear()
+    _allies.append({
+        "kind": "player",
+        "id": "player",
+        "name": _player_name(),
+        "level": GameManager.player_level,
+        "max_hp": int(player_stats.get("max_hp", 80)),
+        "attack": int(player_stats.get("attack", 12)),
+        "defense": int(player_stats.get("defense", 5)),
+        "speed": int(player_stats.get("speed", 9)),
+        "sp": int(player_stats.get("sp_max", 3)),
+        "sp_max": int(player_stats.get("sp_max", 3)),
+        "statuses": [],
+        "skills": GameManager.player_skills(),
+        "downed": GameManager.get_player_hp() <= 0,
+        "focus": false,
+        "guarding": false,
+    })
+    for raw_id in GameManager.active_companion_ids():
+        var npc_id: = str(raw_id)
+        var stats: Dictionary = GameManager.companion_battle_stats(npc_id)
+        _allies.append({
+            "kind": "companion",
+            "id": npc_id,
+            "name": PartyManager.companion_name(npc_id),
+            "level": int(stats.get("level", 1)),
+            "max_hp": int(stats.get("max_hp", 50)),
+            "attack": int(stats.get("attack", 10)),
+            "defense": int(stats.get("defense", 4)),
+            "speed": int(stats.get("speed", 8)),
+            "sp": int(stats.get("sp_max", 2)),
+            "sp_max": int(stats.get("sp_max", 2)),
+            "statuses": [],
+            "skills": GameManager.companion_skills(npc_id),
+            "downed": GameManager.get_companion_hp(npc_id) <= 0,
+            "focus": false,
+            "guarding": false,
+        })
+
+
+func _ally_hp(ally: Dictionary) -> int:
+    if str(ally.get("kind")) == "player":
+        return GameManager.get_player_hp()
+    return GameManager.get_companion_hp(str(ally.get("id")))
+
+
+func _set_ally_hp(ally: Dictionary, value: int) -> void :
+    if str(ally.get("kind")) == "player":
+        GameManager.set_player_hp(value)
+    else:
+        GameManager.set_companion_hp(str(ally.get("id")), value)
+
+
+## The hostile side: the touched world enemy plus reinforcement "echoes" sized to
+## the party ("nhiều đấu nhiều"). Echoes are synthetic combat filler — one level
+## below the primary, minion-grade XP — so a solo player still fights the same 1v1
+## the balance curves were tuned for, while a full party faces a real group.
+## Bosses stay alone, gaining HP and interleaved actions instead of visual clones.
+func _build_foes() -> void :
+    _foes.clear()
+    _foes.append(_make_foe_actor(enemy, 0, false))
+    var rank: = str(enemy.get("rank", "minion"))
+    var extra_budget: int = clampi(_allies.size() - 1, 0, 2)
+    if rank == "boss":
+        extra_budget = 0
+    elif rank == "elite":
+        extra_budget = mini(extra_budget, 1)
+    for index in range(extra_budget):
+        _foes.append(_make_echo_foe(index + 1))
+    if rank == "boss":
+        var primary: Dictionary = _foes[0]
+        var scaled_hp: int = maxi(1, int(round(
+            int(primary.get("max_hp", 1)) * _boss_hp_multiplier(_allies.size())
+        )))
+        primary["max_hp"] = scaled_hp
+        primary["hp"] = scaled_hp
+        primary["actions_per_round"] = _boss_actions_per_round(_allies.size())
+
+
+func _boss_hp_multiplier(party_size: int) -> float:
+    return 1.0 + BOSS_HP_PER_EXTRA_ALLY * maxi(0, party_size - 1)
+
+
+func _boss_actions_per_round(party_size: int) -> int:
+    return clampi(party_size, 1, BOSS_MAX_ACTIONS_PER_ROUND)
+
+
+func _make_foe_actor(data: Dictionary, index: int, synthetic: bool) -> Dictionary:
+    var stats: Dictionary = data.get("stats", {}) as Dictionary
+    return {
+        "id": str(data.get("id", "foe_%d" % index)),
+        "name": str(data.get("name", "Enemy")),
+        "level": maxi(1, int(data.get("level", 1))),
+        "rank": str(data.get("rank", "minion")),
+        "data": data,
+        "max_hp": maxi(int(stats.get("max_hp", 40)), 1),
+        "hp": maxi(int(stats.get("max_hp", 40)), 1),
+        "attack": maxi(int(stats.get("attack", 8)), 1),
+        "defense": maxi(int(stats.get("defense", 2)), 0),
+        "speed": maxi(int(stats.get("speed", 6)), 1),
+        "statuses": [],
+        "xp_reward": maxi(int(data.get("xp_reward", 20)), 1),
+        "synthetic": synthetic,
+        "intent": {},
+        "turns_since_heavy": 99,
+        "actions_per_round": 1,
+        "ui": {},
+    }
+
+
+## A reinforcement copy of the primary enemy: one level lower (stat ratios mirror
+## utils/enemy_balance.py's linear curves, same rule as _with_choice_scaling) and
+## worth 50% XP so grinding echoes never out-earns real roster enemies.
+func _make_echo_foe(ordinal: int) -> Dictionary:
+    var base: Dictionary = enemy.duplicate(true)
+    var old_level: int = maxi(1, int(base.get("level", 1)))
+    var new_level: int = maxi(1, old_level - 1)
+    var stats: Dictionary = (base.get("stats", {}) as Dictionary).duplicate(true)
+    if new_level != old_level:
+        var hp_ratio: = (30.0 + 14.0 * new_level) / (30.0 + 14.0 * old_level)
+        var atk_ratio: = (6.0 + 2.2 * new_level) / (6.0 + 2.2 * old_level)
+        var def_ratio: = (2.0 + 1.4 * new_level) / (2.0 + 1.4 * old_level)
+        stats["max_hp"] = maxi(1, int(round(int(stats.get("max_hp", 40)) * hp_ratio)))
+        stats["attack"] = maxi(1, int(round(int(stats.get("attack", 8)) * atk_ratio)))
+        stats["defense"] = maxi(0, int(round(int(stats.get("defense", 2)) * def_ratio)))
+        stats["speed"] = maxi(1, int(stats.get("speed", 6)) - 1)
+    base["stats"] = stats
+    base["level"] = new_level
+    base["id"] = "%s__echo%d" % [enemy_id, ordinal]
+    base["name"] = "%s %s" % [str(enemy.get("name", "Enemy")), "II" if ordinal == 1 else "III"]
+    base["xp_reward"] = maxi(1, int(round(int(enemy.get("xp_reward", 20)) * PARTY_ECHO_XP_FACTOR)))
+    base["rank"] = "minion"
+    base.erase("phases")
+    base["can_spare"] = false
+    return _make_foe_actor(base, ordinal, true)
+
+
+# ── status-effect engine ──────────────────────────────────────────────────────
+# Definitions live in GameManager.STATUS_LIBRARY; an actor carries instances
+# {id, turns_left, magnitude}. Rules of the loop:
+#   * skip decision + damage/heal ticks happen at the START of the actor's turn,
+#   * durations decrement AFTER the tick (one turn controls one normal actor turn;
+#     a multi-action boss resolves hard control once for the whole round),
+#   * sleep breaks when the sleeper takes a hit (wake_on_hit),
+#   * shield magnitude is a damage-absorbing pool consumed before HP.
+
+
+func _find_status(actor: Dictionary, status_id: String) -> Dictionary:
+    for status in actor.get("statuses", []) as Array:
+        if str((status as Dictionary).get("id")) == status_id:
+            return status
+    return {}
+
+
+func _apply_status(actor: Dictionary, status_id: String, magnitude: float = 0.0) -> bool:
+    var def: Dictionary = GameManager.status_def(status_id)
+    if def.is_empty():
+        return false
+    var resistance: float = _hard_cc_resistance_for(actor, status_id)
+    if resistance > 0.0 and randf() < resistance:
+        return false
+    var existing: Dictionary = _find_status(actor, status_id)
+    if not existing.is_empty():
+        # Re-applying refreshes duration and keeps the strongest magnitude.
+        existing["turns_left"] = int(def.get("turns", 2))
+        existing["magnitude"] = maxf(float(existing.get("magnitude", 0.0)), magnitude)
+        return true
+    (actor["statuses"] as Array).append({
+        "id": status_id,
+        "turns_left": int(def.get("turns", 2)),
+        "magnitude": magnitude,
+    })
+    return true
+
+
+func _hard_cc_resistance_for(actor: Dictionary, status_id: String) -> float:
+    if not HARD_CC_STATUS_IDS.has(status_id):
+        return 0.0
+    match str(actor.get("rank", "")):
+        "boss":
+            return BOSS_HARD_CC_RESISTANCE
+        "elite":
+            return ELITE_HARD_CC_RESISTANCE
+        _:
+            return 0.0
+
+
+func _remove_status(actor: Dictionary, status_id: String) -> void :
+    var statuses: Array = actor.get("statuses", []) as Array
+    for index in range(statuses.size() - 1, -1, -1):
+        if str((statuses[index] as Dictionary).get("id")) == status_id:
+            statuses.remove_at(index)
+
+
+func _clear_debuffs(actor: Dictionary) -> int:
+    var statuses: Array = actor.get("statuses", []) as Array
+    var removed: = 0
+    for index in range(statuses.size() - 1, -1, -1):
+        var def: Dictionary = GameManager.status_def(str((statuses[index] as Dictionary).get("id")))
+        if str(def.get("kind", "")) == "debuff":
+            statuses.remove_at(index)
+            removed += 1
+    return removed
+
+
+## Product of a multiplier key (attack_mult / defense_mult / speed_mult /
+## hit_chance) across the actor's live statuses.
+func _status_mult(actor: Dictionary, key: String) -> float:
+    var value: = 1.0
+    for status in actor.get("statuses", []) as Array:
+        var def: Dictionary = GameManager.status_def(str((status as Dictionary).get("id")))
+        if def.has(key):
+            value *= float(def.get(key, 1.0))
+    return value
+
+
+## Additive sum of a bonus key (crit_bonus) across live statuses.
+func _status_bonus(actor: Dictionary, key: String) -> float:
+    var value: = 0.0
+    for status in actor.get("statuses", []) as Array:
+        var def: Dictionary = GameManager.status_def(str((status as Dictionary).get("id")))
+        value += float(def.get(key, 0.0))
+    return value
+
+
+func _status_flag(actor: Dictionary, key: String) -> bool:
+    for status in actor.get("statuses", []) as Array:
+        var def: Dictionary = GameManager.status_def(str((status as Dictionary).get("id")))
+        if bool(def.get(key, false)):
+            return true
+    return false
+
+
+func _effective_speed(actor: Dictionary) -> int:
+    return maxi(1, int(round(int(actor.get("speed", 6)) * _status_mult(actor, "speed_mult"))))
+
+
+## Taking a hit wakes a sleeper.
+func _on_actor_damaged(actor: Dictionary) -> void :
+    for status in (actor.get("statuses", []) as Array).duplicate():
+        var def: Dictionary = GameManager.status_def(str((status as Dictionary).get("id")))
+        if bool(def.get("wake_on_hit", false)):
+            _remove_status(actor, str((status as Dictionary).get("id")))
+
+
+## Route incoming damage through any shield pools first. Returns the damage that
+## still reaches HP; shield magnitudes are consumed in place.
+func _absorb_with_shields(actor: Dictionary, damage: int) -> int:
+    var remaining: = damage
+    var statuses: Array = actor.get("statuses", []) as Array
+    for index in range(statuses.size() - 1, -1, -1):
+        if remaining <= 0:
+            break
+        var status: Dictionary = statuses[index]
+        var def: Dictionary = GameManager.status_def(str(status.get("id")))
+        if not bool(def.get("absorb", false)):
+            continue
+        var pool: int = int(round(float(status.get("magnitude", 0.0))))
+        var eaten: int = mini(pool, remaining)
+        remaining -= eaten
+        if eaten >= pool:
+            statuses.remove_at(index)
+        else:
+            status["magnitude"] = float(pool - eaten)
+    return remaining
+
+
+## Start-of-turn upkeep for ANY actor: DoT/regen ticks, then the skip decision,
+## then duration decrement. Returns {skip: bool, notes: Array[String]} — notes
+## are already-formatted log lines for the caller to _say.
+func _tick_statuses(actor: Dictionary, is_ally: bool) -> Dictionary:
+    var notes: Array[String] = []
+    var skip: = false
+    var actor_name: = str(actor.get("name", "?"))
+    var max_hp: int = int(actor.get("max_hp", 1))
+
+    for status in (actor.get("statuses", []) as Array).duplicate():
+        var status_id: = str((status as Dictionary).get("id"))
+        var def: Dictionary = GameManager.status_def(status_id)
+        var tick_pct: = float(def.get("tick_pct", 0.0))
+        if tick_pct > 0.0:
+            var dot: int = maxi(1, int(round(max_hp * tick_pct)))
+            _deal_raw_damage(actor, is_ally, dot, Color(0.55, 0.9, 0.35) if status_id == "poison" else Color(1.0, 0.5, 0.2))
+            notes.append("%s takes %d %s damage." % [actor_name, dot, str(def.get("name", status_id)).to_lower()])
+        if bool(def.get("tick_heal", false)):
+            var heal: int = maxi(1, int(round(float((status as Dictionary).get("magnitude", 6.0)))))
+            _heal_raw(actor, is_ally, heal)
+            notes.append("%s regenerates %d HP." % [actor_name, heal])
+
+    if _actor_down(actor, is_ally):
+        return {"skip": true, "notes": notes}
+
+    for status in (actor.get("statuses", []) as Array).duplicate():
+        var def: Dictionary = GameManager.status_def(str((status as Dictionary).get("id")))
+        if bool(def.get("skip_turn", false)):
+            skip = true
+            notes.append("%s is %s and cannot move!" % [actor_name, str(def.get("name", "?")).to_lower()])
+            break
+        var skip_chance: = float(def.get("skip_chance", 0.0))
+        if skip_chance > 0.0 and randf() < skip_chance:
+            skip = true
+            notes.append("%s is paralyzed and cannot move!" % actor_name)
+            break
+
+    var statuses: Array = actor.get("statuses", []) as Array
+    for index in range(statuses.size() - 1, -1, -1):
+        var status: Dictionary = statuses[index]
+        status["turns_left"] = int(status.get("turns_left", 1)) - 1
+        if int(status["turns_left"]) <= 0:
+            statuses.remove_at(index)
+
+    return {"skip": skip, "notes": notes}
+
+
+## A boss may act up to three times, but status periods are ROUND-based. Cache
+## the upkeep decision so DoT/regen, duration decay and CC RNG happen once; a
+## hard control that lands skips all of that boss's actions for the round.
+func _status_upkeep_for_round(actor: Dictionary, is_ally: bool) -> Dictionary:
+    if int(actor.get("_status_upkeep_round", -1)) == _round_serial:
+        return {
+            "skip": bool(actor.get("_status_skip_round", false)),
+            "notes": [],
+        }
+    var upkeep: Dictionary = _tick_statuses(actor, is_ally)
+    actor["_status_upkeep_round"] = _round_serial
+    actor["_status_skip_round"] = bool(upkeep.get("skip", false))
+    return upkeep
+
+
+## Direct HP change helpers that work for both sides (DoTs, regen) without any
+## attack math. FX are anchored to the actor's battlefield position.
+func _deal_raw_damage(actor: Dictionary, is_ally: bool, amount: int, color: Color) -> void :
+    amount = _absorb_with_shields(actor, amount)
+    if amount <= 0:
+        return
+    if is_ally:
+        _set_ally_hp(actor, _ally_hp(actor) - amount)
+        if _ally_hp(actor) <= 0:
+            actor["downed"] = true
+    else:
+        actor["hp"] = maxi(int(actor.get("hp", 1)) - amount, 0)
+    _spawn_damage_number(_actor_fx_center(actor, is_ally), str(amount), color)
+    _refresh_all_panels()
+
+
+func _heal_raw(actor: Dictionary, is_ally: bool, amount: int) -> void :
+    if is_ally:
+        _set_ally_hp(actor, _ally_hp(actor) + amount)
+    else:
+        actor["hp"] = mini(int(actor.get("hp", 1)) + amount, int(actor.get("max_hp", 1)))
+    _spawn_damage_number(_actor_fx_center(actor, is_ally), "+%d" % amount, COLOR_HEAL)
+    _refresh_all_panels()
+
+
+func _actor_down(actor: Dictionary, is_ally: bool) -> bool:
+    if is_ally:
+        return _ally_hp(actor) <= 0 or bool(actor.get("downed", false))
+    return int(actor.get("hp", 0)) <= 0
+
+
+func _living_allies() -> Array[int]:
+    var out: Array[int] = []
+    for index in range(_allies.size()):
+        if not _actor_down(_allies[index], true):
+            out.append(index)
+    return out
+
+
+func _living_foes() -> Array[int]:
+    var out: Array[int] = []
+    for index in range(_foes.size()):
+        if not _actor_down(_foes[index], false):
+            out.append(index)
+    return out
+
+
+## One human-readable status summary line, e.g. "POISON 2 · SHIELD 14".
+func _status_summary(actor: Dictionary) -> String:
+    var parts: Array[String] = []
+    for status in actor.get("statuses", []) as Array:
+        var def: Dictionary = GameManager.status_def(str((status as Dictionary).get("id")))
+        var label: = str(def.get("name", (status as Dictionary).get("id"))).to_upper()
+        if bool(def.get("absorb", false)):
+            parts.append("%s %d" % [label, int(round(float((status as Dictionary).get("magnitude", 0.0))))])
+        else:
+            parts.append("%s %d" % [label, int((status as Dictionary).get("turns_left", 0))])
+    return " · ".join(parts)
+
+
+## Compact icon data shared by the top readout, each foe plate and each ally card.
+## `extra` carries actor-only states such as EXPOSED, DOWN, FOCUS and GUARD.
+func _status_entries(actor: Dictionary, extra: Array[Dictionary] = []) -> Array[Dictionary]:
+    var entries: Array[Dictionary] = extra.duplicate(true)
+    for raw_status in actor.get("statuses", []) as Array:
+        var status: Dictionary = raw_status as Dictionary
+        var status_id: = str(status.get("id", ""))
+        var definition: Dictionary = GameManager.status_def(status_id)
+        var status_name: = str(definition.get("name", status_id.capitalize()))
+        var turns: int = maxi(int(status.get("turns_left", 0)), 0)
+        var tooltip: = "%s · %d turn%s" % [status_name, turns, "" if turns == 1 else "s"]
+        if bool(definition.get("absorb", false)):
+            tooltip += " · absorbs %d damage" % int(round(float(status.get("magnitude", 0.0))))
+        elif float(definition.get("tick_pct", 0.0)) > 0.0:
+            tooltip += " · %.0f%% max HP damage each turn" % (float(definition.get("tick_pct", 0.0)) * 100.0)
+        elif bool(definition.get("tick_heal", false)):
+            tooltip += " · restores %d HP each turn" % int(round(float(status.get("magnitude", 0.0))))
+        entries.append({
+            "id": status_id,
+            "label": status_name.left(3).to_upper(),
+            "count": turns,
+            "tooltip": tooltip,
+        })
+    return entries
+
+
+func _make_status_row(parent: Control, rect: Rect2, alignment: int, icon_size: int) -> HBoxContainer:
+    var row: = HBoxContainer.new()
+    row.position = rect.position
+    row.size = rect.size
+    row.alignment = alignment
+    row.add_theme_constant_override("separation", STATUS_TOKEN_GAP)
+    row.set_meta("icon_size", icon_size)
+    row.mouse_filter = Control.MOUSE_FILTER_PASS
+    parent.add_child(row)
+    return row
+
+
+## Rebuild only when status ids/counts change. Missing artwork becomes a compact
+## three-letter text token, so old/custom statuses remain readable.
+func _refresh_status_row(row: HBoxContainer, actor: Dictionary, extra: Array[Dictionary] = []) -> void :
+    if row == null:
+        return
+    var entries: Array[Dictionary] = _status_entries(actor, extra)
+    var signature: = JSON.stringify(entries)
+    if str(row.get_meta("signature", "")) == signature:
+        return
+    row.set_meta("signature", signature)
+    for child in row.get_children():
+        row.remove_child(child)
+        child.queue_free()
+    if entries.is_empty():
+        return
+
+    var icon_size: int = int(row.get_meta("icon_size", 15))
+    var token_width: int = icon_size + 3
+    var capacity: int = maxi(1, int(floor((row.size.x + STATUS_TOKEN_GAP) / float(token_width + STATUS_TOKEN_GAP))))
+    var visible_count: int = mini(entries.size(), capacity)
+    if entries.size() > capacity and capacity > 1:
+        visible_count = capacity - 1
+    for index in range(visible_count):
+        row.add_child(_make_status_token(entries[index], icon_size))
+    if entries.size() > visible_count:
+        var hidden: int = entries.size() - visible_count
+        row.add_child(_make_status_token({
+            "id": "more",
+            "label": "+%d" % hidden,
+            "count": 0,
+            "tooltip": "%d more effect%s" % [hidden, "" if hidden == 1 else "s"],
+        }, icon_size))
+
+
+func _make_status_token(entry: Dictionary, icon_size: int) -> Control:
+    var token: = Control.new()
+    token.custom_minimum_size = Vector2(icon_size + 3, icon_size)
+    token.size = token.custom_minimum_size
+    token.tooltip_text = str(entry.get("tooltip", entry.get("label", "")))
+    token.mouse_filter = Control.MOUSE_FILTER_STOP
+
+    var status_id: = str(entry.get("id", ""))
+    var icon_path: = STATUS_ICON_DIR + status_id + ".png"
+    # Actor-only tokens (DOWN/GUARD/EXPOSED/"+N") intentionally use the text
+    # fallback. Guard the load so Image.load_from_file never logs a false ERROR
+    # for artwork that is not part of the 18-icon status catalog.
+    var icon: Texture2D = null
+    if ResourceLoader.exists(icon_path) or FileAccess.file_exists(icon_path):
+        icon = _load_png_texture(icon_path)
+    if icon != null:
+        var image: = TextureRect.new()
+        image.texture = icon
+        image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+        image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+        image.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+        image.size = Vector2(icon_size, icon_size)
+        image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+        token.add_child(image)
+    else:
+        var fallback: = UiKit.make_label_strong(str(entry.get("label", "?")), maxi(7, icon_size - 7), COLOR_TEXT)
+        fallback.size = Vector2(icon_size + 2, icon_size)
+        fallback.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+        fallback.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+        fallback.clip_text = true
+        fallback.mouse_filter = Control.MOUSE_FILTER_IGNORE
+        token.add_child(fallback)
+
+    var count: int = int(entry.get("count", 0))
+    if count > 0:
+        var badge: = UiKit.make_label_strong(str(count), maxi(7, icon_size - 7), Color.WHITE)
+        badge.position = Vector2(icon_size - 5, icon_size - 9)
+        badge.size = Vector2(8, 9)
+        badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+        badge.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+        badge.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 1))
+        badge.add_theme_constant_override("shadow_offset_x", 1)
+        badge.add_theme_constant_override("shadow_offset_y", 1)
+        badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+        token.add_child(badge)
+    return token
 
 
 ## Choice-consequence: shift this enemy's level by the NarrativeState modifier
@@ -278,6 +806,8 @@ func _load_png_texture(path: String) -> Texture2D:
 
 
 const BATTLE_V3_DIR: = "res://assets/ui/battle_v3/"
+const STATUS_ICON_DIR: = "res://assets/ui/battle/status/"
+const STATUS_TOKEN_GAP: = 2
 
 
 func _v3(file_name: String) -> Texture2D:
@@ -528,15 +1058,15 @@ func _build_ui() -> void :
     _enemy_panel = _make_panel_node(Rect2(ENEMY_PANEL_POS, ENEMY_PANEL_SIZE))
     _design.add_child(_enemy_panel)
 
-    var medallion_portrait: = TextureRect.new()
-    medallion_portrait.texture = _cropped_portrait(_battle_portrait_texture(), 128, true)
-    medallion_portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-    medallion_portrait.stretch_mode = TextureRect.STRETCH_SCALE
-    medallion_portrait.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-    medallion_portrait.position = Vector2(16, 15)
-    medallion_portrait.size = Vector2(66, 66)
-    medallion_portrait.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    _enemy_panel.add_child(medallion_portrait)
+    _enemy_medallion = TextureRect.new()
+    _enemy_medallion.texture = _cropped_portrait(_battle_portrait_texture(), 128, true)
+    _enemy_medallion.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+    _enemy_medallion.stretch_mode = TextureRect.STRETCH_SCALE
+    _enemy_medallion.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+    _enemy_medallion.position = Vector2(16, 15)
+    _enemy_medallion.size = Vector2(66, 66)
+    _enemy_medallion.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    _enemy_panel.add_child(_enemy_medallion)
     var ring_texture: = _v3("portrait_ring.png")
     if ring_texture != null:
         var ring: = TextureRect.new()
@@ -577,42 +1107,11 @@ func _build_ui() -> void :
     _enemy_hp_text.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     _enemy_panel.add_child(_enemy_hp_text)
 
-    _enemy_status_label = _make_label("", 12, COLOR_EXPOSED)
-    _enemy_status_label.position = Vector2(126, 70)
-    _enemy_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-    _enemy_status_label.size = Vector2(ENEMY_HP_BAR_W, 16)
-    _enemy_panel.add_child(_enemy_status_label)
+    _enemy_status_row = _make_status_row(
+        _enemy_panel, Rect2(126, 69, ENEMY_HP_BAR_W, 17), BoxContainer.ALIGNMENT_END, 16)
 
     _build_turn_order_strip()
-
-
-    _portrait_holder = Control.new()
-    _portrait_holder.position = PORTRAIT_HOME + Vector2(120, 0)
-    _portrait_holder.size = PORTRAIT_SIZE
-    _portrait_holder.modulate.a = 0.0
-    _design.add_child(_portrait_holder)
-
-    _portrait = TextureRect.new()
-    _portrait.size = PORTRAIT_SIZE
-    _portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-    _portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-    _portrait.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-    _portrait.pivot_offset = Vector2(PORTRAIT_SIZE.x * 0.5, PORTRAIT_SIZE.y)
-    _portrait_holder.add_child(_portrait)
-    _load_portrait()
-
-    var add_material: = CanvasItemMaterial.new()
-    add_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
-
-    _portrait_glow = _portrait.duplicate() as TextureRect
-    _portrait_glow.material = add_material
-    _portrait_glow.modulate = Color(COLOR_EXPOSED, 0.0)
-    _portrait_holder.add_child(_portrait_glow)
-
-    _portrait_flash = _portrait.duplicate() as TextureRect
-    _portrait_flash.material = add_material.duplicate()
-    _portrait_flash.modulate = Color(1, 1, 1, 0.0)
-    _portrait_holder.add_child(_portrait_flash)
+    _build_foe_row()
 
 
     _log_panel = Panel.new()
@@ -785,80 +1284,7 @@ func _build_ui() -> void :
     _menu_panel.add_child(_menu_cursor)
 
 
-    _player_panel = _make_panel_node(Rect2(PLAYER_PANEL_POS, PLAYER_PANEL_SIZE))
-    _design.add_child(_player_panel)
-
-    var hero_holder: = Control.new()
-    hero_holder.position = Vector2(14, 14)
-    hero_holder.size = Vector2(110, 130)
-    hero_holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    _player_panel.add_child(hero_holder)
-    var hero_picture: = TextureRect.new()
-    var hero_texture: = _hero_portrait_texture()
-    hero_picture.texture = hero_texture
-    hero_picture.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-
-
-    hero_picture.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED if hero_texture != null and hero_texture.get_width() > 200 else TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-    hero_picture.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR if hero_texture != null and hero_texture.get_width() > 200 else CanvasItem.TEXTURE_FILTER_NEAREST
-    hero_picture.position = Vector2(5, 5)
-    hero_picture.size = hero_holder.size - Vector2(10, 10)
-    hero_picture.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    hero_holder.add_child(hero_picture)
-    hero_holder.add_child(UiKit.make_ornate_frame(hero_holder.size, "slot.png", 0.2, 14.0, false))
-
-    _player_panel_label = _make_display_label(_player_name(), 24, COLOR_ACCENT)
-    _player_panel_label.position = Vector2(140, 10)
-    _player_panel_label.size = Vector2(92, 30)
-    _player_panel_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    _player_panel_label.clip_text = false
-    _player_panel_label.text_overrun_behavior = TextServer.OVERRUN_NO_TRIMMING
-    _player_panel.add_child(_player_panel_label)
-
-    var player_chip: = _make_chip(Rect2(238, 14, 58, 21))
-    _player_panel.add_child(player_chip["root"])
-    _player_lv_label = player_chip["label"]
-
-    var player_hp_tag: = UiKit.make_label_strong("HP", 12, COLOR_ACCENT)
-    player_hp_tag.position = Vector2(140, 48)
-    player_hp_tag.size = Vector2(24, 18)
-    _player_panel.add_child(player_hp_tag)
-
-    var player_bar: = _make_ornate_bar(Rect2(166, 48, PLAYER_HP_BAR_W, 16), "green", COLOR_HP_GHOST)
-    _player_panel.add_child(player_bar["root"])
-    _player_hp_ghost = player_bar["ghost"]
-    _player_hp_bar = player_bar["fill"]
-
-    _player_hp_text = UiKit.make_label_strong("", 10, Color(0.98, 0.95, 0.88, 0.96))
-    _player_hp_text.position = Vector2(166, 48)
-    _player_hp_text.size = Vector2(PLAYER_HP_BAR_W, 16)
-    _player_hp_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-    _player_hp_text.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-    _player_panel.add_child(_player_hp_text)
-
-    _player_status_label = UiKit.make_label_strong("", 10, COLOR_ACCENT)
-    _player_status_label.position = Vector2(140, 68)
-    _player_status_label.size = Vector2(156, 14)
-    _player_panel.add_child(_player_status_label)
-
-    _sp_pip_row = Control.new()
-    _sp_pip_row.position = Vector2(140, 88)
-    _player_panel.add_child(_sp_pip_row)
-    _build_sp_pips()
-
-    var xp_label: = UiKit.make_label_strong("XP", 11, COLOR_TEXT_DIM)
-    xp_label.position = Vector2(140, 116)
-    _player_panel.add_child(xp_label)
-
-    var xp_bar: = UiKit.make_bar(Rect2(166, 116, PLAYER_HP_BAR_W, 11), "blue")
-    _player_panel.add_child(xp_bar["root"])
-    _xp_bar = xp_bar["fill"]
-
-    _player_xp_text = _make_label("", 9, COLOR_TEXT_DIM)
-    _player_xp_text.position = Vector2(166, 130)
-    _player_xp_text.size = Vector2(PLAYER_HP_BAR_W, 12)
-    _player_xp_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-    _player_panel.add_child(_player_xp_text)
+    _build_ally_stack()
 
     _hint_label = _make_label("Arrows Move    Enter Select    / Esc Back", 13, COLOR_TEXT_DIM)
     _hint_label.position = Vector2(476, 520)
@@ -874,15 +1300,270 @@ func _build_ui() -> void :
     _fx_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
     _design.add_child(_fx_layer)
 
-    _refresh_enemy_panel()
-    _refresh_player_panel()
+    _refresh_all_panels()
     _play_intro_animation()
+
+
+# ── foe row (multi-enemy battlefield) ─────────────────────────────────────────
+## Portrait layout per group size: solo keeps the classic hero-shot, pairs and
+## trios shrink + spread so nothing overlaps the left panels or the turn strip.
+func _foe_layout() -> Array:
+    match _foes.size():
+        1:
+            return [{"home": Vector2(350, 48), "size": Vector2(280, 290)}]
+        2:
+            return [
+                {"home": Vector2(346, 92), "size": Vector2(210, 220)},
+                {"home": Vector2(576, 92), "size": Vector2(210, 220)},
+            ]
+        _:
+            return [
+                {"home": Vector2(322, 122), "size": Vector2(152, 162)},
+                {"home": Vector2(482, 122), "size": Vector2(152, 162)},
+                {"home": Vector2(642, 122), "size": Vector2(152, 162)},
+            ]
+
+
+func _build_foe_row() -> void :
+    var layout: Array = _foe_layout()
+    var add_material: = CanvasItemMaterial.new()
+    add_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+
+    for index in range(_foes.size()):
+        var foe: Dictionary = _foes[index]
+        var slot: Dictionary = layout[mini(index, layout.size() - 1)]
+        var home: Vector2 = slot["home"]
+        var size: Vector2 = slot["size"]
+
+        var holder: = Control.new()
+        holder.position = home + Vector2(120, 0)
+        holder.size = size
+        holder.modulate.a = 0.0
+        _design.add_child(holder)
+
+        var portrait: = TextureRect.new()
+        portrait.size = size
+        portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+        portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+        var texture: = _foe_portrait_texture(foe)
+        portrait.texture = texture
+        portrait.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR if texture != null and texture.get_width() > 200 else CanvasItem.TEXTURE_FILTER_NEAREST
+        portrait.pivot_offset = Vector2(size.x * 0.5, size.y)
+        if texture == null:
+            portrait.modulate = Color(1.0, 0.45, 0.45)
+        holder.add_child(portrait)
+
+        var glow: = portrait.duplicate() as TextureRect
+        glow.material = add_material
+        glow.modulate = Color(COLOR_EXPOSED, 0.0)
+        holder.add_child(glow)
+
+        var flash: = portrait.duplicate() as TextureRect
+        flash.material = add_material.duplicate()
+        flash.modulate = Color(1, 1, 1, 0.0)
+        holder.add_child(flash)
+
+        # Floating name chip + HP bar + status line directly under the portrait.
+        var bar_w: = size.x * 0.72
+        var bar_x: = (size.x - bar_w) * 0.5
+        var chip: = _make_chip(Rect2(bar_x, size.y + 2, bar_w, 18))
+        (chip["label"] as Label).text = str(foe.get("name"))
+        holder.add_child(chip["root"])
+
+        var bar: = _make_ornate_bar(Rect2(bar_x, size.y + 23, bar_w, 12), "red", COLOR_HP_GHOST)
+        holder.add_child(bar["root"])
+
+        var hp_text: = UiKit.make_label_strong("", 9, Color(0.98, 0.95, 0.88, 0.96))
+        hp_text.position = Vector2(bar_x, size.y + 23)
+        hp_text.size = Vector2(bar_w, 12)
+        hp_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+        hp_text.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+        holder.add_child(hp_text)
+
+        var status_row: = _make_status_row(
+            holder, Rect2(bar_x, size.y + 37, bar_w, 15), BoxContainer.ALIGNMENT_CENTER, 14)
+
+        # Target arrow (hidden unless this foe is under the selection cursor).
+        var arrow: = _make_display_label("▼", 22, COLOR_ACCENT)
+        arrow.position = Vector2(size.x * 0.5 - 12, -30)
+        arrow.size = Vector2(24, 26)
+        arrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+        arrow.visible = false
+        holder.add_child(arrow)
+
+        foe["ui"] = {
+            "holder": holder,
+            "portrait": portrait,
+            "glow": glow,
+            "flash": flash,
+            "home": home,
+            "size": size,
+            "hp_bar": bar["fill"],
+            "hp_ghost": bar["ghost"],
+            "hp_text": hp_text,
+            "chip_label": chip["label"],
+            "status_row": status_row,
+            "arrow": arrow,
+            "bar_w": bar_w,
+        }
+
+
+func _foe_ui(foe: Dictionary) -> Dictionary:
+    return foe.get("ui", {}) as Dictionary
+
+
+func _foe_center(foe: Dictionary) -> Vector2:
+    var ui: Dictionary = _foe_ui(foe)
+    if ui.is_empty():
+        return SCREEN_CENTER
+    var holder: Control = ui["holder"]
+    var size: Vector2 = ui["size"]
+    return holder.position + Vector2(size.x * 0.5, size.y * 0.46)
+
+
+func _actor_fx_center(actor: Dictionary, is_ally: bool) -> Vector2:
+    if is_ally:
+        var index: = _allies.find(actor)
+        if index >= 0 and index < _ally_cards.size():
+            return _ally_cards[index].get("fx_center", PLAYER_FX_CENTER)
+        return PLAYER_FX_CENTER
+    return _foe_center(actor)
+
+
+# ── ally card stack (hero + companions, bottom-left) ─────────────────────────
+const ALLY_HERO_CARD_H: = 112.0
+const ALLY_COMP_CARD_H: = 74.0
+const ALLY_CARD_W: = 312.0
+const ALLY_CARD_GAP: = 6.0
+const ALLY_STACK_BOTTOM: = 538.0
+
+
+func _build_ally_stack() -> void :
+    _ally_cards.clear()
+    var total_h: = ALLY_HERO_CARD_H + float(maxi(_allies.size() - 1, 0)) * (ALLY_COMP_CARD_H + ALLY_CARD_GAP)
+    var y: = ALLY_STACK_BOTTOM - total_h
+    for index in range(_allies.size()):
+        var is_hero: = index == 0
+        var card_h: = ALLY_HERO_CARD_H if is_hero else ALLY_COMP_CARD_H
+        var card: Dictionary = _build_ally_card(_allies[index], Rect2(2, y, ALLY_CARD_W, card_h), is_hero)
+        _ally_cards.append(card)
+        y += card_h + ALLY_CARD_GAP
+
+
+func _build_ally_card(ally: Dictionary, rect: Rect2, is_hero: bool) -> Dictionary:
+    var panel: = _make_panel_node(rect)
+    _design.add_child(panel)
+
+    var portrait_side: = rect.size.y - 20.0
+    var holder: = Control.new()
+    holder.position = Vector2(10, 10)
+    holder.size = Vector2(portrait_side, portrait_side)
+    holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    panel.add_child(holder)
+    var picture: = TextureRect.new()
+    var texture: = _ally_portrait_texture(ally)
+    picture.texture = texture
+    picture.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+    picture.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED if texture != null and texture.get_width() > 200 else TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+    picture.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR if texture != null and texture.get_width() > 200 else CanvasItem.TEXTURE_FILTER_NEAREST
+    picture.position = Vector2(4, 4)
+    picture.size = holder.size - Vector2(8, 8)
+    picture.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    holder.add_child(picture)
+    holder.add_child(UiKit.make_ornate_frame(holder.size, "slot.png", 0.2, 12.0, false))
+
+    var left: = 20.0 + portrait_side
+    var name_label: = _make_display_label(str(ally.get("name")), 18 if is_hero else 15, COLOR_ACCENT)
+    name_label.position = Vector2(left, 8)
+    name_label.size = Vector2(rect.size.x - left - 74, 22)
+    name_label.clip_text = true
+    panel.add_child(name_label)
+
+    var chip: = _make_chip(Rect2(rect.size.x - 70, 8, 56, 19))
+    panel.add_child(chip["root"])
+
+    var bar_w: = rect.size.x - left - 18.0
+    var hp_y: = 34.0 if is_hero else 30.0
+    var bar: = _make_ornate_bar(Rect2(left, hp_y, bar_w, 13), "green", COLOR_HP_GHOST)
+    panel.add_child(bar["root"])
+
+    var hp_text: = UiKit.make_label_strong("", 9, Color(0.98, 0.95, 0.88, 0.96))
+    hp_text.position = Vector2(left, hp_y)
+    hp_text.size = Vector2(bar_w, 13)
+    hp_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    hp_text.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    panel.add_child(hp_text)
+
+    # SP gem pips.
+    var sp_row: = Control.new()
+    sp_row.position = Vector2(left, hp_y + 17)
+    panel.add_child(sp_row)
+    var sp_pips: Array = _build_sp_pips_for(sp_row, int(ally.get("sp_max", 3)))
+
+    var status_row: = _make_status_row(
+        panel, Rect2(left, hp_y + 34, bar_w, 15), BoxContainer.ALIGNMENT_BEGIN, 14)
+
+    var xp_bar: Control = null
+    var xp_text: Label = null
+    if is_hero:
+        var xp_label: = UiKit.make_label_strong("XP", 10, COLOR_TEXT_DIM)
+        xp_label.position = Vector2(left, hp_y + 52)
+        panel.add_child(xp_label)
+        var xp: = UiKit.make_bar(Rect2(left + 24, hp_y + 54, bar_w - 24, 9), "blue")
+        panel.add_child(xp["root"])
+        xp_bar = xp["fill"]
+        xp_text = _make_label("", 8, COLOR_TEXT_DIM)
+        xp_text.position = Vector2(left + 24, hp_y + 64)
+        xp_text.size = Vector2(bar_w - 24, 11)
+        xp_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+        panel.add_child(xp_text)
+
+    # Ally-side target arrow (heal/shield targeting).
+    var arrow: = _make_display_label("▶", 18, COLOR_ACCENT)
+    arrow.position = Vector2(-24, rect.size.y * 0.5 - 12)
+    arrow.size = Vector2(22, 24)
+    arrow.visible = false
+    panel.add_child(arrow)
+
+    return {
+        "root": panel,
+        "rect": rect,
+        "name_label": name_label,
+        "lv_label": chip["label"],
+        "hp_bar": bar["fill"],
+        "hp_ghost": bar["ghost"],
+        "hp_text": hp_text,
+        "sp_pips": sp_pips,
+        "sp_row": sp_row,
+        "status_row": status_row,
+        "xp_bar": xp_bar,
+        "xp_text": xp_text,
+        "bar_w": bar_w,
+        "arrow": arrow,
+        "fx_center": rect.position + rect.size * 0.5,
+        "portrait": picture,
+    }
+
+
+func _ally_portrait_texture(ally: Dictionary) -> Texture2D:
+    if str(ally.get("kind")) == "player":
+        return _hero_portrait_texture()
+    var npc_id: = str(ally.get("id"))
+    var portrait: Texture2D = PartyManager.companion_portrait(npc_id)
+    if portrait != null:
+        return portrait
+    return PartyManager.companion_texture(npc_id)
 
 
 func _build_turn_order_strip() -> void :
 
 
-    var title: = _make_display_label("TURN ORDER", 11, COLOR_ACCENT)
+    # Small display-serif glyphs lost contrast over bright backdrops at 2x output;
+    # the strong UI face keeps this navigation label legible in every scene.
+    var title: = _make_header_label("TURN ORDER", 12, COLOR_ACCENT)
+    title.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.95))
+    title.add_theme_constant_override("shadow_offset_x", 1)
+    title.add_theme_constant_override("shadow_offset_y", 1)
     title.position = TURN_ORDER_TITLE_POS
     title.size = TURN_ORDER_TITLE_SIZE
     title.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
@@ -893,7 +1574,6 @@ func _build_turn_order_strip() -> void :
     _turn_stack.size = TURN_ORDER_STACK_SIZE
     _turn_stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
     _design.add_child(_turn_stack)
-    _update_turn_order(_turn_active_actor, false)
 
 
 const TURN_CARD_SIZE: = Vector2(148, 44)
@@ -904,8 +1584,10 @@ const TURN_CARD_POP: = 6.0
 
 
 
-func _update_turn_order(active: String, animate: bool = true) -> void :
-    _turn_active_actor = active
+## Render the given queue entries ([{texture, label}, ...], first = acting now)
+## into the right-edge card stack. Fed by _update_turn_order_view from the REAL
+## speed-ordered round queue.
+func _rebuild_turn_cards(display: Array, animate: bool = true) -> void :
     if _turn_stack == null:
         return
     for card in _turn_cards:
@@ -919,19 +1601,8 @@ func _update_turn_order(active: String, animate: bool = true) -> void :
             card.queue_free()
     _turn_cards.clear()
 
-    var player_texture: = _player_turn_texture()
-    var enemy_texture: = _battle_portrait_texture()
-    var order: Array = []
-    for index in range(4):
-        var is_player: = (index % 2 == 0) == (active == "player")
-        order.append({
-            "actor": "player" if is_player else "enemy", 
-            "texture": player_texture if is_player else enemy_texture, 
-            "label": _player_name() if is_player else _enemy_name(),
-        })
-
-    for index in range(order.size()):
-        var entry: Dictionary = order[index]
+    for index in range(display.size()):
+        var entry: Dictionary = display[index]
         var is_active: = index == 0
         var card: = _make_turn_card(entry, is_active)
         var final_x: = TURN_CARD_RIGHT - TURN_CARD_SIZE.x - (TURN_CARD_POP if is_active else 0.0) + (0.0 if is_active else TURN_CARD_TUCK)
@@ -1039,11 +1710,9 @@ func _make_turn_card(entry: Dictionary, is_active: bool) -> Control:
         card.modulate = Color(0.72, 0.74, 0.84, 0.82)
     return card
 
-func _build_sp_pips() -> void :
-    for pip in _sp_pips:
-        pip.queue_free()
-    _sp_pips.clear()
-    var sp_max: int = int(player_stats.get("sp_max", 3))
+## Build SP gem pips into `row` and return the pip node list (per ally card).
+func _build_sp_pips_for(row: Control, sp_max: int) -> Array:
+    var pips: Array = []
     var filled_texture: = _v3("sp_gem.png")
     var empty_texture: = _v3("sp_gem_empty.png")
     for index in range(sp_max):
@@ -1053,35 +1722,43 @@ func _build_sp_pips() -> void :
             gem.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
             gem.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
             gem.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-            gem.position = Vector2(index * 24, 0)
-            gem.size = Vector2(18, 18)
+            gem.position = Vector2(index * 20, 0)
+            gem.size = Vector2(15, 15)
             gem.mouse_filter = Control.MOUSE_FILTER_IGNORE
             gem.set_meta("empty_texture", empty_texture)
             gem.set_meta("filled_texture", filled_texture)
-            _sp_pip_row.add_child(gem)
-            _sp_pips.append(gem)
+            row.add_child(gem)
+            pips.append(gem)
         else:
             var pip: = ColorRect.new()
-            pip.size = Vector2(10, 10)
-            pip.position = Vector2(index * 18 + 5, 2)
+            pip.size = Vector2(9, 9)
+            pip.position = Vector2(index * 16 + 4, 2)
             pip.rotation_degrees = 45.0
-            pip.pivot_offset = Vector2(5, 5)
-            _sp_pip_row.add_child(pip)
-            _sp_pips.append(pip)
-    _refresh_sp_pips()
+            pip.pivot_offset = Vector2(4.5, 4.5)
+            row.add_child(pip)
+            pips.append(pip)
+    return pips
 
 
-func _refresh_sp_pips() -> void :
-    for index in range(_sp_pips.size()):
-        var pip: = _sp_pips[index]
-        var filled: = index < player_sp
-        if pip is TextureRect and pip.has_meta("filled_texture"):
-            var empty_texture: Texture2D = pip.get_meta("empty_texture")
+func _refresh_sp_pips_for(card: Dictionary, ally: Dictionary) -> void :
+    var pips: Array = card.get("sp_pips", []) as Array
+    # SP max can grow on level-up mid battle — rebuild when the count drifts.
+    if pips.size() != int(ally.get("sp_max", 3)):
+        for pip in pips:
+            (pip as Node).queue_free()
+        card["sp_pips"] = _build_sp_pips_for(card["sp_row"], int(ally.get("sp_max", 3)))
+        pips = card["sp_pips"]
+    var sp: int = int(ally.get("sp", 0))
+    for index in range(pips.size()):
+        var pip: Variant = pips[index]
+        var filled: = index < sp
+        if pip is TextureRect and (pip as TextureRect).has_meta("filled_texture"):
+            var empty_texture: Texture2D = (pip as TextureRect).get_meta("empty_texture")
             if empty_texture != null:
-                (pip as TextureRect).texture = pip.get_meta("filled_texture") if filled else empty_texture
+                (pip as TextureRect).texture = (pip as TextureRect).get_meta("filled_texture") if filled else empty_texture
             else:
-                (pip as TextureRect).texture = pip.get_meta("filled_texture")
-                pip.modulate = Color(1, 1, 1, 1.0) if filled else Color(0.35, 0.35, 0.42, 0.8)
+                (pip as TextureRect).texture = (pip as TextureRect).get_meta("filled_texture")
+                (pip as TextureRect).modulate = Color(1, 1, 1, 1.0) if filled else Color(0.35, 0.35, 0.42, 0.8)
         elif pip is ColorRect:
             (pip as ColorRect).color = COLOR_ACCENT if filled else Color(0.25, 0.22, 0.3, 0.9)
 
@@ -1102,32 +1779,54 @@ func _play_intro_animation() -> void :
     _enemy_panel.position.y = -ENEMY_PANEL_SIZE.y - 40.0 - off.y
     _log_panel.position.x = -LOG_PANEL_SIZE.x - 40.0 - off.x
     _menu_panel.position.y = DESIGN_SIZE.y + 24.0 + off.y
-    _player_panel.position.x = -PLAYER_PANEL_SIZE.x - 40.0 - off.x
 
     var slide: = create_tween().set_parallel(true)
     slide.tween_property(_enemy_panel, "position:y", ENEMY_PANEL_POS.y, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
     slide.tween_property(_log_panel, "position:x", LOG_PANEL_POS.x, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
     slide.tween_property(_menu_panel, "position:y", MENU_PANEL_POS.y, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-    slide.tween_property(_player_panel, "position:x", PLAYER_PANEL_POS.x, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-    slide.tween_property(_portrait_holder, "position", PORTRAIT_HOME, 0.55).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-    slide.tween_property(_portrait_holder, "modulate:a", 1.0, 0.4)
+
+    for index in range(_ally_cards.size()):
+        var card_root: Control = _ally_cards[index]["root"]
+        var rect: Rect2 = _ally_cards[index]["rect"]
+        card_root.position.x = -rect.size.x - 40.0 - off.x
+        slide.tween_property(card_root, "position:x", rect.position.x, 0.5 + 0.06 * index).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+    for index in range(_foes.size()):
+        var ui: Dictionary = _foe_ui(_foes[index])
+        if ui.is_empty():
+            continue
+        var holder: Control = ui["holder"]
+        slide.tween_property(holder, "position", ui["home"], 0.55 + 0.08 * index).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+        slide.tween_property(holder, "modulate:a", 1.0, 0.4 + 0.08 * index)
 
     _start_breathing()
 
 
 func _start_breathing() -> void :
-    var breath: = create_tween().set_loops()
-    breath.tween_property(_portrait, "scale", Vector2(1.0, 1.015), 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-    breath.tween_property(_portrait, "scale", Vector2(1.0, 1.0), 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+    for foe in _foes:
+        var ui: Dictionary = _foe_ui(foe)
+        if ui.is_empty():
+            continue
+        var breath: = create_tween().set_loops()
+        breath.tween_property(ui["portrait"], "scale", Vector2(1.0, 1.015), 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+        breath.tween_property(ui["portrait"], "scale", Vector2(1.0, 1.0), 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 
 
 func _battle_portrait_texture() -> Texture2D:
-    var portrait_file: String = str(enemy.get("battle_portrait_file", ""))
+    return _portrait_texture_for(enemy)
+
+
+func _foe_portrait_texture(foe: Dictionary) -> Texture2D:
+    return _portrait_texture_for(foe.get("data", {}) as Dictionary)
+
+
+func _portrait_texture_for(data: Dictionary) -> Texture2D:
+    var portrait_file: String = str(data.get("battle_portrait_file", ""))
     var texture: Texture2D = null
     if not portrait_file.is_empty():
         texture = GameManager.load_texture(GameManager.get_scene_asset_path(portrait_file))
     if texture == null:
-        var sheet_file: String = str(enemy.get("sprite_sheet_file", ""))
+        var sheet_file: String = str(data.get("sprite_sheet_file", ""))
         var sheet: Texture2D = null
         if not sheet_file.is_empty():
             sheet = GameManager.load_texture(GameManager.get_scene_asset_path(sheet_file))
@@ -1202,19 +1901,6 @@ func _normalize_battle_emotion(emotion: String) -> String:
             return "neutral"
 
 
-func _load_portrait() -> void :
-    var texture: = _battle_portrait_texture()
-    if texture == null:
-        _portrait.modulate = Color(1.0, 0.45, 0.45)
-    _portrait.texture = texture
-
-
-    if texture != null and texture.get_width() > 200:
-        _portrait.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-    else:
-        _portrait.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-
-
 func _load_battle_backdrop_texture() -> Texture2D:
     var backdrop_file: String = str(enemy.get("battle_background_file", ""))
     if backdrop_file.is_empty():
@@ -1238,14 +1924,21 @@ func _shake(strength: float, duration: float) -> void :
     _shake_time = max(_shake_time, duration)
 
 
+## Center of the PRIMARY foe (story fx: probe reveals, finisher).
 func _portrait_center() -> Vector2:
-    return _portrait_holder.position + Vector2(PORTRAIT_SIZE.x * 0.5, PORTRAIT_SIZE.y * 0.46)
+    if _foes.is_empty():
+        return SCREEN_CENTER
+    return _foe_center(_foes[0])
 
 
-func _flash_portrait(color: Color = Color(1, 1, 1, 1), strength: float = 0.85) -> void :
-    _portrait_flash.modulate = Color(color.r, color.g, color.b, strength)
+func _flash_portrait(foe: Dictionary, color: Color = Color(1, 1, 1, 1), strength: float = 0.85) -> void :
+    var ui: Dictionary = _foe_ui(foe)
+    if ui.is_empty():
+        return
+    var flash: TextureRect = ui["flash"]
+    flash.modulate = Color(color.r, color.g, color.b, strength)
     var tween: = create_tween()
-    tween.tween_property(_portrait_flash, "modulate:a", 0.0, 0.28)
+    tween.tween_property(flash, "modulate:a", 0.0, 0.28)
 
 
 func _spawn_slash(at: Vector2, tint: Color = Color(1, 1, 1, 1), effect_scale: float = 1.3, flipped: bool = false) -> void :
@@ -1306,58 +1999,85 @@ func _spawn_damage_number(at: Vector2, text: String, color: Color, big: bool = f
     tween.tween_callback(label.queue_free)
 
 
-func _enemy_hit_react(heavy: bool = false) -> void :
-    _flash_portrait()
+func _enemy_hit_react(foe: Dictionary, heavy: bool = false) -> void :
+    var ui: Dictionary = _foe_ui(foe)
+    if ui.is_empty():
+        return
+    _flash_portrait(foe)
     _shake(5.0 if heavy else 3.0, 0.3 if heavy else 0.22)
+    var holder: Control = ui["holder"]
+    var home: Vector2 = ui["home"]
     var recoil: = create_tween()
-    recoil.tween_property(_portrait_holder, "position", PORTRAIT_HOME + Vector2(10, -4), 0.07)
-    recoil.tween_property(_portrait_holder, "position", PORTRAIT_HOME, 0.22).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+    recoil.tween_property(holder, "position", home + Vector2(10, -4), 0.07)
+    recoil.tween_property(holder, "position", home, 0.22).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 
-func _enemy_lunge() -> void :
+func _enemy_lunge(foe: Dictionary) -> void :
+    var ui: Dictionary = _foe_ui(foe)
+    if ui.is_empty():
+        return
+    var holder: Control = ui["holder"]
+    var home: Vector2 = ui["home"]
     var lunge: = create_tween()
-    lunge.tween_property(_portrait_holder, "position", PORTRAIT_HOME + Vector2(-22, 6), 0.12).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
-    lunge.tween_property(_portrait_holder, "position", PORTRAIT_HOME, 0.3).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+    lunge.tween_property(holder, "position", home + Vector2(-22, 6), 0.12).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+    lunge.tween_property(holder, "position", home, 0.3).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 
 
+## Exposed glow always concerns the PRIMARY foe (the probe/weakness story system).
 func _set_exposed_glow(active: bool) -> void :
+    if _foes.is_empty():
+        return
+    var ui: Dictionary = _foe_ui(_foes[0])
+    if ui.is_empty():
+        return
+    var glow: TextureRect = ui["glow"]
     if active:
         var pulse: = create_tween().set_loops()
         pulse.set_meta("exposed_pulse", true)
-        pulse.tween_property(_portrait_glow, "modulate:a", 0.45, 0.55).set_trans(Tween.TRANS_SINE)
-        pulse.tween_property(_portrait_glow, "modulate:a", 0.12, 0.55).set_trans(Tween.TRANS_SINE)
-        _portrait_glow.set_meta("pulse_tween", pulse)
+        pulse.tween_property(glow, "modulate:a", 0.45, 0.55).set_trans(Tween.TRANS_SINE)
+        pulse.tween_property(glow, "modulate:a", 0.12, 0.55).set_trans(Tween.TRANS_SINE)
+        glow.set_meta("pulse_tween", pulse)
     else:
-        var pulse: Variant = _portrait_glow.get_meta("pulse_tween") if _portrait_glow.has_meta("pulse_tween") else null
+        var pulse: Variant = glow.get_meta("pulse_tween") if glow.has_meta("pulse_tween") else null
         if pulse is Tween and (pulse as Tween).is_valid():
             (pulse as Tween).kill()
         var fade: = create_tween()
-        fade.tween_property(_portrait_glow, "modulate:a", 0.0, 0.3)
+        fade.tween_property(glow, "modulate:a", 0.0, 0.3)
 
 
-func _animate_enemy_hp() -> void :
-    if _enemy_hp_text != null:
-        _enemy_hp_text.text = "%d / %d" % [maxi(enemy_hp, 0), enemy_max_hp]
-    var ratio: float = clampf(float(enemy_hp) / float(enemy_max_hp), 0.0, 1.0)
+func _animate_foe_hp(foe: Dictionary) -> void :
+    var ui: Dictionary = _foe_ui(foe)
+    if ui.is_empty():
+        return
+    var bar_w: float = float(ui.get("bar_w", 120.0))
+    (ui["hp_text"] as Label).text = "%d / %d" % [maxi(int(foe.get("hp", 0)), 0), int(foe.get("max_hp", 1))]
+    var ratio: float = clampf(float(foe.get("hp", 0)) / float(foe.get("max_hp", 1)), 0.0, 1.0)
     var tween: = create_tween()
-    tween.tween_property(_enemy_hp_bar, "size:x", ENEMY_HP_BAR_W * ratio, 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+    tween.tween_property(ui["hp_bar"], "size:x", bar_w * ratio, 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
     var ghost: = create_tween()
-    ghost.tween_property(_enemy_hp_ghost, "size:x", ENEMY_HP_BAR_W * ratio, 0.5).set_delay(0.35).set_trans(Tween.TRANS_CUBIC)
+    ghost.tween_property(ui["hp_ghost"], "size:x", bar_w * ratio, 0.5).set_delay(0.35).set_trans(Tween.TRANS_CUBIC)
+    if _target_foe_index < _foes.size() and _foes[_target_foe_index] == foe:
+        _refresh_target_readout()
 
 
-func _animate_player_hp() -> void :
-    var max_hp: int = int(player_stats.get("max_hp", 80))
-    if _player_hp_text != null:
-        _player_hp_text.text = "%d / %d" % [GameManager.get_player_hp(), max_hp]
-    var ratio: float = clampf(float(GameManager.get_player_hp()) / float(max_hp), 0.0, 1.0)
+func _animate_ally_hp(ally: Dictionary) -> void :
+    var index: = _allies.find(ally)
+    if index < 0 or index >= _ally_cards.size():
+        return
+    var card: Dictionary = _ally_cards[index]
+    var max_hp: int = int(ally.get("max_hp", 80))
+    var hp: int = _ally_hp(ally)
+    var bar_w: float = float(card.get("bar_w", PLAYER_HP_BAR_W))
+    (card["hp_text"] as Label).text = "%d / %d" % [hp, max_hp]
+    var ratio: float = clampf(float(hp) / float(max_hp), 0.0, 1.0)
     var tween: = create_tween()
-    tween.tween_property(_player_hp_bar, "size:x", PLAYER_HP_BAR_W * ratio, 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+    tween.tween_property(card["hp_bar"], "size:x", bar_w * ratio, 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
     var ghost: = create_tween()
-    ghost.tween_property(_player_hp_ghost, "size:x", PLAYER_HP_BAR_W * ratio, 0.5).set_delay(0.35).set_trans(Tween.TRANS_CUBIC)
-    if _player_hp_bar.size.x / PLAYER_HP_BAR_W > ratio:
+    ghost.tween_property(card["hp_ghost"], "size:x", bar_w * ratio, 0.5).set_delay(0.35).set_trans(Tween.TRANS_CUBIC)
+    if (card["hp_bar"] as Control).size.x / bar_w > ratio:
         var damage_flash: = create_tween()
-        damage_flash.tween_property(_player_panel, "modulate", Color(1.0, 0.6, 0.6), 0.08)
-        damage_flash.tween_property(_player_panel, "modulate", Color.WHITE, 0.3)
+        damage_flash.tween_property(card["root"], "modulate", Color(1.0, 0.6, 0.6), 0.08)
+        damage_flash.tween_property(card["root"], "modulate", Color.WHITE, 0.3)
 
 
 
@@ -1367,148 +2087,418 @@ func _run_battle() -> void :
     await get_tree().create_timer(0.6).timeout
     for line in _dialogue("intro"):
         await _say(line)
+    if _foes.size() > 1:
+        await _say("%s does not come alone — %d foes face your party of %d!" % [_enemy_name(), _foes.size(), _allies.size()])
 
-    _pick_enemy_intent()
-    var enemy_first: bool = enemy_speed > int(player_stats.get("speed", 9))
-    if enemy_first:
-        await _say("%s moves first!" % _enemy_name())
-        await _enemy_turn()
+    for foe in _foes:
+        _pick_foe_intent(foe)
+    _refresh_all_panels()
 
     while not _battle_over:
-        _apply_party_regen()
-        await _player_turn()
-        if _battle_over:
-            break
-        await _check_phases()
-        if _battle_over:
-            break
-        await _enemy_turn()
+        _round_serial += 1
+        _round_queue = _build_round_queue()
+        _queue_pos = 0
+        while _queue_pos < _round_queue.size():
+            if _battle_over:
+                return
+            var entry: Dictionary = _round_queue[_queue_pos]
+            var index: int = int(entry.get("index", 0))
+            if str(entry.get("side")) == "ally":
+                if index < _allies.size() and not _actor_down(_allies[index], true):
+                    _update_turn_order_view()
+                    await _ally_turn(_allies[index])
+            else:
+                if index < _foes.size() and not _actor_down(_foes[index], false):
+                    _update_turn_order_view()
+                    await _foe_turn(_foes[index])
+            if _battle_over:
+                return
+            await _check_phases()
+            if _battle_over:
+                return
+            _queue_pos += 1
+
+        # End-of-round upkeep: the exposed window closes one step.
         if exposed_turns > 0:
             exposed_turns -= 1
             if exposed_turns == 0:
                 _set_exposed_glow(false)
                 await _say("The opening closes. %s steadies itself." % _enemy_name())
-            _refresh_enemy_panel()
+            _refresh_all_panels()
 
 
-func _player_turn() -> void :
-    _update_turn_order("player")
-    guarding = false
-    var ids: Array[String] = ["attack", "skill", "probe", "item", "guard", "flee"]
-    var labels: Array[String] = ["Attack", "Skill", "Probe", "Item", "Guard", "Flee"]
+## Speed-ordered queue over every living combatant. Boss action 1 competes at its
+## effective speed; extra actions sit just behind progressively slower allies so
+## the boss applies steady pressure instead of dumping a three-hit block. Haste /
+## slow still move every slot, and ties break randomly per round.
+func _build_round_queue() -> Array[Dictionary]:
+    var entries: Array[Dictionary] = []
+    var ally_speeds: Array[int] = []
+    for index in _living_allies():
+        var speed: int = _effective_speed(_allies[index])
+        ally_speeds.append(speed)
+        entries.append({"side": "ally", "index": index,
+            "key": _initiative_key(float(speed)), "action_slot": 0})
+    ally_speeds.sort()
+    ally_speeds.reverse()
+    for index in _living_foes():
+        var foe: Dictionary = _foes[index]
+        var actions: int = maxi(1, int(foe.get("actions_per_round", 1)))
+        if str(foe.get("rank", "")) == "boss":
+            # Pressure follows the LIVING party, not the opening roster. If an
+            # ally falls, the boss sheds one action next round so defeat does not
+            # cascade into an unavoidable 3-v-1 lock; a revive restores it.
+            actions = _boss_actions_per_round(_living_allies().size())
+            foe["actions_per_round"] = actions
+        for action_slot in range(actions):
+            var initiative: float = _foe_action_initiative(foe, action_slot, actions, ally_speeds)
+            entries.append({"side": "foe", "index": index,
+                "key": _initiative_key(initiative), "action_slot": action_slot})
+    entries.sort_custom(func(a, b): return int(a["key"]) > int(b["key"]))
+    return entries
+
+
+func _initiative_key(initiative: float) -> int:
+    # A 0.25 initiative gap is 2500 points, safely larger than this tie jitter.
+    return int(round(initiative * 10000.0)) + randi() % 1000
+
+
+func _foe_action_initiative(foe: Dictionary, action_slot: int, action_count: int, ally_speeds: Array[int]) -> float:
+    var base: float = float(_effective_speed(foe))
+    if action_slot <= 0 or ally_speeds.is_empty():
+        return base
+    var anchor_index: int = 0
+    if action_count >= 3 and action_slot == action_count - 1:
+        anchor_index = ally_speeds.size() - 1
+    var behind_own_previous: float = base - 0.25 * action_slot
+    var behind_ally: float = float(ally_speeds[anchor_index]) - 0.25
+    return minf(behind_own_previous, behind_ally)
+
+
+func _actor_for_entry(entry: Dictionary) -> Dictionary:
+    var index: int = int(entry.get("index", 0))
+    if str(entry.get("side")) == "ally":
+        return _allies[index] if index < _allies.size() else {}
+    return _foes[index] if index < _foes.size() else {}
+
+
+# ── ally turns ────────────────────────────────────────────────────────────────
+
+
+func _ally_turn(ally: Dictionary) -> void :
+    _set_active_ally(ally)
+    var upkeep: Dictionary = _status_upkeep_for_round(ally, true)
+    for note in upkeep.get("notes", []) as Array:
+        await _say(str(note))
+    _refresh_all_panels()
+    if _living_allies().is_empty():
+        await _defeat()
+        return
+    if _actor_down(ally, true) or bool(upkeep.get("skip", false)):
+        _set_active_ally(null)
+        return
+    if str(ally.get("kind")) == "player":
+        _apply_party_regen()
+    ally["guarding"] = false
+    await _ally_action_menu(ally)
+    _set_active_ally(null)
+
+
+## The action menu proper — separated from _ally_turn so a cancelled submenu can
+## re-open it WITHOUT re-running the start-of-turn status upkeep.
+func _ally_action_menu(ally: Dictionary) -> void :
+    if _battle_over:
+        return
+    var is_player: = str(ally.get("kind")) == "player"
+    var ids: Array[String] = ["attack", "skill"]
+    var labels: Array[String] = ["Attack", "Skill"]
     var descs: Array[String] = [
-        "A precise strike with your blade.",
+        "A precise strike with your blade." if is_player else "%s attacks a foe." % str(ally.get("name")),
         "Channel a special technique.",
-        "Study the enemy for a weakness.",
-        "Use something from your pack.",
-        "Brace yourself and recover 1 SP.",
-        "Attempt to escape the battle.",
     ]
-    if exposed_turns > 0 and not finisher_used:
-        ids.insert(0, "finisher")
-        labels.insert(0, "Resolve Strike!")
-        descs.insert(0, "Exploit the opening — a decisive blow.")
-    if bool(enemy.get("can_spare", false)) and enemy_hp <= int(enemy_max_hp * 0.3):
-        ids.append("spare")
-        labels.append("Spare")
-        descs.append("Show mercy and end the fight.")
+    if is_player:
+        ids.append("probe")
+        labels.append("Probe")
+        descs.append("Study the enemy for a weakness.")
+        ids.append("item")
+        labels.append("Item")
+        descs.append("Use something from your pack.")
+    ids.append("guard")
+    labels.append("Guard")
+    descs.append("Brace yourself and recover 1 SP.")
+    if is_player:
+        ids.append("flee")
+        labels.append("Flee")
+        descs.append("Attempt to escape the battle.")
+        if exposed_turns > 0 and not finisher_used:
+            ids.insert(0, "finisher")
+            labels.insert(0, "Resolve Strike!")
+            descs.insert(0, "Exploit the opening — a decisive blow.")
+        var primary: Dictionary = _foes[0]
+        if bool(enemy.get("can_spare", false)) and int(primary.get("hp", 1)) <= int(int(primary.get("max_hp", 1)) * 0.3) and not _actor_down(primary, false):
+            ids.append("spare")
+            labels.append("Spare")
+            descs.append("Show mercy and end the fight.")
 
+    _show_menu_actor(ally)
     var choice: String = await _menu(ids, labels, descs)
     match choice:
         "attack":
-            await _player_attack(1.0, "You strike!", COLOR_ACCENT)
+            var target: int = await _pick_foe_target()
+            if target < 0:
+                await _ally_action_menu(ally)
+                return
+            var foe: Dictionary = _foes[target]
+            _play_skill_fx("strike", _foe_center(foe))
+            await _ally_attack(ally, foe, 1.0, "%s strikes!" % str(ally.get("name")), COLOR_ACCENT)
         "finisher":
             finisher_used = true
-            _flash_portrait(COLOR_EXPOSED, 1.0)
+            var primary: Dictionary = _foes[0]
+            _flash_portrait(primary, COLOR_EXPOSED, 1.0)
             _shake(7.0, 0.4)
-            _spawn_slash(_portrait_center(), COLOR_EXPOSED, 1.9)
-            _spawn_slash(_portrait_center() + Vector2(8, 10), Color(1, 1, 1, 0.9), 1.5, true)
-            await _player_attack(3.0, "You answer its secret with one decisive blow!", COLOR_EXPOSED)
+            _spawn_slash(_foe_center(primary), COLOR_EXPOSED, 1.9)
+            _spawn_slash(_foe_center(primary) + Vector2(8, 10), Color(1, 1, 1, 0.9), 1.5, true)
+            await _ally_attack(ally, primary, 3.0, "You answer its secret with one decisive blow!", COLOR_EXPOSED)
         "skill":
-            await _skill_menu()
+            await _skill_menu(ally)
         "probe":
-            await _probe_menu()
+            await _probe_menu(ally)
         "item":
-            await _item_menu()
+            await _item_menu(ally)
         "guard":
-            guarding = true
-            player_sp = mini(player_sp + 1, int(player_stats.get("sp_max", 3)))
-            _refresh_player_panel()
-            _spawn_particles(PLAYER_FX_CENTER, Color(0.6, 0.75, 1.0), 10)
-            await _say("You brace yourself and watch carefully. (+1 SP)")
+            ally["guarding"] = true
+            ally["sp"] = mini(int(ally.get("sp", 0)) + 1, int(ally.get("sp_max", 3)))
+            _refresh_all_panels()
+            _spawn_particles(_actor_fx_center(ally, true), Color(0.6, 0.75, 1.0), 10)
+            await _say("%s braces and watches carefully. (+1 SP)" % str(ally.get("name")))
         "flee":
             await _try_flee()
         "spare":
             await _spare_enemy()
 
 
-func _skill_menu() -> void :
-    var skills: Array[Dictionary] = GameManager.player_skills()
+func _skill_menu(ally: Dictionary) -> void :
+    if _status_flag(ally, "no_skills"):
+        await _say("%s's techniques are sealed by silence!" % str(ally.get("name")))
+        await _ally_action_menu(ally)
+        return
+    var skills: Array = ally.get("skills", []) as Array
+    if skills.is_empty():
+        await _say("%s knows no techniques yet." % str(ally.get("name")))
+        await _ally_action_menu(ally)
+        return
     var ids: Array[String] = []
     var labels: Array[String] = []
     var descs: Array[String] = []
     for index in range(skills.size()):
         var skill: Dictionary = skills[index]
         ids.append(str(index))
-        labels.append("%s (%d SP)" % [skill["name"], int(skill["sp_cost"])])
+        labels.append("%s (%d SP)" % [skill.get("name"), int(skill.get("sp_cost", 1))])
         descs.append(str(skill.get("desc", "")))
     ids.append("back")
     labels.append("Back")
     descs.append("")
 
+    _show_menu_actor(ally)
     var choice: String = await _menu(ids, labels, descs)
     if choice == "back":
-        await _player_turn()
+        await _ally_action_menu(ally)
         return
     var skill: Dictionary = skills[int(choice)]
-    if player_sp < int(skill["sp_cost"]):
+    if int(ally.get("sp", 0)) < int(skill.get("sp_cost", 1)):
         await _say("Not enough SP. Guard to recover.")
-        await _player_turn()
+        await _skill_menu(ally)
         return
-    player_sp -= int(skill["sp_cost"])
-    _refresh_player_panel()
+    var used: bool = await _use_skill(ally, skill)
+    if not used:
+        await _skill_menu(ally)
 
 
-    match str(skill.get("effect", "attack")):
+## Executes a skill. Returns false when the player cancelled out of target
+## selection (SP is only deducted after a target is confirmed).
+func _use_skill(ally: Dictionary, skill: Dictionary) -> bool:
+    var effect: = str(skill.get("effect", "attack"))
+    var skill_id: = str(skill.get("id", ""))
+    var skill_name: = str(skill.get("name", "?"))
+    var caster_name: = str(ally.get("name", "?"))
+    var level: int = int(ally.get("level", 1))
+    var power: = float(skill.get("power", 1.0))
+
+    match effect:
         "focus":
-            focus_active = true
-            _spawn_particles(PLAYER_FX_CENTER, Color(0.45, 0.65, 1.0), 18)
-            var aura: = create_tween()
-            aura.tween_property(_player_panel, "modulate", Color(0.7, 0.85, 1.3), 0.2)
-            aura.tween_property(_player_panel, "modulate", Color.WHITE, 0.5)
-            await _say("You center yourself. Your next attack will hit twice as hard.")
+            _spend_sp(ally, skill)
+            ally["focus"] = true
+            _play_skill_fx(skill_id, _actor_fx_center(ally, true))
+            _spawn_particles(_actor_fx_center(ally, true), Color(0.45, 0.65, 1.0), 18)
+            await _say("%s centers themselves. The next attack will hit twice as hard." % caster_name)
         "heal":
-            var heal_amount: int = int(round(float(skill["power"]))) + GameManager.player_level * 2
-            GameManager.set_player_hp(GameManager.get_player_hp() + heal_amount)
-            _animate_player_hp()
-            _refresh_player_panel()
-            _spawn_particles(PLAYER_FX_CENTER, COLOR_HEAL, 18)
-            _spawn_damage_number(PLAYER_FX_CENTER + Vector2(0, -18), "+%d" % heal_amount, COLOR_HEAL)
-            var glow: = create_tween()
-            glow.tween_property(_player_panel, "modulate", Color(0.75, 1.25, 0.85), 0.2)
-            glow.tween_property(_player_panel, "modulate", Color.WHITE, 0.5)
-            await _say("You use %s and restore %d HP." % [skill["name"], heal_amount])
+            var target: int = await _pick_ally_target()
+            if target < 0:
+                return false
+            _spend_sp(ally, skill)
+            var patient: Dictionary = _allies[target]
+            var heal_amount: int = int(round(power)) + level * 2
+            _play_skill_fx(skill_id, _actor_fx_center(patient, true))
+            _heal_raw(patient, true, heal_amount)
+            _spawn_particles(_actor_fx_center(patient, true), COLOR_HEAL, 18)
+            await _say("%s uses %s — %s recovers %d HP." % [caster_name, skill_name, patient.get("name"), heal_amount])
+        "heal_all":
+            _spend_sp(ally, skill)
+            var heal_all: int = int(round(power)) + int(round(level * 1.8))
+            for index in _living_allies():
+                var member: Dictionary = _allies[index]
+                _play_skill_fx(skill_id, _actor_fx_center(member, true))
+                _heal_raw(member, true, heal_all)
+            await _say("%s uses %s — the whole party recovers %d HP." % [caster_name, skill_name, heal_all])
         "multi":
-            var hits: int = clampi(int(round(float(skill["power"]))), 2, 4)
-            var per_hit: float = 0.7
+            var target: int = await _pick_foe_target()
+            if target < 0:
+                return false
+            _spend_sp(ally, skill)
+            var foe: Dictionary = _foes[target]
+            var hits: int = clampi(int(round(power)), 2, 4)
             for hit_index in range(hits):
-                if _battle_over or enemy_hp <= 0:
+                if _battle_over or _actor_down(foe, false):
                     break
-                _spawn_slash(_portrait_center() + Vector2(randf_range(-14, 14), randf_range(-10, 10)), Color(0.7, 0.9, 1.0), 1.4, hit_index % 2 == 0)
-                await _player_attack(per_hit, "%s — hit %d!" % [skill["name"], hit_index + 1], Color(0.7, 0.9, 1.0))
+                _play_skill_fx(skill_id, _foe_center(foe) + Vector2(randf_range(-14, 14), randf_range(-10, 10)))
+                await _ally_attack(ally, foe, 0.7, "%s — hit %d!" % [skill_name, hit_index + 1], Color(0.7, 0.9, 1.0))
         "pierce":
-            _spawn_slash(_portrait_center(), Color(1.0, 0.55, 0.85), 1.7)
-            await _player_attack(float(skill["power"]), "You unleash %s — it pierces the guard!" % skill["name"], Color(1.0, 0.55, 0.85), true)
+            var target: int = await _pick_foe_target()
+            if target < 0:
+                return false
+            _spend_sp(ally, skill)
+            var foe: Dictionary = _foes[target]
+            _play_skill_fx(skill_id, _foe_center(foe))
+            await _ally_attack(ally, foe, power, "%s unleashes %s — it pierces the guard!" % [caster_name, skill_name], Color(1.0, 0.55, 0.85), true)
+        "drain":
+            var target: int = await _pick_foe_target()
+            if target < 0:
+                return false
+            _spend_sp(ally, skill)
+            var foe: Dictionary = _foes[target]
+            _play_skill_fx(skill_id, _foe_center(foe))
+            var dealt: int = await _ally_attack(ally, foe, power, "%s uses %s!" % [caster_name, skill_name], Color(0.7, 0.4, 0.9))
+            if dealt > 0 and not _actor_down(ally, true):
+                var siphon: int = maxi(1, int(round(dealt * 0.6)))
+                _heal_raw(ally, true, siphon)
+                await _say("%s drains %d HP from the wound." % [caster_name, siphon])
+        "shield":
+            var target: int = _allies.find(ally) if str(skill.get("target")) == "self" else await _pick_ally_target()
+            if target < 0:
+                return false
+            _spend_sp(ally, skill)
+            var ward: Dictionary = _allies[target]
+            var pool: int = 12 + 3 * level
+            _apply_status(ward, "shield", float(pool))
+            _play_skill_fx(skill_id, _actor_fx_center(ward, true))
+            _spawn_particles(_actor_fx_center(ward, true), Color(0.75, 0.7, 0.5), 14)
+            _refresh_all_panels()
+            await _say("%s raises %s — %s gains a %d-point shield." % [caster_name, skill_name, ward.get("name"), pool])
+        "cleanse":
+            var target: int = await _pick_ally_target()
+            if target < 0:
+                return false
+            _spend_sp(ally, skill)
+            var patient: Dictionary = _allies[target]
+            var removed: int = _clear_debuffs(patient)
+            var soothe: int = 8 + level
+            _play_skill_fx(skill_id, _actor_fx_center(patient, true))
+            _heal_raw(patient, true, soothe)
+            await _say("%s purifies %s — %d ailment(s) washed away." % [caster_name, patient.get("name"), removed])
+        "revive":
+            var target: int = await _pick_ally_target(true)
+            if target < 0:
+                return false
+            var fallen: Dictionary = _allies[target]
+            if not _actor_down(fallen, true):
+                await _say("%s is still standing." % str(fallen.get("name")))
+                return false
+            _spend_sp(ally, skill)
+            fallen["downed"] = false
+            _set_ally_hp(fallen, maxi(1, int(round(int(fallen.get("max_hp", 1)) * 0.4))))
+            _play_skill_fx(skill_id, _actor_fx_center(fallen, true))
+            _spawn_particles(_actor_fx_center(fallen, true), COLOR_ACCENT, 24)
+            _refresh_all_panels()
+            await _say("%s calls %s back to their feet!" % [caster_name, fallen.get("name")])
+        "status":
+            var status_id: = str(skill.get("status", ""))
+            match str(skill.get("target", "enemy")):
+                "enemy":
+                    var target: int = await _pick_foe_target()
+                    if target < 0:
+                        return false
+                    _spend_sp(ally, skill)
+                    var foe: Dictionary = _foes[target]
+                    _play_skill_fx(skill_id, _foe_center(foe))
+                    if randf() < float(skill.get("status_chance", 1.0)) and _apply_status(foe, status_id):
+                        _refresh_all_panels()
+                        await _say("%s uses %s — %s is afflicted by %s!" % [caster_name, skill_name, foe.get("name"), _status_label(status_id)])
+                    else:
+                        await _say("%s uses %s — but %s resists!" % [caster_name, skill_name, foe.get("name")])
+                "ally":
+                    var target: int = await _pick_ally_target()
+                    if target < 0:
+                        return false
+                    _spend_sp(ally, skill)
+                    var member: Dictionary = _allies[target]
+                    _apply_buff_status(member, status_id, level)
+                    _play_skill_fx(skill_id, _actor_fx_center(member, true))
+                    _refresh_all_panels()
+                    await _say("%s uses %s — %s gains %s!" % [caster_name, skill_name, member.get("name"), _status_label(status_id)])
+                "ally_all":
+                    _spend_sp(ally, skill)
+                    for index in _living_allies():
+                        _apply_buff_status(_allies[index], status_id, level)
+                        _play_skill_fx(skill_id, _actor_fx_center(_allies[index], true))
+                    _refresh_all_panels()
+                    await _say("%s uses %s — the party gains %s!" % [caster_name, skill_name, _status_label(status_id)])
+                _:
+                    _spend_sp(ally, skill)
+                    _apply_buff_status(ally, status_id, level)
+                    _play_skill_fx(skill_id, _actor_fx_center(ally, true))
+                    _refresh_all_panels()
+                    await _say("%s uses %s!" % [caster_name, skill_name])
         _:
-            _spawn_slash(_portrait_center(), Color(1.0, 0.62, 0.2), 1.6)
-            await _player_attack(float(skill["power"]), "You unleash %s!" % skill["name"], Color(1.0, 0.62, 0.2))
+            var target: int = await _pick_foe_target()
+            if target < 0:
+                return false
+            _spend_sp(ally, skill)
+            var foe: Dictionary = _foes[target]
+            _play_skill_fx(skill_id, _foe_center(foe))
+            var dealt: int = await _ally_attack(ally, foe, maxf(power, 0.1), "%s unleashes %s!" % [caster_name, skill_name], Color(1.0, 0.62, 0.2))
+            var rider: = str(skill.get("status", ""))
+            if dealt > 0 and not rider.is_empty() and not _actor_down(foe, false):
+                if randf() < float(skill.get("status_chance", 0.0)):
+                    if not _apply_status(foe, rider):
+                        await _say("%s resists %s!" % [foe.get("name"), _status_label(rider)])
+                        return true
+                    _refresh_all_panels()
+                    await _say("%s is afflicted by %s!" % [foe.get("name"), _status_label(rider)])
+    return true
 
 
-func _item_menu() -> void :
+func _spend_sp(ally: Dictionary, skill: Dictionary) -> void :
+    ally["sp"] = maxi(int(ally.get("sp", 0)) - int(skill.get("sp_cost", 1)), 0)
+    _refresh_all_panels()
+
+
+func _status_label(status_id: String) -> String:
+    return str(GameManager.status_def(status_id).get("name", status_id))
+
+
+## Regen/haste magnitudes scale with the caster; other statuses use defaults.
+func _apply_buff_status(actor: Dictionary, status_id: String, caster_level: int) -> void :
+    var magnitude: = 0.0
+    if status_id == "regen":
+        magnitude = float(6 + caster_level)
+    _apply_status(actor, status_id, magnitude)
+
+
+func _item_menu(ally: Dictionary) -> void :
     var usable: Array[Dictionary] = InventoryManager.usable_in_battle()
     if usable.is_empty():
         await _say("You carry nothing usable in battle.")
-        await _player_turn()
+        await _ally_action_menu(ally)
         return
     var ids: Array[String] = []
     var labels: Array[String] = []
@@ -1522,48 +2512,52 @@ func _item_menu() -> void :
     labels.append("Back")
     descs.append("")
 
+    _show_menu_actor(ally)
     var choice: String = await _menu(ids, labels, descs)
     if choice == "back":
-        await _player_turn()
+        await _ally_action_menu(ally)
         return
     var item: Dictionary = usable[int(choice)]
     var item_id: String = str(item.get("id"))
+    var kind: = str(item.get("kind"))
+
+    var target: int = _allies.find(ally)
+    if kind == "heal" or kind == "energy":
+        target = await _pick_ally_target()
+        if target < 0:
+            await _item_menu(ally)
+            return
     if not InventoryManager.remove_item(item_id):
-        await _player_turn()
+        await _ally_action_menu(ally)
         return
-    match str(item.get("kind")):
+    var patient: Dictionary = _allies[maxi(target, 0)]
+    match kind:
         "heal":
             var amount: int = int(item.get("power", 40))
-            GameManager.set_player_hp(GameManager.get_player_hp() + amount)
-            _animate_player_hp()
-            _refresh_player_panel()
-            _spawn_particles(PLAYER_FX_CENTER, COLOR_HEAL, 16)
-            _spawn_damage_number(PLAYER_FX_CENTER + Vector2(0, -18), "+%d" % amount, COLOR_HEAL)
-            await _say("You use %s. Restored %d HP." % [item.get("name"), amount])
+            _heal_raw(patient, true, amount)
+            _spawn_particles(_actor_fx_center(patient, true), COLOR_HEAL, 16)
+            await _say("%s uses %s. %s restores %d HP." % [ally.get("name"), item.get("name"), patient.get("name"), amount])
         "energy":
             var sp_gain: int = int(item.get("power", 2))
-            player_sp = mini(player_sp + sp_gain, int(player_stats.get("sp_max", 3)))
-            _refresh_player_panel()
-            _spawn_particles(PLAYER_FX_CENTER, Color(0.55, 0.6, 1.0), 14)
-            await _say("You use %s. Restored %d SP." % [item.get("name"), sp_gain])
+            patient["sp"] = mini(int(patient.get("sp", 0)) + sp_gain, int(patient.get("sp_max", 3)))
+            _refresh_all_panels()
+            _spawn_particles(_actor_fx_center(patient, true), Color(0.55, 0.6, 1.0), 14)
+            await _say("%s uses %s. %s restores %d SP." % [ally.get("name"), item.get("name"), patient.get("name"), sp_gain])
         "buff":
-            focus_active = true
-            _spawn_particles(PLAYER_FX_CENTER, Color(1.0, 0.6, 0.3), 18)
-            var aura: = create_tween()
-            aura.tween_property(_player_panel, "modulate", Color(1.3, 1.0, 0.7), 0.2)
-            aura.tween_property(_player_panel, "modulate", Color.WHITE, 0.5)
-            await _say("You use %s. Your next attack is empowered!" % item.get("name"))
+            ally["focus"] = true
+            _spawn_particles(_actor_fx_center(ally, true), Color(1.0, 0.6, 0.3), 18)
+            await _say("%s uses %s. The next attack is empowered!" % [ally.get("name"), item.get("name")])
 
 
-func _probe_menu() -> void :
+func _probe_menu(ally: Dictionary) -> void :
     var weakness: Dictionary = enemy.get("weakness", {}) as Dictionary
     if weakness_found:
         await _say("You already see through it. Its weakness is laid bare.")
-        await _player_turn()
+        await _ally_action_menu(ally)
         return
     if probe_options.is_empty():
         await _say("It refuses to answer anything more.")
-        await _player_turn()
+        await _ally_action_menu(ally)
         return
 
     await _say(str(weakness.get("hint", "You look for a crack in its resolve.")))
@@ -1578,76 +2572,113 @@ func _probe_menu() -> void :
 
     var choice: String = await _menu(ids, labels)
     if choice == "back":
-        await _player_turn()
+        await _ally_action_menu(ally)
         return
 
     var option: Dictionary = probe_options[int(choice)] as Dictionary
     probe_options.remove_at(int(choice))
     await _say(str(option.get("reveal", "...")))
 
+    var primary: Dictionary = _foes[0]
     if bool(option.get("correct", false)):
         weakness_found = true
         exposed_turns = int(weakness.get("vulnerable_turns", 3)) + 1
         _set_exposed_glow(true)
-        _flash_portrait(COLOR_EXPOSED, 0.8)
+        _flash_portrait(primary, COLOR_EXPOSED, 0.8)
         _shake(4.0, 0.3)
-        _spawn_particles(_portrait_center(), COLOR_EXPOSED, 22)
-        _refresh_enemy_panel()
+        _spawn_particles(_foe_center(primary), COLOR_EXPOSED, 22)
+        _refresh_all_panels()
         await _say("%s is EXPOSED! Your words found the wound. (damage x%.1f)" % [
-            _enemy_name(), float(weakness.get("damage_multiplier", 2.0)), 
+            _enemy_name(), float(weakness.get("damage_multiplier", 2.0)),
         ])
     else:
         await _say("Wrong nerve. %s lashes out while you hesitate!" % _enemy_name())
-        await _enemy_strike(0.8, "")
+        await _foe_strike(primary, _allies[0], 0.8, "")
 
 
-func _player_attack(power: float, flavor: String, fx_color: Color = COLOR_ACCENT, ignore_defense: bool = false) -> void :
-    var base: float = float(player_stats.get("attack", 12)) * power
-    if focus_active:
+## Shared ally→foe damage. Returns the damage actually dealt (0 on a miss).
+func _ally_attack(ally: Dictionary, foe: Dictionary, power: float, flavor: String, fx_color: Color = COLOR_ACCENT, ignore_defense: bool = false) -> int:
+    # Blind can make the whole swing whiff.
+    var hit_chance: = _status_mult(ally, "hit_chance")
+    if hit_chance < 1.0 and randf() > hit_chance:
+        _spawn_damage_number(_foe_center(foe) + Vector2(0, -34), "MISS", COLOR_TEXT_DIM)
+        await _say("%s's attack goes wide!" % str(ally.get("name")))
+        return 0
+
+    var base: float = float(ally.get("attack", 12)) * power
+    base *= _status_mult(ally, "attack_mult")
+    if bool(ally.get("focus", false)):
         base *= 2.0
-        focus_active = false
-    if hexed:
-        base *= 0.7
-        hexed = false
+        ally["focus"] = false
+    var is_primary: = foe == _foes[0]
     var weakness: Dictionary = enemy.get("weakness", {}) as Dictionary
-    var exposed_now: bool = exposed_turns > 0
+    var exposed_now: bool = exposed_turns > 0 and is_primary
     if exposed_now:
         base *= float(weakness.get("damage_multiplier", 2.0))
     var variance: float = randf_range(0.85, 1.15)
-    var crit: bool = randf() < 0.1
+    var crit: bool = randf() < 0.1 + _status_bonus(ally, "crit_bonus")
 
-    var defense_cut: float = 0.0 if ignore_defense else enemy_defense * phase_defense_factor * 0.5
+    var defense: float = float(foe.get("defense", 2)) * _status_mult(foe, "defense_mult")
+    if is_primary:
+        defense *= phase_defense_factor
+    var defense_cut: float = 0.0 if ignore_defense else defense * 0.5
     var damage: int = maxi(int(round(base * variance * (1.5 if crit else 1.0) - defense_cut)), 1)
-    enemy_hp = maxi(enemy_hp - damage, 0)
+    foe["hp"] = maxi(int(foe.get("hp", 1)) - damage, 0)
+    _on_actor_damaged(foe)
 
-    _spawn_slash(_portrait_center(), fx_color, 1.5 if power > 1.2 else 1.25)
-    _enemy_hit_react(power >= 1.5 or crit)
-    _spawn_particles(_portrait_center(), fx_color if not exposed_now else COLOR_EXPOSED)
+    _spawn_slash(_foe_center(foe), fx_color, 1.5 if power > 1.2 else 1.25)
+    _enemy_hit_react(foe, power >= 1.5 or crit)
+    _spawn_particles(_foe_center(foe), fx_color if not exposed_now else COLOR_EXPOSED)
     _spawn_damage_number(
-        _portrait_center() + Vector2(0, -34), 
-        str(damage) + ("!" if crit else ""), 
-        COLOR_CRIT if crit else (COLOR_EXPOSED if exposed_now else Color.WHITE), 
-        crit or power >= 1.8, 
+        _foe_center(foe) + Vector2(0, -34),
+        str(damage) + ("!" if crit else ""),
+        COLOR_CRIT if crit else (COLOR_EXPOSED if exposed_now else Color.WHITE),
+        crit or power >= 1.8,
     )
-    _animate_enemy_hp()
-    _refresh_enemy_panel()
+    _animate_foe_hp(foe)
+    _refresh_all_panels()
 
     var text: String = "%s %d damage%s" % [flavor + " ", damage, " — CRITICAL!" if crit else "."]
     await _say(text)
 
-    if enemy_hp <= 0:
-        await _victory()
-    elif enemy_hp <= int(enemy_max_hp * 0.3):
+    if _actor_down(foe, false):
+        await _handle_foe_death(foe)
+        if _living_foes().is_empty():
+            await _victory()
+    elif is_primary and int(foe.get("hp", 0)) <= int(int(foe.get("max_hp", 1)) * 0.3):
         var low_lines: Array = _dialogue("low_hp")
         if not low_lines.is_empty() and not triggered_phases.has("_low_hp"):
             triggered_phases["_low_hp"] = true
             await _say("%s: \"%s\"" % [_enemy_name(), low_lines[0]])
             if bool(enemy.get("can_spare", false)):
                 await _say("It is wavering. You could choose to spare it.")
+    return damage
+
+
+func _handle_foe_death(foe: Dictionary) -> void :
+    var ui: Dictionary = _foe_ui(foe)
+    if not ui.is_empty():
+        var holder: Control = ui["holder"]
+        var dissolve: = create_tween()
+        dissolve.tween_property(holder, "modulate", Color(1.4, 1.4, 1.4, 0.0), 0.7).set_trans(Tween.TRANS_CUBIC)
+        dissolve.parallel().tween_property(holder, "position:y", holder.position.y + 20.0, 0.7)
+        _spawn_particles(_foe_center(foe), Color(1, 1, 1, 0.9), 22)
+    if not _living_foes().is_empty():
+        await _say("%s is defeated!" % str(foe.get("name")))
+        # The readout should follow a living foe.
+        var living: Array[int] = _living_foes()
+        if not living.is_empty() and _actor_down(_foes[_target_foe_index], false):
+            _target_foe_index = living[0]
+        _refresh_all_panels()
 
 
 func _check_phases() -> void :
-    var ratio: float = float(enemy_hp) / float(enemy_max_hp)
+    if _foes.is_empty():
+        return
+    var primary: Dictionary = _foes[0]
+    if _actor_down(primary, false):
+        return
+    var ratio: float = float(primary.get("hp", 0)) / float(primary.get("max_hp", 1))
     for phase in enemy.get("phases", []) as Array:
         if not (phase is Dictionary):
             continue
@@ -1656,7 +2687,7 @@ func _check_phases() -> void :
             continue
         if ratio <= float((phase as Dictionary).get("hp_ratio", 0.5)):
             triggered_phases[key] = true
-            _flash_portrait(Color(1.0, 0.4, 0.3), 0.7)
+            _flash_portrait(primary, Color(1.0, 0.4, 0.3), 0.7)
             _shake(4.0, 0.35)
             var beat: String = str((phase as Dictionary).get("story_beat", ""))
             if not beat.is_empty():
@@ -1671,100 +2702,162 @@ func _check_phases() -> void :
                     await _say("It fights desperately — harder, but careless!")
 
 
-func _enemy_turn() -> void :
-    _update_turn_order("enemy")
+# ── foe turns ─────────────────────────────────────────────────────────────────
+
+
+func _foe_turn(foe: Dictionary) -> void :
     if _battle_over:
         return
-    var skill: Dictionary = intent
-    _pick_enemy_intent()
-    await _enemy_use_skill(skill)
+    var upkeep: Dictionary = _status_upkeep_for_round(foe, false)
+    for note in upkeep.get("notes", []) as Array:
+        await _say(str(note))
+    _refresh_all_panels()
+    if _actor_down(foe, false):
+        await _handle_foe_death(foe)
+        if _living_foes().is_empty():
+            await _victory()
+        return
+    if bool(upkeep.get("skip", false)):
+        return
+    var skill: Dictionary = foe.get("intent", {}) as Dictionary
+    _pick_foe_intent(foe)
+    await _foe_use_skill(foe, skill)
 
 
-func _enemy_use_skill(skill: Dictionary) -> void :
+func _foe_use_skill(foe: Dictionary, skill: Dictionary) -> void :
     var kind: String = str(skill.get("kind", "strike"))
     var skill_name: String = str(skill.get("name", "Attack"))
     var power: float = float(skill.get("power", 1.0))
+    var victim: Dictionary = _pick_foe_victim()
+    if victim.is_empty():
+        return
     if kind == "heavy":
-
-        _portrait_flash.modulate = Color(1.0, 0.3, 0.2, 0.0)
-        var windup: = create_tween()
-        windup.tween_property(_portrait_flash, "modulate:a", 0.5, 0.35)
-        windup.tween_property(_portrait_flash, "modulate:a", 0.0, 0.15)
-        await windup.finished
+        var ui: Dictionary = _foe_ui(foe)
+        if not ui.is_empty():
+            var flash: TextureRect = ui["flash"]
+            flash.modulate = Color(1.0, 0.3, 0.2, 0.0)
+            var windup: = create_tween()
+            windup.tween_property(flash, "modulate:a", 0.5, 0.35)
+            windup.tween_property(flash, "modulate:a", 0.0, 0.15)
+            await windup.finished
     match kind:
         "hex":
-            hexed = true
-            _spawn_particles(PLAYER_FX_CENTER, Color(0.7, 0.35, 0.9), 16, false)
-            await _enemy_strike(power * 0.5, "%s uses %s! A weakening curse clings to you." % [_enemy_name(), skill_name])
+            _apply_status(victim, "weaken")
+            _spawn_particles(_actor_fx_center(victim, true), Color(0.7, 0.35, 0.9), 16, false)
+            _refresh_all_panels()
+            await _foe_strike(foe, victim, power * 0.5, "%s uses %s! A weakening curse clings to %s." % [foe.get("name"), skill_name, victim.get("name")])
         "guard_break":
-            if guarding:
-                await _enemy_strike(power * 1.6, "%s uses %s — it smashes straight through your guard!" % [_enemy_name(), skill_name])
+            if bool(victim.get("guarding", false)):
+                await _foe_strike(foe, victim, power * 1.6, "%s uses %s — it smashes straight through the guard!" % [foe.get("name"), skill_name])
             else:
-                await _enemy_strike(power * 0.9, "%s uses %s." % [_enemy_name(), skill_name])
+                await _foe_strike(foe, victim, power * 0.9, "%s uses %s." % [foe.get("name"), skill_name])
         _:
-            await _enemy_strike(power, "%s uses %s!" % [_enemy_name(), skill_name])
+            await _foe_strike(foe, victim, power, "%s uses %s!" % [foe.get("name"), skill_name])
 
 
-func _enemy_strike(power: float, flavor: String) -> void :
-    var base: float = float(enemy_attack) * power * phase_damage_bonus
+## Which ally does a foe swing at? A taunting tank forces the choice; otherwise
+## the protagonist draws a little more heat than each companion.
+func _pick_foe_victim() -> Dictionary:
+    var living: Array[int] = _living_allies()
+    if living.is_empty():
+        return {}
+    for index in living:
+        if _status_flag(_allies[index], "taunt"):
+            return _allies[index]
+    var weights: Array[float] = []
+    var total: = 0.0
+    for index in living:
+        var weight: = 6.0 if str(_allies[index].get("kind")) == "player" else 4.0
+        weights.append(weight)
+        total += weight
+    var roll: = randf() * total
+    for position in range(living.size()):
+        roll -= weights[position]
+        if roll <= 0.0:
+            return _allies[living[position]]
+    return _allies[living.back()]
+
+
+func _foe_strike(foe: Dictionary, victim: Dictionary, power: float, flavor: String) -> void :
+    var hit_chance: = _status_mult(foe, "hit_chance")
+    if hit_chance < 1.0 and randf() > hit_chance:
+        _enemy_lunge(foe)
+        await get_tree().create_timer(0.14).timeout
+        _spawn_damage_number(_actor_fx_center(victim, true) + Vector2(10, -60), "MISS", COLOR_TEXT_DIM)
+        await _say("%s's attack misses %s!" % [foe.get("name"), victim.get("name")])
+        return
+
+    var is_primary: = foe == _foes[0]
+    var base: float = float(foe.get("attack", 8)) * power
+    base *= _status_mult(foe, "attack_mult")
+    if is_primary:
+        base *= phase_damage_bonus
     var variance: float = randf_range(0.85, 1.15)
-    var damage: float = base * variance - float(player_stats.get("defense", 5)) * 0.5
-    if guarding:
+    var defense: float = float(victim.get("defense", 5)) * _status_mult(victim, "defense_mult")
+    var damage: float = base * variance - defense * 0.5
+    if bool(victim.get("guarding", false)):
         damage *= 0.5
     var final_damage: int = maxi(int(round(damage)), 1)
+    final_damage = _absorb_with_shields(victim, final_damage)
 
-    _enemy_lunge()
+    _enemy_lunge(foe)
     await get_tree().create_timer(0.14).timeout
     _shake(5.0 if power >= 1.5 else 3.0, 0.3)
-    _spawn_damage_number(PLAYER_FX_CENTER + Vector2(10, -92), str(final_damage), COLOR_PLAYER_DMG, power >= 1.5)
-    GameManager.set_player_hp(GameManager.get_player_hp() - final_damage)
-    _animate_player_hp()
-    _refresh_player_panel()
-
-    var guard_note: String = " You guarded (halved)." if guarding else ""
-    if flavor.is_empty():
-        await _say("It hits you for %d.%s" % [final_damage, guard_note])
+    if final_damage > 0:
+        _spawn_damage_number(_actor_fx_center(victim, true) + Vector2(10, -30), str(final_damage), COLOR_PLAYER_DMG, power >= 1.5)
+        _set_ally_hp(victim, _ally_hp(victim) - final_damage)
+        _on_actor_damaged(victim)
+        if _ally_hp(victim) <= 0:
+            victim["downed"] = true
     else:
-        await _say("%s %d damage to you.%s" % [flavor + " ", final_damage, guard_note])
+        _spawn_damage_number(_actor_fx_center(victim, true) + Vector2(10, -30), "BLOCKED", Color(0.75, 0.8, 0.95))
+    _animate_ally_hp(victim)
+    _refresh_all_panels()
 
-    if GameManager.get_player_hp() <= 0:
+    var guard_note: String = " %s guarded (halved)." % str(victim.get("name")) if bool(victim.get("guarding", false)) else ""
+    if final_damage <= 0:
+        await _say("%s The shield absorbs the blow!" % (flavor if not flavor.is_empty() else "%s attacks." % str(foe.get("name"))))
+    elif flavor.is_empty():
+        await _say("It hits %s for %d.%s" % [victim.get("name"), final_damage, guard_note])
+    else:
+        await _say("%s %d damage to %s.%s" % [flavor + " ", final_damage, victim.get("name"), guard_note])
+
+    if bool(victim.get("downed", false)):
+        await _say("%s falls!" % str(victim.get("name")))
+    if _living_allies().is_empty():
         await _defeat()
 
 
-func _pick_enemy_intent() -> void :
-    var skills: Array = enemy.get("skills", []) as Array
+func _pick_foe_intent(foe: Dictionary) -> void :
+    var skills: Array = (foe.get("data", {}) as Dictionary).get("skills", []) as Array
     var usable: Array[Dictionary] = []
+    var silenced: = _status_flag(foe, "no_skills")
     for skill in skills:
         if skill is Dictionary:
-            if str((skill as Dictionary).get("kind", "")) == "heavy" and turns_since_heavy < 2:
+            if silenced and str((skill as Dictionary).get("kind", "")) != "strike":
+                continue
+            if str((skill as Dictionary).get("kind", "")) == "heavy" and int(foe.get("turns_since_heavy", 99)) < 2:
                 continue
             usable.append(skill as Dictionary)
     if usable.is_empty():
         usable.append({"name": "Attack", "kind": "strike", "power": 1.0, "telegraph": ""})
-    intent = usable[randi() % usable.size()]
-    if str(intent.get("kind", "")) == "heavy":
-        turns_since_heavy = 0
+    foe["intent"] = usable[randi() % usable.size()]
+    if str((foe["intent"] as Dictionary).get("kind", "")) == "heavy":
+        foe["turns_since_heavy"] = 0
     else:
-        turns_since_heavy += 1
-    var telegraph: String = str(intent.get("telegraph", ""))
-    if str(intent.get("kind", "")) == "heavy":
-        _intent_label.add_theme_color_override("font_color", COLOR_HP.lightened(0.3))
-    else:
-        _intent_label.add_theme_color_override("font_color", Color(0.98, 0.92, 0.78, 0.98))
-    _intent_label.text = telegraph if not telegraph.is_empty() else "It watches you."
-    _intent_label.modulate.a = 0.0
-    var fade: = create_tween()
-    fade.tween_property(_intent_label, "modulate:a", 1.0, 0.4)
+        foe["turns_since_heavy"] = int(foe.get("turns_since_heavy", 99)) + 1
+    _refresh_target_readout()
 
 
 func _try_flee() -> void :
+    var primary: Dictionary = _foes[0]
     var chance: float = clampf(
-        0.5 + 0.05 * float(int(player_stats.get("speed", 9)) - enemy_speed) + 0.15 * flee_failed_count, 
-        0.25, 
-        0.95, 
+        0.5 + 0.05 * float(int(player_stats.get("speed", 9)) - int(primary.get("speed", 6))) + 0.15 * flee_failed_count,
+        0.25,
+        0.95,
     )
     if randf() < chance:
-        await _say("You slip away from the fight.")
+        await _say("Your party slips away from the fight.")
         _finish("fled")
     else:
         flee_failed_count += 1
@@ -1775,20 +2868,18 @@ func _try_flee() -> void :
 func _spare_enemy() -> void :
     for line in _dialogue("spare"):
         await _say("%s: \"%s\"" % [_enemy_name(), line])
-    var fade: = create_tween()
-    fade.tween_property(_portrait_holder, "modulate", Color(1, 1, 1, 0.35), 1.0)
-    var xp: int = _scaled_battle_xp(int(int(enemy.get("xp_reward", 20)) * 0.6))
+    for foe in _foes:
+        var ui: Dictionary = _foe_ui(foe)
+        if not ui.is_empty():
+            var fade: = create_tween()
+            fade.tween_property(ui["holder"], "modulate", Color(1, 1, 1, 0.35), 1.0)
+    var xp: int = _scaled_battle_xp(int(int(enemy.get("xp_reward", 20)) * 0.6), int(_foes[0].get("level", 1)))
     await _grant_xp(xp, "You lower your weapon. +%d XP." % xp)
     _finish("spared")
 
 
 func _victory() -> void :
     _set_exposed_glow(false)
-
-    var dissolve: = create_tween()
-    dissolve.tween_property(_portrait_holder, "modulate", Color(1.4, 1.4, 1.4, 0.0), 0.9).set_trans(Tween.TRANS_CUBIC)
-    dissolve.parallel().tween_property(_portrait_holder, "position:y", PORTRAIT_HOME.y + 24.0, 0.9)
-    _spawn_particles(_portrait_center(), Color(1, 1, 1, 0.9), 26)
     _shake(3.0, 0.25)
 
     for line in _dialogue("finish"):
@@ -1797,13 +2888,24 @@ func _victory() -> void :
         await _say("%s: \"%s\"" % [_enemy_name(), line])
 
     _show_victory_banner()
-    var xp: int = _scaled_battle_xp(int(enemy.get("xp_reward", 20)))
+    var xp: = 0
+    for foe in _foes:
+        xp += _scaled_battle_xp(int(foe.get("xp_reward", 20)), int(foe.get("level", 1)))
     if weakness_found:
         var bonus: int = int(xp * 0.25)
         xp += bonus
         await _grant_xp(xp, "Victory! +%d XP (+%d for understanding its story)." % [xp, bonus])
     else:
         await _grant_xp(xp, "Victory! +%d XP." % xp)
+
+    # Fallen party members pick themselves back up after the fight.
+    for ally in _allies:
+        if _actor_down(ally, true):
+            ally["downed"] = false
+            var recover: int = maxi(1, int(round(int(ally.get("max_hp", 1)) * (0.25 if str(ally.get("kind")) == "player" else 0.3))))
+            _set_ally_hp(ally, recover)
+    _refresh_all_panels()
+
     var dropped: String = InventoryManager.roll_battle_drop(str(enemy.get("rank", "minion")))
     if not dropped.is_empty():
         _spawn_particles(SCREEN_CENTER, COLOR_ACCENT, 12)
@@ -1843,20 +2945,17 @@ func _show_victory_banner() -> void :
         _spawn_particles(Vector2(randf_range(300, 660), randf_range(110, 230)), COLOR_ACCENT, 12)
 
 
+## Passive healer-regen from the party bonus, applied on the protagonist's turn
+## to every living, wounded ally.
 func _apply_party_regen() -> void :
-
-
     var regen: int = int(player_stats.get("party_regen", 0))
     if regen <= 0:
         return
-    var max_hp: int = int(player_stats.get("max_hp", 80))
-    if GameManager.get_player_hp() >= max_hp:
-        return
-    GameManager.set_player_hp(GameManager.get_player_hp() + regen)
-    _animate_player_hp()
-    _refresh_player_panel()
-    _spawn_particles(PLAYER_FX_CENTER, COLOR_HEAL, 8)
-    _spawn_damage_number(PLAYER_FX_CENTER + Vector2(-6, -18), "+%d" % regen, COLOR_HEAL)
+    for index in _living_allies():
+        var ally: Dictionary = _allies[index]
+        if _ally_hp(ally) >= int(ally.get("max_hp", 1)):
+            continue
+        _heal_raw(ally, true, regen)
 
 
 func _on_companion_leveled(npc_id: String, level: int) -> void :
@@ -1866,35 +2965,36 @@ func _on_companion_leveled(npc_id: String, level: int) -> void :
 ## Level-gap governor: an enemy far below the player's level teaches little
 ## (mirrors the talk-XP scaling in GameManager.award_talk_xp) — grinding
 ## low-level minions can't push the player far past the zone's balance anchor.
-## Applied at the reward call sites so the "+N XP" messages show the real number.
-func _scaled_battle_xp(raw: int) -> int:
-    var reference_level: int = int(enemy.get("level", 0))
+## Applied per foe at the reward call sites so "+N XP" shows the real number.
+func _scaled_battle_xp(raw: int, reference_level: int) -> int:
     if reference_level <= 0:
         reference_level = ChapterFlow.expected_level_here()
     return maxi(1, int(round(float(raw) * GameManager.xp_gap_factor(reference_level))))
 
 
 func _grant_xp(xp: int, message: String) -> void :
-
     var boosted: int = int(round(float(xp) * float(player_stats.get("party_xp_mult", 1.0))))
     _companion_levelups.clear()
     var levels: int = GameManager.grant_party_xp(boosted)
     player_stats = GameManager.player_battle_stats()
-    var xp_tween: = create_tween()
-    xp_tween.tween_property(
-        _xp_bar, "size:x", 
-        (PLAYER_HP_BAR_W - 30) * clampf(float(GameManager.player_xp) / float(GameManager.xp_to_next_level()), 0.0, 1.0), 
-        0.7, 
-    ).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-    _refresh_player_panel()
+    _sync_ally_actor_stats()
+    var hero_card: Dictionary = _ally_cards[0] if not _ally_cards.is_empty() else {}
+    if not hero_card.is_empty() and hero_card.get("xp_bar") != null:
+        var xp_tween: = create_tween()
+        xp_tween.tween_property(
+            hero_card["xp_bar"], "size:x",
+            (float(hero_card.get("bar_w", PLAYER_HP_BAR_W)) - 24.0) * clampf(float(GameManager.player_xp) / float(GameManager.xp_to_next_level()), 0.0, 1.0),
+            0.7,
+        ).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+    _refresh_all_panels()
     await _say(message)
     if levels > 0:
-        _build_sp_pips()
-        _spawn_particles(PLAYER_FX_CENTER, COLOR_ACCENT, 28)
-        _spawn_damage_number(PLAYER_FX_CENTER + Vector2(80, -80), "LEVEL UP!", COLOR_ACCENT, true)
-        var glow: = create_tween()
-        glow.tween_property(_player_panel, "modulate", Color(1.4, 1.3, 0.9), 0.25)
-        glow.tween_property(_player_panel, "modulate", Color.WHITE, 0.6)
+        _spawn_particles(_actor_fx_center(_allies[0], true), COLOR_ACCENT, 28)
+        _spawn_damage_number(_actor_fx_center(_allies[0], true) + Vector2(80, -50), "LEVEL UP!", COLOR_ACCENT, true)
+        if not hero_card.is_empty():
+            var glow: = create_tween()
+            glow.tween_property(hero_card["root"], "modulate", Color(1.4, 1.3, 0.9), 0.25)
+            glow.tween_property(hero_card["root"], "modulate", Color.WHITE, 0.6)
         await _say("LEVEL UP! You are now level %d. You feel restored and stronger." % GameManager.player_level)
 
     for entry in _companion_levelups:
@@ -1902,6 +3002,33 @@ func _grant_xp(xp: int, message: String) -> void :
         var comp_name: String = PartyManager.companion_name(npc_id) if PartyManager.has_method("companion_name") else npc_id
         await _say("%s reached level %d!" % [comp_name, int((entry as Dictionary).get("level", 1))])
     _companion_levelups.clear()
+    _sync_ally_actor_stats()
+    _refresh_all_panels()
+
+
+## Mid-battle level-ups change the underlying sheets — pull the fresh numbers
+## back into the live actor dictionaries (downed state and current HP persist).
+func _sync_ally_actor_stats() -> void :
+    for ally in _allies:
+        if str(ally.get("kind")) == "player":
+            ally["level"] = GameManager.player_level
+            ally["max_hp"] = int(player_stats.get("max_hp", 80))
+            ally["attack"] = int(player_stats.get("attack", 12))
+            ally["defense"] = int(player_stats.get("defense", 5))
+            ally["speed"] = int(player_stats.get("speed", 9))
+            ally["sp_max"] = int(player_stats.get("sp_max", 3))
+            ally["skills"] = GameManager.player_skills()
+        else:
+            var npc_id: = str(ally.get("id"))
+            var stats: Dictionary = GameManager.companion_battle_stats(npc_id)
+            ally["level"] = int(stats.get("level", 1))
+            ally["max_hp"] = int(stats.get("max_hp", 50))
+            ally["attack"] = int(stats.get("attack", 10))
+            ally["defense"] = int(stats.get("defense", 4))
+            ally["speed"] = int(stats.get("speed", 8))
+            ally["sp_max"] = int(stats.get("sp_max", 2))
+            ally["skills"] = GameManager.companion_skills(npc_id)
+        ally["sp"] = mini(int(ally.get("sp", 0)), int(ally.get("sp_max", 3)))
 
 
 func _defeat() -> void :
@@ -1910,8 +3037,300 @@ func _defeat() -> void :
     for line in _dialogue("player_defeat"):
         await _say("%s: \"%s\"" % [_enemy_name(), line])
     GameManager.lose_xp_on_defeat()
+    # Companions wake alongside the protagonist.
+    for ally in _allies:
+        if str(ally.get("kind")) == "companion":
+            ally["downed"] = false
+            GameManager.set_companion_hp(str(ally.get("id")), -1)
     await _say("Your memory frays... you lose some experience and wake up where you started.")
     _finish("defeat")
+
+
+# ── target selection (gold arrow over foes / ally cards) ─────────────────────
+
+
+## Cursor-pick a living foe. Auto-resolves when only one foe stands. Returns the
+## foe index, or -1 when the player backs out.
+func _pick_foe_target() -> int:
+    var living: Array[int] = _living_foes()
+    if living.is_empty():
+        return -1
+    if living.size() == 1:
+        _target_foe_index = living[0]
+        _refresh_target_readout()
+        return living[0]
+    return await _run_target_pick(living, false)
+
+
+## Cursor-pick an ally (heal/shield/revive). only_downed lists fallen members.
+func _pick_ally_target(only_downed: bool = false) -> int:
+    var candidates: Array[int] = []
+    for index in range(_allies.size()):
+        var down: = _actor_down(_allies[index], true)
+        if (only_downed and down) or (not only_downed and not down):
+            candidates.append(index)
+    if candidates.is_empty():
+        return -1
+    if candidates.size() == 1:
+        return candidates[0]
+    return await _run_target_pick(candidates, true)
+
+
+var _target_candidates: Array[int] = []
+var _target_pos: int = 0
+var _target_is_ally: bool = false
+signal _target_picked(index: int)
+
+
+func _run_target_pick(candidates: Array[int], is_ally: bool) -> int:
+    _target_candidates = candidates
+    _target_pos = 0
+    _target_is_ally = is_ally
+    if not is_ally:
+        var preferred: = _target_candidates.find(_target_foe_index)
+        if preferred >= 0:
+            _target_pos = preferred
+    _ui_mode = UiMode.TARGET
+    _show_target_arrows()
+    var picked: int = await _target_picked
+    _hide_target_arrows()
+    _ui_mode = UiMode.NONE
+    return picked
+
+
+func _show_target_arrows() -> void :
+    _update_target_arrows()
+
+
+func _update_target_arrows() -> void :
+    # Hide everything first, then light the hovered candidate.
+    for foe in _foes:
+        var ui: Dictionary = _foe_ui(foe)
+        if not ui.is_empty():
+            (ui["arrow"] as Control).visible = false
+    for card in _ally_cards:
+        (card["arrow"] as Control).visible = false
+    if _target_pos >= _target_candidates.size():
+        return
+    var index: int = _target_candidates[_target_pos]
+    if _target_is_ally:
+        if index < _ally_cards.size():
+            var arrow: Control = _ally_cards[index]["arrow"]
+            arrow.visible = true
+            _pulse_arrow(arrow)
+    else:
+        var ui: Dictionary = _foe_ui(_foes[index])
+        if not ui.is_empty():
+            var arrow: Control = ui["arrow"]
+            arrow.visible = true
+            _pulse_arrow(arrow)
+        _target_foe_index = index
+        _refresh_target_readout()
+
+
+func _pulse_arrow(arrow: Control) -> void :
+    var pulse: = create_tween().set_loops(2)
+    pulse.tween_property(arrow, "modulate:a", 0.55, 0.28)
+    pulse.tween_property(arrow, "modulate:a", 1.0, 0.28)
+
+
+func _hide_target_arrows() -> void :
+    for foe in _foes:
+        var ui: Dictionary = _foe_ui(foe)
+        if not ui.is_empty():
+            (ui["arrow"] as Control).visible = false
+    for card in _ally_cards:
+        (card["arrow"] as Control).visible = false
+
+
+# ── per-skill FX (generated sheets with graceful fallback) ────────────────────
+
+const SKILL_FX_DIR: = "res://assets/fx/skills/"
+
+
+## Every skill can ship a dedicated 4-frame FX sheet (512x128, generated via the
+## OpenAI extension pipeline). Missing sheets degrade to the classic slash.
+func _skill_fx_frames(skill_id: String) -> SpriteFrames:
+    if skill_id.is_empty():
+        return null
+    if _skill_fx_cache.has(skill_id):
+        return _skill_fx_cache[skill_id]
+    var path: = "%s%s_sheet.png" % [SKILL_FX_DIR, skill_id]
+    var frames: SpriteFrames = null
+    # _load_png_texture also reads the raw PNG before Godot has generated a
+    # .import sidecar, which keeps fresh-checkout headless smoke tests reliable.
+    var sheet: Texture2D = _load_png_texture(path)
+    if sheet != null:
+        var frame_size: int = sheet.get_height()
+        var count: int = maxi(int(sheet.get_width() / maxi(frame_size, 1)), 1)
+        frames = SpriteFrames.new()
+        frames.remove_animation("default")
+        frames.add_animation("fx")
+        frames.set_animation_speed("fx", 12.0)
+        frames.set_animation_loop("fx", false)
+        for index in range(count):
+            var atlas: = AtlasTexture.new()
+            atlas.atlas = sheet
+            atlas.region = Rect2(index * frame_size, 0, frame_size, frame_size)
+            frames.add_frame("fx", atlas)
+    _skill_fx_cache[skill_id] = frames
+    return frames
+
+
+func _play_skill_fx(skill_id: String, at: Vector2, effect_scale: float = 1.5) -> void :
+    var frames: = _skill_fx_frames(skill_id)
+    if frames == null:
+        return
+    var sprite: = AnimatedSprite2D.new()
+    sprite.sprite_frames = frames
+    sprite.position = at
+    sprite.scale = Vector2(effect_scale, effect_scale)
+    sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+    _fx_layer.add_child(sprite)
+    sprite.play("fx")
+    sprite.animation_finished.connect(sprite.queue_free)
+
+
+# ── panel refresh (readout + foe bars + ally cards) ──────────────────────────
+
+
+func _refresh_all_panels() -> void :
+    _refresh_target_readout()
+    for foe in _foes:
+        _refresh_foe_overlay(foe)
+    for index in range(mini(_allies.size(), _ally_cards.size())):
+        _refresh_ally_card(_allies[index], _ally_cards[index])
+
+
+## The top-left readout mirrors the foe the cursor last rested on.
+func _refresh_target_readout() -> void :
+    if _enemy_name_label == null or _foes.is_empty():
+        return
+    var living: Array[int] = _living_foes()
+    if _target_foe_index >= _foes.size() or (_actor_down(_foes[_target_foe_index], false) and not living.is_empty()):
+        _target_foe_index = living[0] if not living.is_empty() else 0
+    var foe: Dictionary = _foes[_target_foe_index]
+    _enemy_name_label.text = str(foe.get("name"))
+    _fit_label_font(_enemy_name_label, 22, 12)
+    _enemy_lv_label.text = "Lv %d" % int(foe.get("level", 1))
+    _enemy_hp_text.text = "%d / %d" % [maxi(int(foe.get("hp", 0)), 0), int(foe.get("max_hp", 1))]
+    var ratio: float = clampf(float(foe.get("hp", 0)) / float(foe.get("max_hp", 1)), 0.0, 1.0)
+    _enemy_hp_bar.size.x = ENEMY_HP_BAR_W * ratio
+    _enemy_hp_ghost.size.x = ENEMY_HP_BAR_W * ratio
+    if _enemy_medallion != null:
+        _enemy_medallion.texture = _cropped_portrait(_foe_portrait_texture(foe), 128, true)
+    var status_extra: Array[Dictionary] = []
+    if exposed_turns > 0 and foe == _foes[0]:
+        status_extra.append({
+            "id": "exposed", "label": "EXP", "count": exposed_turns,
+            "tooltip": "Exposed · takes amplified damage · %d turn%s" % [
+                exposed_turns, "" if exposed_turns == 1 else "s"],
+        })
+    _refresh_status_row(_enemy_status_row, foe, status_extra)
+    if _intent_label != null:
+        var intent: Dictionary = foe.get("intent", {}) as Dictionary
+        var telegraph: String = str(intent.get("telegraph", ""))
+        if str(intent.get("kind", "")) == "heavy":
+            _intent_label.add_theme_color_override("font_color", COLOR_HP.lightened(0.3))
+        else:
+            _intent_label.add_theme_color_override("font_color", Color(0.98, 0.92, 0.78, 0.98))
+        _intent_label.text = telegraph if not telegraph.is_empty() else "It watches you."
+
+
+func _refresh_foe_overlay(foe: Dictionary) -> void :
+    var ui: Dictionary = _foe_ui(foe)
+    if ui.is_empty():
+        return
+    var bar_w: float = float(ui.get("bar_w", 120.0))
+    var ratio: float = clampf(float(foe.get("hp", 0)) / float(foe.get("max_hp", 1)), 0.0, 1.0)
+    (ui["hp_bar"] as Control).size.x = bar_w * ratio
+    (ui["hp_text"] as Label).text = "%d / %d" % [maxi(int(foe.get("hp", 0)), 0), int(foe.get("max_hp", 1))]
+    var status_extra: Array[Dictionary] = []
+    if exposed_turns > 0 and foe == _foes[0]:
+        status_extra.append({
+            "id": "exposed", "label": "EXP", "count": exposed_turns,
+            "tooltip": "Exposed · takes amplified damage · %d turn%s" % [
+                exposed_turns, "" if exposed_turns == 1 else "s"],
+        })
+    _refresh_status_row(ui["status_row"] as HBoxContainer, foe, status_extra)
+
+
+func _refresh_ally_card(ally: Dictionary, card: Dictionary) -> void :
+    (card["name_label"] as Label).text = str(ally.get("name"))
+    (card["lv_label"] as Label).text = "Lv.%d" % int(ally.get("level", 1))
+    var max_hp: int = int(ally.get("max_hp", 1))
+    var hp: int = _ally_hp(ally)
+    (card["hp_text"] as Label).text = "%d / %d" % [hp, max_hp]
+    (card["hp_bar"] as Control).size.x = float(card.get("bar_w", PLAYER_HP_BAR_W)) * clampf(float(hp) / float(max_hp), 0.0, 1.0)
+    _refresh_sp_pips_for(card, ally)
+    var status_extra: Array[Dictionary] = []
+    if bool(ally.get("downed", false)) or hp <= 0:
+        status_extra.append({"id": "down", "label": "KO", "count": 0, "tooltip": "Down · cannot act until revived"})
+    if bool(ally.get("focus", false)):
+        status_extra.append({"id": "focus", "label": "FOC", "count": 0, "tooltip": "Focus · next attack deals double damage"})
+    if bool(ally.get("guarding", false)):
+        status_extra.append({"id": "guard", "label": "GRD", "count": 0, "tooltip": "Guard · incoming damage is halved"})
+    _refresh_status_row(card["status_row"] as HBoxContainer, ally, status_extra)
+    (card["root"] as Control).modulate.a = 0.55 if (bool(ally.get("downed", false)) or hp <= 0) else 1.0
+    if str(ally.get("kind")) == "player" and card.get("xp_text") != null:
+        (card["xp_text"] as Label).text = "%d / %d" % [GameManager.player_xp, GameManager.xp_to_next_level()]
+        if card.get("xp_bar") != null:
+            (card["xp_bar"] as Control).size.x = (float(card.get("bar_w", PLAYER_HP_BAR_W)) - 24.0) * clampf(float(GameManager.player_xp) / float(GameManager.xp_to_next_level()), 0.0, 1.0)
+
+
+## Gold pop on the card of whoever is choosing an action right now.
+func _set_active_ally(ally: Variant) -> void :
+    for index in range(_ally_cards.size()):
+        var root: Control = _ally_cards[index]["root"]
+        var rect: Rect2 = _ally_cards[index]["rect"]
+        var active: bool = ally is Dictionary and index < _allies.size() and _allies[index] == ally
+        var target_x: = rect.position.x + (10.0 if active else 0.0)
+        var slide: = create_tween()
+        slide.tween_property(root, "position:x", target_x, 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+        root.modulate = Color(1.12, 1.08, 0.96) if active else (root.modulate if root.modulate.a < 1.0 else Color.WHITE)
+
+
+## Small acting-actor tag above the command row ("ARLO'S MOVE").
+func _show_menu_actor(ally: Dictionary) -> void :
+    if _menu_info_name == null:
+        return
+    _menu_actor_text = "%s" % str(ally.get("name", "")).to_upper()
+
+
+var _menu_actor_text: String = ""
+
+
+## Rebuild the right-edge queue strip from the REAL round order: the next up to
+## 4 turns starting at the current queue position (peeking into a predicted next
+## round when the current one is nearly done).
+func _update_turn_order_view(animate: bool = true) -> void :
+    var display: Array = []
+    var pos: = _queue_pos
+    var queue: Array[Dictionary] = _round_queue
+    var safety: = 0
+    while display.size() < 4 and safety < 3:
+        if pos >= queue.size():
+            queue = _build_round_queue()
+            pos = 0
+            safety += 1
+            if queue.is_empty():
+                break
+            continue
+        var entry: Dictionary = queue[pos]
+        var actor: Dictionary = _actor_for_entry(entry)
+        pos += 1
+        if actor.is_empty():
+            continue
+        var is_ally: = str(entry.get("side")) == "ally"
+        if _actor_down(actor, is_ally):
+            continue
+        var texture: Texture2D = null
+        if is_ally:
+            texture = _ally_portrait_texture(actor)
+        else:
+            texture = _foe_portrait_texture(actor)
+        display.append({"texture": texture, "label": str(actor.get("name", ""))})
+    _rebuild_turn_cards(display, animate)
 
 
 func _finish(result: String) -> void :
@@ -2075,7 +3494,8 @@ func _refresh_menu_info() -> void:
     var icon_texture: Texture2D = _load_png_texture(icon_path) if not icon_path.is_empty() else null
     _menu_info_icon.texture = icon_texture
     _menu_info_icon.visible = icon_texture != null
-    _menu_info_name.text = label_text
+    # In party battles the readout carries whose move this is: "ARLO · Attack".
+    _menu_info_name.text = ("%s · %s" % [_menu_actor_text, label_text]) if not _menu_actor_text.is_empty() else label_text
     var desc := ""
     if _menu_index < _menu_descs.size():
         desc = _menu_descs[_menu_index].strip_edges()
@@ -2176,6 +3596,10 @@ func _menu_icon_path(id: String, label: String) -> String:
         if lower_label.contains("potion") or lower_label.contains("tonic") or lower_label.contains("elixir") or lower_label.contains("×"):
             return TEX_B2_ICON_ITEM
         return TEX_B2_ICON_SKILL
+    # Named skill entries (companion pool ids like "venom_fang") fall back to the
+    # generic skill glyph until a dedicated icon ships.
+    if id != "back" and not id.is_empty():
+        return TEX_B2_ICON_SKILL
     return ""
 
 
@@ -2239,6 +3663,25 @@ func _unhandled_input(event: InputEvent) -> void :
                 if _menu_index < _menu_ids.size():
                     _menu_picked.emit(_menu_ids[_menu_index])
                 get_viewport().set_input_as_handled()
+            UiMode.TARGET:
+                if _target_pos < _target_candidates.size():
+                    _target_picked.emit(_target_candidates[_target_pos])
+                get_viewport().set_input_as_handled()
+        return
+    if _ui_mode == UiMode.TARGET:
+        if event.is_action_pressed("ui_cancel"):
+            _target_picked.emit(-1)
+            get_viewport().set_input_as_handled()
+        elif event.is_action_pressed("ui_right") or event.is_action_pressed("ui_down"):
+            if not _target_candidates.is_empty():
+                _target_pos = (_target_pos + 1) % _target_candidates.size()
+                _update_target_arrows()
+            get_viewport().set_input_as_handled()
+        elif event.is_action_pressed("ui_left") or event.is_action_pressed("ui_up"):
+            if not _target_candidates.is_empty():
+                _target_pos = (_target_pos - 1 + _target_candidates.size()) % _target_candidates.size()
+                _update_target_arrows()
+            get_viewport().set_input_as_handled()
         return
     if _ui_mode != UiMode.MENU:
         return
@@ -2255,31 +3698,6 @@ func _unhandled_input(event: InputEvent) -> void :
 
 
 
-
-
-func _refresh_enemy_panel() -> void :
-    _enemy_name_label.text = _enemy_name()
-    _fit_label_font(_enemy_name_label, 22, 12)
-    _enemy_lv_label.text = "Lv %d" % int(enemy.get("level", 1))
-    _enemy_hp_text.text = "%d / %d" % [maxi(enemy_hp, 0), enemy_max_hp]
-    _enemy_status_label.text = "EXPOSED %d" % exposed_turns if exposed_turns > 0 else ""
-
-
-func _refresh_player_panel() -> void :
-    var max_hp: int = int(player_stats.get("max_hp", 80))
-    _player_panel_label.text = _player_name()
-    _player_lv_label.text = "Lv.%d" % GameManager.player_level
-    _player_hp_text.text = "%d / %d" % [GameManager.get_player_hp(), max_hp]
-    var statuses: Array[String] = []
-    if focus_active:
-        statuses.append("FOCUS")
-    if hexed:
-        statuses.append("HEX")
-    _player_status_label.text = "  ·  ".join(statuses)
-    _player_xp_text.text = "%d / %d" % [GameManager.player_xp, GameManager.xp_to_next_level()]
-    _refresh_sp_pips()
-    _player_hp_bar.size.x = PLAYER_HP_BAR_W * clampf(float(GameManager.get_player_hp()) / float(max_hp), 0.0, 1.0)
-    _xp_bar.size.x = PLAYER_HP_BAR_W * clampf(float(GameManager.player_xp) / float(GameManager.xp_to_next_level()), 0.0, 1.0)
 
 
 func _enemy_name() -> String:

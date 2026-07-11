@@ -5,26 +5,39 @@ extends Node
 ## reimplementations) against a synthetic chapter flow, then replays chapter
 ## 1's REAL measured dialogue-node counts to prove a diligent talker
 ## converges near the boss's level instead of hitting L20+.
+## Run through StrictSceneTestRunner so parse/load failures return a non-zero code:
+##   godot --headless --path . res://scenes/dev/StrictSceneTestRunner.tscn \
+##     -- res://tools/XpBalanceQAPreview.tscn
 
 const BattleSceneScript := preload("res://scripts/battle/BattleScene.gd")
+
+var _failures: int = 0
+
+
+func _check(condition: bool, message: String) -> void:
+	if condition:
+		print("  ok  - %s" % message)
+		return
+	_failures += 1
+	push_error("[XpBalanceQA] FAIL: %s" % message)
 
 
 func _ready() -> void:
 	# ── gap-factor table (must mirror enemy_balance.xp_gap_factor exactly) ──────
 	GameManager.reset_combat_progress()
 	GameManager.player_level = 3
-	assert(GameManager.xp_gap_factor(5) == 1.25, "2+ below content -> catch-up 1.25")
+	_check(GameManager.xp_gap_factor(5) == 1.25, "2+ below content -> catch-up 1.25")
 	GameManager.player_level = 5
-	assert(GameManager.xp_gap_factor(5) == 1.0, "on-level -> 1.0")
+	_check(GameManager.xp_gap_factor(5) == 1.0, "on-level -> 1.0")
 	GameManager.player_level = 6
-	assert(GameManager.xp_gap_factor(5) == 0.7, "+1 over -> 0.7")
+	_check(GameManager.xp_gap_factor(5) == 0.7, "+1 over -> 0.7")
 	GameManager.player_level = 7
-	assert(GameManager.xp_gap_factor(5) == 0.45, "+2 over -> 0.45")
+	_check(GameManager.xp_gap_factor(5) == 0.45, "+2 over -> 0.45")
 	GameManager.player_level = 8
-	assert(GameManager.xp_gap_factor(5) == 0.25, "+3 over -> 0.25")
+	_check(GameManager.xp_gap_factor(5) == 0.25, "+3 over -> 0.25")
 	GameManager.player_level = 12
-	assert(GameManager.xp_gap_factor(5) == 0.1, "+4 or more -> floor 0.1")
-	assert(GameManager.xp_gap_factor(0) == GameManager.xp_gap_factor(1), "reference floors at 1")
+	_check(GameManager.xp_gap_factor(5) == 0.1, "+4 or more -> floor 0.1")
+	_check(GameManager.xp_gap_factor(0) == GameManager.xp_gap_factor(1), "reference floors at 1")
 	print("[XpBalanceQA] OK: xp_gap_factor mirrors enemy_balance.py's table")
 
 	# ── ChapterFlow zone-distance BFS + expected level ──────────────────────────
@@ -44,9 +57,9 @@ func _ready() -> void:
 	for zone_index in range(5):
 		ChapterFlow.zone_index = zone_index
 		var zid := str(ChapterFlow.current_zone().get("zone_id"))
-		assert(ChapterFlow.current_zone_distance() == int(distance_by_zone[zid]),
+		_check(ChapterFlow.current_zone_distance() == int(distance_by_zone[zid]),
 			"BFS distance for %s: expected %d got %d" % [zid, int(distance_by_zone[zid]), ChapterFlow.current_zone_distance()])
-		assert(ChapterFlow.expected_level_here() == int(expected_by_zone[zid]),
+		_check(ChapterFlow.expected_level_here() == int(expected_by_zone[zid]),
 			"expected level for %s" % zid)
 	print("[XpBalanceQA] OK: current_zone_distance BFS + expected_level_here match enemy_balance anchors")
 
@@ -54,7 +67,7 @@ func _ready() -> void:
 	ChapterFlow.flow = {"chapters": [{"chapter": 2, "zones": [{"zone_id": "c2z1", "connections": []}]}]}
 	ChapterFlow.chapter_index = 0
 	ChapterFlow.zone_index = 0
-	assert(ChapterFlow.expected_level_here() == 4, "chapter 2 entrance expects level 4")
+	_check(ChapterFlow.expected_level_here() == 4, "chapter 2 entrance expects level 4")
 	print("[XpBalanceQA] OK: chapter step (+3/chapter) mirrored")
 
 	# ── award_talk_xp applies the governor (real call path) ─────────────────────
@@ -63,31 +76,32 @@ func _ready() -> void:
 	ChapterFlow.zone_index = 0
 	GameManager.reset_combat_progress()
 	var res1: Dictionary = GameManager.award_talk_xp("npc_a", "n1", "quest")
-	assert(bool(res1.get("awarded")) and int(res1.get("amount")) == 14,
+	_check(bool(res1.get("awarded")) and int(res1.get("amount")) == 14,
 		"on-level quest talk pays full 14, got %s" % str(res1))
 	var res_dup: Dictionary = GameManager.award_talk_xp("npc_a", "n1", "quest")
-	assert(not bool(res_dup.get("awarded")), "dedup ledger still blocks repeat nodes")
+	_check(not bool(res_dup.get("awarded")), "dedup ledger still blocks repeat nodes")
 	GameManager.player_level = 8  # 7 over the zone's expected level 1
 	var res2: Dictionary = GameManager.award_talk_xp("npc_a", "n2", "quest")
-	assert(int(res2.get("amount")) == 1, "far over-leveled quest talk decays to the 1-XP floor, got %s" % str(res2))
+	_check(int(res2.get("amount")) == 1, "far over-leveled quest talk decays to the 1-XP floor, got %s" % str(res2))
 	var res3: Dictionary = GameManager.award_talk_xp("npc_a", "n3", "world")
-	assert(int(res3.get("amount")) == 1, "world talk floors at 1 XP, never 0")
+	_check(int(res3.get("amount")) == 1, "world talk floors at 1 XP, never 0")
 	print("[XpBalanceQA] OK: award_talk_xp scales by the governor and floors at 1 XP")
 
 	# ── battle XP path (real BattleScene._scaled_battle_xp) ─────────────────────
 	var battle := BattleSceneScript.new()
 	battle.enemy = {"level": 3, "xp_reward": 45}
 	GameManager.player_level = 3
-	assert(battle._scaled_battle_xp(45) == 45, "on-level enemy pays full reward")
+	_check(battle._scaled_battle_xp(45, 3) == 45, "on-level enemy pays full reward")
 	GameManager.player_level = 5
-	assert(battle._scaled_battle_xp(45) == 20, "+2 over the enemy -> 45*0.45 = 20")
+	_check(battle._scaled_battle_xp(45, 3) == 20, "+2 over the enemy -> 45*0.45 = 20")
 	GameManager.player_level = 12
-	assert(battle._scaled_battle_xp(45) == 5, "far over-leveled grinding -> 45*0.1 = 5")
+	_check(battle._scaled_battle_xp(45, 3) == 5, "far over-leveled grinding -> 45*0.1 = 5")
 	GameManager.player_level = 1
-	assert(battle._scaled_battle_xp(45) == 56, "2 below the enemy -> catch-up 45*1.25 = 56")
+	_check(battle._scaled_battle_xp(45, 3) == 56, "2 below the enemy -> catch-up 45*1.25 = 56")
 	battle.enemy = {}  # legacy enemy with no level -> falls back to the zone anchor
 	GameManager.player_level = 1
-	assert(battle._scaled_battle_xp(30) == 30, "no enemy level -> zone anchor keeps full value at L1")
+	_check(battle._scaled_battle_xp(30, ChapterFlow.expected_level_here()) == 30,
+		"no enemy level -> zone anchor keeps full value at L1")
 	battle.free()
 	print("[XpBalanceQA] OK: battle XP scales by enemy level (with zone-anchor fallback)")
 
@@ -118,9 +132,12 @@ func _ready() -> void:
 			GameManager.award_talk_xp("npc_sim", "w%d" % node_counter, "world")
 	var final_level := GameManager.player_level
 	print("[XpBalanceQA] diligent talker after ALL %d chapter-1 nodes -> level %d" % [node_counter, final_level])
-	assert(final_level >= 6 and final_level <= 9,
+	_check(final_level >= 6 and final_level <= 9,
 		"diligent talker must land in the boss's challenge band (6-9), got %d" % final_level)
 	print("[XpBalanceQA] OK: full-talk chapter 1 converges to L%d (boss is L6) instead of L20+" % final_level)
 
-	print("[XpBalanceQA] ALL CHECKS PASSED")
-	get_tree().quit()
+	if _failures == 0:
+		print("[XpBalanceQA] ALL CHECKS PASSED")
+	else:
+		print("[XpBalanceQA] %d CHECK(S) FAILED" % _failures)
+	get_tree().quit(_failures)

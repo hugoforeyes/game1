@@ -9,6 +9,15 @@ battle ([scripts/battle/BattleScene.gd](scripts/battle/BattleScene.gd)).
 
 Battle mechanics:
 
+- Battles are actor-based and support the protagonist plus up to two travelling
+  companions against one to three enemies. Every actor has its own HP, SP, speed,
+  turn and target; companion HP persists between fights.
+- The protagonist keeps the fixed eight-skill progression
+  (`1, 1, 3, 6, 9, 12, 15, 18`). Companions receive a stable four-skill kit from
+  SceneBuilder's 23-skill pool and unlock its slots at levels `1, 3, 6, 10`.
+- Seventeen shared effects cover poison, burn, freeze, sleep, paralysis, stun,
+  blind, silence, slow, haste, shields, regen, stat changes, armor break and
+  taunt. Battle cards render dedicated icons, remaining turns and tooltips.
 - The enemy telegraphs its next move one turn ahead — `Guard` halves it (and
   restores 1 SP); `guard_break` skills punish predictable guarding.
 - `Probe` opens story dialogue choices from the enemy's generated weakness.
@@ -20,11 +29,28 @@ Battle mechanics:
 - XP levels the player up (stats + skill unlocks) via
   [GameManager.gd](autoloads/GameManager.gd).
 
+Party balance preserves the original solo 1v1. Minions gain up to two one-level-
+lower echoes, elites gain at most one, and story bosses stay visually unique.
+Against a larger living party a boss gains 55% HP per extra opening ally and up
+to three interleaved actions; its action count falls when an ally is down so a
+loss does not snowball irreversibly. Elite/boss hard-control resistance prevents
+permanent stun-lock, while DoTs and soft debuffs remain reliable. Backend balance
+manifests expose encounter-size and raw-XP projections for party sizes 1–3.
+
+The 31 dedicated four-frame skill animations live in
+`assets/fx/skills/<skill_id>_sheet.png` (512×128; four 128×128 frames). The 18
+status/focus icons live in `assets/ui/battle/status/`. Their reviewed OpenAI-
+generated source sheets and party-battle mockup are preserved in the parent
+workspace's `battle_art_review/` folder.
+
 If a package has no enemies, a built-in fallback roster spawns so combat is
-always playable. Headless battle smoke test:
+always playable. Relevant regression checks:
 
 ```bash
-/Applications/Godot.app/Contents/MacOS/Godot --headless --path . res://scenes/dev/BattleSmoke.tscn --quit-after 6000
+/Applications/Godot.app/Contents/MacOS/Godot --headless --path . res://scenes/dev/PartyBattleSmoke.tscn
+/Applications/Godot.app/Contents/MacOS/Godot --headless --path . -s res://scripts/dev/ProgressionSmoke.gd
+/Applications/Godot.app/Contents/MacOS/Godot --headless --path . res://scenes/dev/StrictSceneTestRunner.tscn -- res://tools/XpBalanceQAPreview.tscn
+/Applications/Godot.app/Contents/MacOS/Godot --headless --path . res://scenes/dev/PartySmoke.tscn
 ```
 
 ## Export To Web
@@ -34,13 +60,13 @@ always playable. Headless battle smoke test:
 You can export and serve the web build with one command:
 
 ```bash
-/Users/dinhhuynh/Documents/GameV1/run_web.sh
+/Users/dinhhuynh/Documents/FULLGAME/GameV1/run_web.sh
 ```
 
 Or choose a different port:
 
 ```bash
-/Users/dinhhuynh/Documents/GameV1/run_web.sh 8001
+/Users/dinhhuynh/Documents/FULLGAME/GameV1/run_web.sh 8001
 ```
 
 ### 1. Install Godot export templates
@@ -58,12 +84,12 @@ Install the templates for `4.6.1` before exporting.
 Run from the project root:
 
 ```bash
-cd /Users/dinhhuynh/Documents/GameV1
+cd /Users/dinhhuynh/Documents/FULLGAME/GameV1
 mkdir -p exports/web
-/Applications/Godot.app/Contents/MacOS/Godot --headless --path /Users/dinhhuynh/Documents/GameV1 --export-release Web exports/web/index.html
+/Applications/Godot.app/Contents/MacOS/Godot --headless --path /Users/dinhhuynh/Documents/FULLGAME/GameV1 --export-release Web exports/web/index.html
 ```
 
-If export succeeds, these files should exist in `/Users/dinhhuynh/Documents/GameV1/exports/web`:
+If export succeeds, these files should exist in `/Users/dinhhuynh/Documents/FULLGAME/GameV1/exports/web`:
 
 - `index.html`
 - `index.js`
@@ -75,7 +101,7 @@ If export succeeds, these files should exist in `/Users/dinhhuynh/Documents/Game
 Serve the exported folder, not the project root:
 
 ```bash
-cd /Users/dinhhuynh/Documents/GameV1/exports/web
+cd /Users/dinhhuynh/Documents/FULLGAME/GameV1/exports/web
 python3 -m http.server 8000
 ```
 
@@ -102,14 +128,14 @@ You started the server from the wrong folder.
 Wrong:
 
 ```bash
-cd /Users/dinhhuynh/Documents/GameV1
+cd /Users/dinhhuynh/Documents/FULLGAME/GameV1
 python3 -m http.server 8000
 ```
 
 Correct:
 
 ```bash
-cd /Users/dinhhuynh/Documents/GameV1/exports/web
+cd /Users/dinhhuynh/Documents/FULLGAME/GameV1/exports/web
 python3 -m http.server 8000
 ```
 
@@ -142,7 +168,7 @@ This project includes a custom web intro flow.
 
 When you export for web, the file `assets/intro/intro.webm` is copied into the exported folder by the plugin in:
 
-- [addons/intro_copy/export_plugin.gd](/Users/dinhhuynh/Documents/GameV1/addons/intro_copy/export_plugin.gd)
+- [addons/intro_copy/export_plugin.gd](/Users/dinhhuynh/Documents/FULLGAME/GameV1/addons/intro_copy/export_plugin.gd)
 
 So after export you should also see:
 
@@ -150,4 +176,4 @@ So after export you should also see:
 
 inside:
 
-- `/Users/dinhhuynh/Documents/GameV1/exports/web`
+- `/Users/dinhhuynh/Documents/FULLGAME/GameV1/exports/web`

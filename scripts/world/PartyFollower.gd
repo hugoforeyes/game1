@@ -8,8 +8,13 @@ const FPS := 8.0
 const HISTORY_MAX := 360
 const FOLLOW_DISTANCE := 58.0
 const MIN_PLAYER_SEPARATION := 44.0
-const CATCHUP_LERP := 0.35
-const IDLE_COMFORT_RADIUS := 18.0
+const TRAIL_SAMPLE_DISTANCE := 1.5
+const FOLLOW_SPEED := 360.0
+const CATCHUP_SPEED := 600.0
+const CATCHUP_DISTANCE := 174.0
+const FORMATION_ARRIVE_DISTANCE := 2.0
+const PLAYER_AVOID_RADIUS := 50.0
+const ORBIT_STEP_RADIANS := 0.42
 
 var npc_id: String = ""
 
@@ -21,6 +26,7 @@ var _lag_frames: int = 26
 var _facing: String = "down"
 var _prev_position: Vector2 = Vector2.ZERO
 var _last_player_position: Vector2 = Vector2.ZERO
+var _formation_orbit_sign: float = 0.0
 
 
 func setup(p_npc_id: String, texture: Texture2D, player: Node2D, lag_frames: int = 26) -> void:
@@ -86,7 +92,7 @@ func _setup_sprite(texture: Texture2D) -> void:
 	_anim.pause()
 
 
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
 	if _player == null or not is_instance_valid(_player):
 		return
 	if GameManager.ui_blocking_input:
@@ -99,20 +105,69 @@ func _physics_process(_delta: float) -> void:
 	var player_is_moving := player_position.distance_to(_last_player_position) > 0.35
 	_last_player_position = player_position
 
-	_history.append(player_position)
-	if _history.size() > HISTORY_MAX:
-		_history.pop_front()
+	# Facing changes are not movement. Recording the same player position every
+	# frame would eventually erase the real trail and replace it with a new
+	# direction-based offset, making the companion jump across the player.
+	if _history.is_empty() or player_position.distance_to(_history.back()) >= TRAIL_SAMPLE_DISTANCE:
+		_history.append(player_position)
+		if _history.size() > HISTORY_MAX:
+			_history.pop_front()
 
+	_prev_position = global_position
+	if not player_is_moving:
+		_move_into_idle_formation(delta)
+		return
+	_formation_orbit_sign = 0.0
 	var idx: int = _history.size() - 1 - _lag_frames
 	var target: Vector2 = _history[idx] if idx >= 0 else _offset_behind_player(FOLLOW_DISTANCE)
 	target = _separated_from_player(target)
-	_prev_position = global_position
-	if not player_is_moving and _is_idle_close_enough():
-		_face_player_direction()
-		return
-	global_position = global_position.lerp(target, CATCHUP_LERP)
-	global_position = _separated_from_player(global_position)
+	var follow_speed := CATCHUP_SPEED if global_position.distance_to(target) > CATCHUP_DISTANCE else FOLLOW_SPEED
+	global_position = global_position.move_toward(target, follow_speed * delta)
 	_update_animation(global_position - _prev_position)
+
+
+func _move_into_idle_formation(delta: float) -> void:
+	var formation_target := _offset_behind_player(FOLLOW_DISTANCE)
+	if global_position.distance_to(formation_target) <= FORMATION_ARRIVE_DISTANCE:
+		global_position = formation_target
+		_update_animation(Vector2.ZERO)
+		_face_player_direction()
+		_formation_orbit_sign = 0.0
+		return
+
+	var navigation_target := _formation_navigation_target(formation_target)
+	global_position = global_position.move_toward(navigation_target, FOLLOW_SPEED * delta)
+	_update_animation(global_position - _prev_position)
+
+
+func _formation_navigation_target(formation_target: Vector2) -> Vector2:
+	var player_pos := _player.global_position
+	var current_rel := global_position - player_pos
+	var target_rel := formation_target - player_pos
+	if current_rel.length() < PLAYER_AVOID_RADIUS:
+		var escape_dir := current_rel.normalized() if current_rel.length() > 0.01 else -_player_facing_vector()
+		return player_pos + escape_dir * PLAYER_AVOID_RADIUS
+	if not _segment_crosses_player(global_position, formation_target):
+		_formation_orbit_sign = 0.0
+		return formation_target
+
+	var current_angle := current_rel.angle()
+	var target_angle := target_rel.angle()
+	var angle_delta := wrapf(target_angle - current_angle, -PI, PI)
+	if _formation_orbit_sign == 0.0:
+		_formation_orbit_sign = 1.0 if angle_delta >= 0.0 else -1.0
+	var step := minf(absf(angle_delta), ORBIT_STEP_RADIANS) * _formation_orbit_sign
+	return player_pos + Vector2.from_angle(current_angle + step) * FOLLOW_DISTANCE
+
+
+func _segment_crosses_player(from: Vector2, to: Vector2) -> bool:
+	var segment := to - from
+	var length_sq := segment.length_squared()
+	if length_sq <= 0.001:
+		return false
+	var t := clampf((_player.global_position - from).dot(segment) / length_sq, 0.0, 1.0)
+	var closest := from + segment * t
+	return closest.distance_to(_player.global_position) < PLAYER_AVOID_RADIUS
 
 
 func _separated_from_player(point: Vector2) -> Vector2:
@@ -122,10 +177,12 @@ func _separated_from_player(point: Vector2) -> Vector2:
 	var diff := point - player_pos
 	if diff.length() >= MIN_PLAYER_SEPARATION:
 		return point
-	var behind := _offset_behind_player(FOLLOW_DISTANCE)
-	if behind.distance_to(player_pos) >= MIN_PLAYER_SEPARATION:
-		return behind
-	var direction := diff.normalized() if diff.length() > 0.01 else -_player_facing_vector()
+	# Keep the target on the follower's CURRENT side of the player. Never derive
+	# this correction from facing direction: turning in place must not swap sides.
+	var current_diff := global_position - player_pos
+	var direction := current_diff.normalized() if current_diff.length() > 0.01 else diff.normalized()
+	if direction.length() <= 0.01:
+		direction = Vector2.DOWN
 	return player_pos + direction * MIN_PLAYER_SEPARATION
 
 
@@ -133,13 +190,6 @@ func _offset_behind_player(distance: float) -> Vector2:
 	if _player == null or not is_instance_valid(_player):
 		return global_position
 	return _player.global_position - _player_facing_vector() * distance
-
-
-func _is_idle_close_enough() -> bool:
-	if _player == null or not is_instance_valid(_player):
-		return false
-	var distance_to_player := global_position.distance_to(_player.global_position)
-	return distance_to_player >= MIN_PLAYER_SEPARATION and distance_to_player <= FOLLOW_DISTANCE + IDLE_COMFORT_RADIUS
 
 
 func _player_facing_vector() -> Vector2:

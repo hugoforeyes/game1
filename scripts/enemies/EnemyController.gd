@@ -8,7 +8,7 @@ const CHASE_SPEED := 128.0
 const WANDER_SPEED := 44.0
 const AGGRO_COOLDOWN_SECONDS := 4.0
 
-enum State { IDLE, WANDER, CHASE, COOLDOWN, PASSIVE }
+enum State { IDLE, WANDER, CHASE, COOLDOWN, PASSIVE, RETURN_HOME }
 
 @onready var anim_sprite: AnimatedSprite2D = $AnimatedSprite2D
 @onready var shadow: Polygon2D = $Shadow
@@ -27,6 +27,14 @@ var target_position := Vector2.ZERO
 var last_facing: String = "down"
 var _player: Node2D = null
 var _battle_pending: bool = false
+var _return_home_active: bool = false
+var _return_home_position := Vector2.ZERO
+var _return_path: Array[Vector2i] = []
+var _return_path_index: int = 0
+var _return_retry_timer: float = 0.0
+var _return_resume_state: State = State.WANDER
+var _return_home_suspended: bool = false
+var _cutscene_control_active: bool = false
 
 func setup(data: Dictionary, world_context: Dictionary) -> void:
 	enemy_data = data
@@ -54,6 +62,8 @@ func _physics_process(delta: float) -> void:
 		# Frozen during chats, battles, and cutscenes; cutscenes may drive
 		# position and animation directly while this gate holds.
 		velocity = Vector2.ZERO
+		if not _cutscene_control_active:
+			_update_animation()
 		return
 
 	match state:
@@ -69,12 +79,16 @@ func _physics_process(delta: float) -> void:
 			_check_aggro()
 		State.CHASE:
 			_chase_step()
+		State.RETURN_HOME:
+			_return_home_step(delta)
 
 	move_and_slide()
 	_update_animation()
 
 func is_hostile() -> bool:
-	return visible and not is_queued_for_deletion() and state != State.PASSIVE
+	var effectively_passive := state == State.PASSIVE \
+			or (_return_home_active and _return_resume_state == State.PASSIVE)
+	return visible and not is_queued_for_deletion() and not effectively_passive
 
 func start_battle_cooldown() -> void:
 	state = State.COOLDOWN
@@ -83,9 +97,109 @@ func start_battle_cooldown() -> void:
 	_battle_pending = false
 
 func become_passive() -> void:
-	state = State.PASSIVE
+	if _return_home_active:
+		_return_resume_state = State.PASSIVE
+	else:
+		state = State.PASSIVE
 	alert_label.visible = false
 	modulate = Color(1.0, 1.0, 1.0, 0.85)
+
+func return_home_to(world_position: Vector2) -> void:
+	## Post-cutscene movement is gameplay-owned. EnemyController follows a grid
+	## path with its normal collision/speed instead of being snapped by cutscene UI.
+	_cutscene_control_active = false
+	if not visible or is_queued_for_deletion():
+		return
+	if not _return_home_active and not _return_home_suspended:
+		_return_resume_state = State.PASSIVE if state == State.PASSIVE else State.WANDER
+	_return_home_suspended = false
+	_return_home_active = true
+	_return_home_position = world_position
+	_return_retry_timer = 0.0
+	_battle_pending = false
+	alert_label.visible = false
+	state = State.RETURN_HOME
+	_build_return_path()
+
+func is_returning_home() -> bool:
+	return _return_home_active
+
+func get_return_home_destination() -> Vector2:
+	return _return_home_position if _return_home_active else global_position
+
+func suspend_return_home_for_cutscene() -> void:
+	_cutscene_control_active = true
+	if not _return_home_active:
+		_return_resume_state = State.PASSIVE if state == State.PASSIVE else State.WANDER
+	_return_home_suspended = true
+	_return_home_active = false
+	_return_path.clear()
+	velocity = Vector2.ZERO
+
+func _return_home_step(delta: float) -> void:
+	if not _return_home_active:
+		_finish_return_home()
+		return
+	if _return_path_index >= _return_path.size():
+		if global_position.distance_to(_return_home_position) <= 3.0:
+			_finish_return_home()
+			return
+		_return_retry_timer -= delta
+		velocity = Vector2.ZERO
+		if _return_retry_timer <= 0.0:
+			_build_return_path()
+		return
+
+	var tile := _return_path[_return_path_index]
+	var target := _return_home_position if _return_path_index == _return_path.size() - 1 \
+			else _tile_to_pixel_center(tile)
+	var to_target := target - global_position
+	if to_target.length() <= 3.0:
+		global_position = target
+		_return_path_index += 1
+		if _return_path_index >= _return_path.size():
+			_finish_return_home()
+		return
+	velocity = to_target.normalized() * WANDER_SPEED
+
+func _build_return_path() -> void:
+	_return_path.clear()
+	_return_path_index = 0
+	var start := _pixel_to_tile(global_position)
+	var destination := _pixel_to_tile(_return_home_position)
+	if start == destination:
+		_return_path.append(destination)
+		return
+	if map_tile_size == Vector2i.ZERO or not _is_walkable(destination):
+		_return_retry_timer = 0.5
+		return
+
+	var astar := AStarGrid2D.new()
+	astar.region = Rect2i(Vector2i.ZERO, map_tile_size)
+	astar.cell_size = Vector2.ONE
+	astar.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_NEVER
+	astar.update()
+	for key in blocked_tiles:
+		var blocked_tile := _tile_from_key(str(key))
+		if astar.is_in_boundsv(blocked_tile):
+			astar.set_point_solid(blocked_tile, true)
+	if not astar.is_in_boundsv(start) or not astar.is_in_boundsv(destination):
+		_return_retry_timer = 0.5
+		return
+	var raw_path := astar.get_id_path(start, destination)
+	for index in range(1, raw_path.size()):
+		_return_path.append(raw_path[index])
+	if _return_path.is_empty():
+		_return_retry_timer = 0.5
+
+func _finish_return_home() -> void:
+	if _return_home_active:
+		global_position = _return_home_position
+	_return_home_active = false
+	_return_path.clear()
+	velocity = Vector2.ZERO
+	state = _return_resume_state
+	_pick_wander_target()
 
 func _check_aggro() -> void:
 	if _player == null or not is_instance_valid(_player):
@@ -205,6 +319,18 @@ func _setup_shadow() -> void:
 
 func _tile_to_pixel_center(tile: Vector2i) -> Vector2:
 	return Vector2(tile) * GameManager.TILE_SIZE + Vector2.ONE * (GameManager.TILE_SIZE * 0.5)
+
+func _pixel_to_tile(world_position: Vector2) -> Vector2i:
+	return Vector2i(
+		floori(world_position.x / float(GameManager.TILE_SIZE)),
+		floori(world_position.y / float(GameManager.TILE_SIZE)),
+	)
+
+func _tile_from_key(key: String) -> Vector2i:
+	var parts := key.split(":")
+	if parts.size() != 2:
+		return Vector2i(-1, -1)
+	return Vector2i(int(parts[0]), int(parts[1]))
 
 func _read_tile(raw: Variant) -> Vector2i:
 	if raw is Dictionary:

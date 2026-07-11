@@ -11,6 +11,7 @@ const ARRIVE_DISTANCE := 4.0
 const STUCK_DISTANCE_EPSILON := 1.5
 const STUCK_TIME_LIMIT := 0.8
 const MAX_PATH_SEARCH_NODES := 240
+const RETURN_HOME_FALLBACK_SPEED := 36.0
 
 enum State {
 	IDLE,
@@ -68,8 +69,10 @@ var _default_modulate: Color = Color.WHITE
 var _default_sprite_modulate: Color = Color.WHITE
 var _default_sprite_rotation_degrees: float = 0.0
 var _default_shadow_visible: bool = true
-var _scripted_return_active: bool = false
-var _scripted_return_restore_physics: bool = false
+var _return_home_active: bool = false
+var _return_home_tile := Vector2i.ZERO
+var _return_home_position := Vector2.ZERO
+var _cutscene_control_active: bool = false
 
 func setup(data: Dictionary, world_context: Dictionary) -> void:
 	npc_data = data
@@ -171,17 +174,18 @@ func _apply_normal_actor_state() -> void:
 	if _bubble != null:
 		_bubble.visible = true
 	update_quest_marker()
-	if _scripted_return_active:
-		# Narrative refreshes can re-apply the normal state to every actor while
-		# this NPC is still tweening home. Preserve scripted ownership: interaction
-		# stays live, but collision and ambient AI must remain off until arrival.
-		_scripted_return_restore_physics = true
-		_set_actor_collision_enabled(false)
+	if _return_home_active:
+		# A narrative refresh must not replace an in-flight gameplay return with
+		# ambient wandering. Return-home uses normal physics and collision.
+		_set_actor_collision_enabled(true)
+		set_physics_process(true)
+		_resume_return_home()
 		return
 	_set_actor_collision_enabled(true)
 	_start_behavior()
 
 func _apply_hidden_actor_state() -> void:
+	_cancel_return_home()
 	visible = false
 	velocity = Vector2.ZERO
 	set_physics_process(false)
@@ -189,6 +193,7 @@ func _apply_hidden_actor_state() -> void:
 	_set_actor_collision_enabled(false)
 
 func _apply_corpse_actor_state() -> void:
+	_cancel_return_home()
 	visible = true
 	velocity = Vector2.ZERO
 	state = State.IDLE
@@ -204,6 +209,7 @@ func _apply_corpse_actor_state() -> void:
 	shadow.visible = false
 
 func _apply_inactive_actor_state() -> void:
+	_cancel_return_home()
 	visible = true
 	velocity = Vector2.ZERO
 	state = State.IDLE
@@ -262,24 +268,22 @@ func _physics_process(delta: float) -> void:
 		# Frozen during chats, battles, and cutscenes; cutscenes may drive
 		# position and animation directly while this gate holds.
 		velocity = Vector2.ZERO
+		if not _cutscene_control_active:
+			# Chat/menu/battle owns no character animation, so stop the current walk.
+			# During a cutscene, CutscenePlayer is the sole animation authority.
+			_update_animation()
 		_update_shadow()
 		_suppress_bubble(true)
-		return
-	if _scripted_return_active:
-		# CutscenePlayer owns position + walk animation while the NPC returns home.
-		# Keep the normal physics tick alive solely for interaction presentation;
-		# running the AI/move_and_slide here would fight the scripted tween.
-		velocity = Vector2.ZERO
-		_update_shadow()
-		_update_interaction()
-		_update_bubble_alpha(delta)
 		return
 	match state:
 		State.WAITING, State.BLOCKED:
 			wait_timer -= delta
 			velocity = Vector2.ZERO
 			if wait_timer <= 0.0:
-				state = State.CHOOSING_TARGET
+				if _return_home_active:
+					_resume_return_home()
+				else:
+					state = State.CHOOSING_TARGET
 		State.CHOOSING_TARGET:
 			_choose_next_target()
 		State.MOVING:
@@ -293,36 +297,80 @@ func _physics_process(delta: float) -> void:
 	_update_bubble_alpha(delta)
 
 
-func set_scripted_return_active(active: bool) -> void:
-	## Allows post-cutscene walk-home motion and player interaction to coexist.
-	## Preserve actors whose physics was already disabled (corpse/inactive state)
-	## instead of accidentally reviving their AI when the return finishes.
-	if active == _scripted_return_active:
+func return_home_to(world_position: Vector2) -> void:
+	## Gameplay-owned post-cutscene return. The NPC keeps its ordinary physics,
+	## collision, animation and interaction while navigating back to this point.
+	_cutscene_control_active = false
+	if not can_return_home():
 		return
-	if active:
-		_scripted_return_restore_physics = is_physics_processing()
-		_scripted_return_active = true
-		velocity = Vector2.ZERO
-		if _scripted_return_restore_physics:
-			set_physics_process(true)
-		return
-	_scripted_return_active = false
-	velocity = Vector2.ZERO
-	set_physics_process(_scripted_return_restore_physics and can_restore_from_scripted_return())
-	_scripted_return_restore_physics = false
+	_return_home_active = true
+	_return_home_position = world_position
+	_return_home_tile = _pixel_to_tile(world_position)
+	current_tile = _pixel_to_tile(global_position)
+	_set_actor_collision_enabled(true)
+	set_physics_process(true)
+	_resume_return_home()
 
 
-func is_scripted_return_active() -> bool:
-	return _scripted_return_active
+func is_returning_home() -> bool:
+	return _return_home_active
 
 
-func can_restore_from_scripted_return() -> bool:
+func get_return_home_destination() -> Vector2:
+	return _return_home_position if _return_home_active else global_position
+
+
+func suspend_return_home_for_cutscene() -> void:
+	# CutscenePlayer records the destination first, then suspends gameplay motion.
+	# Its next release will issue a fresh return command to the same destination.
+	_cutscene_control_active = true
+	_cancel_return_home()
+
+
+func can_return_home() -> bool:
 	if not visible:
 		return false
 	var state_name := _actor_state_token(actor_state.get("state", ""))
 	var presentation := _actor_state_token(actor_state.get("presentation", ""))
 	return state_name not in ["dead", "hidden", "despawned", "removed", "inactive", "disabled"] \
 		and presentation not in ["corpse", "hidden", "despawn", "removed", "inactive", "none"]
+
+
+func _resume_return_home() -> void:
+	if not _return_home_active or not can_return_home():
+		_cancel_return_home()
+		return
+	current_tile = _pixel_to_tile(global_position)
+	if current_tile == _return_home_tile:
+		active_path = [_return_home_tile]
+	else:
+		active_path = _find_path(current_tile, _return_home_tile)
+	active_path_index = 0
+	desired_tile = _return_home_tile
+	if active_path.is_empty():
+		velocity = Vector2.ZERO
+		state = State.BLOCKED
+		wait_timer = 0.35
+		return
+	_set_next_path_target()
+	previous_position = global_position
+	stuck_timer = 0.0
+	state = State.MOVING
+
+
+func _finish_return_home() -> void:
+	global_position = _return_home_position
+	current_tile = _return_home_tile
+	velocity = Vector2.ZERO
+	_return_home_active = false
+	active_path.clear()
+	_start_behavior()
+
+
+func _cancel_return_home() -> void:
+	_return_home_active = false
+	active_path.clear()
+	velocity = Vector2.ZERO
 
 func _setup_interaction() -> void:
 	var inter: Dictionary = interaction
@@ -403,7 +451,10 @@ func _update_interaction() -> void:
 		velocity  = Vector2.ZERO
 	elif not is_active and _in_interaction_range:
 		_in_interaction_range = false
-		state = State.CHOOSING_TARGET
+		if _return_home_active:
+			_resume_return_home()
+		else:
+			state = State.CHOOSING_TARGET
 	if _in_interaction_range:
 		_face_player()
 
@@ -667,21 +718,33 @@ func _move_to_target() -> void:
 		active_path_index += 1
 		if active_path_index >= active_path.size():
 			velocity = Vector2.ZERO
-			_wait_random()
+			if _return_home_active:
+				_finish_return_home()
+			else:
+				_wait_random()
 			return
 		_set_next_path_target()
 		return
 
 	var direction: Vector2 = global_position.direction_to(target_position)
-	velocity = direction * speed
+	var movement_speed := _return_home_speed() if _return_home_active else speed
+	velocity = direction * movement_speed
 	move_and_slide()
 	_update_stuck_timer()
 	if get_slide_collision_count() > 0 or stuck_timer >= STUCK_TIME_LIMIT:
 		_handle_stuck()
 
+func _return_home_speed() -> float:
+	# Authored fixed NPCs legitimately use speed=0 for ambient behavior. Returning
+	# from a cutscene is a one-off navigation task and must still make progress;
+	# preserve the authored value and use this fallback only during that task.
+	return speed if speed > 0.0 else RETURN_HOME_FALLBACK_SPEED
+
 func _set_next_path_target() -> void:
 	target_tile = active_path[active_path_index]
-	target_position = _tile_to_pixel_center(target_tile)
+	target_position = _return_home_position \
+			if _return_home_active and target_tile == _return_home_tile \
+			else _tile_to_pixel_center(target_tile)
 
 func _update_stuck_timer() -> void:
 	if global_position.distance_to(previous_position) < STUCK_DISTANCE_EPSILON:
@@ -691,6 +754,13 @@ func _update_stuck_timer() -> void:
 		previous_position = global_position
 
 func _handle_stuck() -> void:
+	if _return_home_active:
+		# Dynamic bodies may temporarily occupy the route. Keep normal collision,
+		# wait briefly, then repath to the same home destination.
+		velocity = Vector2.ZERO
+		state = State.BLOCKED
+		wait_timer = 0.35
+		return
 	if str(movement.get("collision_behavior", "pause_then_repath")) != "pause_then_repath":
 		state = State.BLOCKED
 		wait_timer = 0.4
@@ -966,6 +1036,12 @@ func _read_tile_position(data: Dictionary) -> Vector2i:
 
 func _tile_to_pixel_center(tile: Vector2i) -> Vector2:
 	return Vector2(tile) * GameManager.TILE_SIZE + Vector2.ONE * (GameManager.TILE_SIZE * 0.5)
+
+func _pixel_to_tile(world_position: Vector2) -> Vector2i:
+	return Vector2i(
+		floori(world_position.x / float(GameManager.TILE_SIZE)),
+		floori(world_position.y / float(GameManager.TILE_SIZE)),
+	)
 
 func _tile_key(tile: Vector2i) -> String:
 	return "%s:%s" % [tile.x, tile.y]

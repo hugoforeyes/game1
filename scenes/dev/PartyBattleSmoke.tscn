@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/dev/PartyBattleSmoke.gd" id="1_psmoke"]
+
+[node name="PartyBattleSmoke" type="Node2D"]
+script = ExtResource("1_psmoke")

@@ -30,8 +30,8 @@ var _battle_active: bool = false
 var _zone_advancing: bool = false
 var _zone_hostiles_cleared_notified: bool = false
 var _triggered_cutscene_active: bool = false
-var _cutscene_actor_return_active: bool = false
 var _pending_triggered_cutscenes: Array = []  # queued cutscene dicts waiting to play
+var _cutscene_conversation_handoff_pending: bool = false
 
 func _ready() -> void:
 	NPCConversationManager._start_prewarm()
@@ -52,16 +52,24 @@ func _ready() -> void:
 			str(GameManager.get_scene_context().get("zone_id", "")),
 			GameManager.get_scene_package().get("cutscenes", []) as Array,
 		)
-		_maybe_start_cutscene.call_deferred()
-		if ChapterFlow.active:
-			QuestManager.notify_zone_entered.call_deferred(str(GameManager.get_scene_context().get("zone_id", "")))
-			PartyManager.notify_zone_entered.call_deferred(str(GameManager.get_scene_context().get("zone_id", "")))
-			_try_trigger_cutscene.call_deferred("zone_enter")
-		_fade_in_pending_zone_transition.call_deferred()
+		_complete_imported_zone_entry.call_deferred()
 	else:
 		_apply_background_limits(background.texture)
 		_spawn_enemies_for_builtin_world()
 		_fade_in_pending_zone_transition.call_deferred()
+
+func _complete_imported_zone_entry() -> void:
+	# Reveal the new zone before dispatching any opening/zone-enter cutscene. Starting
+	# one behind the persistent black transition layer can leave two independent UI
+	# owners fighting over ui_blocking_input and makes a valid cutscene look frozen.
+	await _fade_in_pending_zone_transition()
+	_maybe_start_cutscene()
+	if not ChapterFlow.active:
+		return
+	var zone_id := str(GameManager.get_scene_context().get("zone_id", ""))
+	QuestManager.notify_zone_entered(zone_id)
+	PartyManager.notify_zone_entered(zone_id)
+	_try_trigger_cutscene("zone_enter")
 
 func _build_imported_world() -> void:
 	_clear_generated_content()
@@ -671,6 +679,7 @@ func _fade_in_pending_zone_transition() -> void:
 	var root: Window = get_tree().root
 	var overlay := root.get_node_or_null(ZONE_TRANSITION_OVERLAY_NAME) as CanvasLayer
 	if overlay == null:
+		GameManager.ui_blocking_input = false
 		return
 	_set_zone_transition_status("")
 	await _settle_player_camera_for_transition()
@@ -1291,12 +1300,7 @@ func _maybe_start_cutscene() -> void:
 	print("[Main] starting opening cutscene actions=%d start_tiles=%d" % [actions.size(), start_tiles.size()])
 	var cutscene: CanvasLayer = CutscenePlayerScript.new()
 	add_child(cutscene)
-	_cutscene_actor_return_active = true
 	cutscene.cutscene_finished.connect(_check_zone_cleared)
-	cutscene.actor_return_finished.connect(func() -> void:
-		_cutscene_actor_return_active = false
-		_drain_triggered_cutscenes.call_deferred()
-	)
 	cutscene.play(actions, self, player, generated_characters, start_tiles)
 
 func _has_planned_opening_cutscene() -> bool:
@@ -1329,16 +1333,36 @@ func _try_trigger_cutscene(event_type: String, params: Dictionary = {}) -> void:
 		if str((queued as Dictionary).get("id", "")) == id:
 			return  # already queued
 	_pending_triggered_cutscenes.append(cutscene)
+	if _interrupt_active_chat_for_cutscene():
+		_cutscene_conversation_handoff_pending = true
+		_drain_triggered_cutscenes.call_deferred()
+		return
 	_drain_triggered_cutscenes()
+
+func _interrupt_active_chat_for_cutscene() -> bool:
+	var chatbox := get_tree().get_first_node_in_group("active_chatbox")
+	if chatbox == null or not is_instance_valid(chatbox) \
+			or not chatbox.has_method("interrupt_for_cutscene"):
+		return false
+	return bool(chatbox.call("interrupt_for_cutscene"))
+
+func has_pending_narrative_playback() -> bool:
+	# ChapterCompleteView uses this as an explicit priority barrier. Include the
+	# queue, the action phase, and CutscenePlayer's letterbox/camera cleanup phase.
+	return _triggered_cutscene_active \
+			or not _pending_triggered_cutscenes.is_empty() \
+			or get_tree().get_first_node_in_group("active_cutscene_player") != null
 
 func _drain_triggered_cutscenes() -> void:
 	if _pending_triggered_cutscenes.is_empty():
 		return
 	# Wait for a calm moment: no battle, no zone transition, no other cutscene or
-	# blocking UI (the opening cutscene and dialogue set ui_blocking_input).
+	# blocking UI (the opening cutscene and dialogue set ui_blocking_input). Actors
+	# returning home are deliberately not blockers; their controllers preserve the
+	# destination across a new cutscene and resume afterward.
 	if _battle_active or _zone_advancing or _triggered_cutscene_active \
-			or _cutscene_actor_return_active or GameManager.ui_blocking_input:
-		get_tree().create_timer(0.4).timeout.connect(_drain_triggered_cutscenes, CONNECT_ONE_SHOT)
+			or GameManager.ui_blocking_input:
+		get_tree().create_timer(0.05).timeout.connect(_drain_triggered_cutscenes, CONNECT_ONE_SHOT)
 		return
 	var cutscene: Dictionary = _pending_triggered_cutscenes.pop_front()
 	var id := str(cutscene.get("id", ""))
@@ -1350,7 +1374,8 @@ func _drain_triggered_cutscenes() -> void:
 
 func _play_triggered_cutscene(cutscene: Dictionary) -> void:
 	_triggered_cutscene_active = true
-	_cutscene_actor_return_active = true
+	var conversation_handoff := _cutscene_conversation_handoff_pending
+	_cutscene_conversation_handoff_pending = false
 	var actions: Array = cutscene.get("actions", []) as Array
 	var start_tiles: Dictionary = cutscene.get("start_tiles", {}) as Dictionary
 	print("[Main] triggered cutscene id=%s actions=%d start_tiles=%d" % [str(cutscene.get("id", "")), actions.size(), start_tiles.size()])
@@ -1359,11 +1384,14 @@ func _play_triggered_cutscene(cutscene: Dictionary) -> void:
 	cutscene_player.cutscene_finished.connect(func() -> void:
 		_triggered_cutscene_active = false
 		_check_zone_cleared.call_deferred()
-	)
-	cutscene_player.actor_return_finished.connect(func() -> void:
-		_cutscene_actor_return_active = false
 		_drain_triggered_cutscenes.call_deferred()
 	)
+	if conversation_handoff:
+		cutscene_player.actor_return_finished.connect(func() -> void:
+			# Quest/item ceremonies earned on the interrupted dialogue resume only
+			# after the cutscene UI and letterbox have fully left the stage.
+			AnnouncementCenter.set_conversation_active(false)
+		)
 	cutscene_player.play(actions, self, player, generated_characters, start_tiles)
 
 func _remaining_hostile_count() -> int:

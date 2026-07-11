@@ -104,11 +104,13 @@ var collected_item_pickup_ids: Dictionary = {}
 # completion). Unlocks the NEXT chapter on the world map; the player travels
 # there on their own schedule, nothing auto-advances.
 var completed_chapter_numbers: Dictionary = {}
-# npc_id -> {"level": int, "xp": int}. Only companions who have joined the party
-# accrue progression (they are the ones learning alongside the protagonist).
+# npc_id -> {"level": int, "xp": int, "hp": int}. Only companions who have joined
+# the party accrue progression (they are the ones learning alongside the
+# protagonist). "hp" persists between battles like the player's own (-1 = full).
 var companion_progress: Dictionary = {}
-# Dedup ledger for talk-XP: "<npc_id>::<node_id>" -> category already awarded.
-# This is the "đã nhận điểm kinh nghiệm chưa" history the game must remember.
+# Dedup ledger for talk-XP. New entries are scoped by chapter + zone so a recurring
+# NPC may legitimately reuse a dialogue-node id elsewhere in the story. Legacy
+# saves used "<npc_id>::<node_id>" and are migrated lazily on first encounter.
 var talk_log: Dictionary = {}
 
 func _base_player_stats() -> Dictionary:
@@ -210,9 +212,17 @@ func apply_hp_percent(percent: float) -> int:
 ## category: "quest" (a story beat) or "world" (a piece of lore) — different worth.
 ## Returns {awarded, category, amount, recipients, player_levels} for the UI.
 func award_talk_xp(npc_id: String, node_id: String, category: String) -> Dictionary:
-	var key := "%s::%s" % [npc_id, node_id]
+	var key := _scoped_talk_key(npc_id, node_id)
 	if talk_log.has(key):
 		return {"awarded": false}
+	var legacy_key := _legacy_talk_key(npc_id, node_id)
+	if talk_log.has(legacy_key):
+		# An old save proves this beat already paid once, but not where. Claim it for
+		# the current scope, remove the ambiguous key, and allow other scopes later.
+		talk_log[key] = talk_log[legacy_key]
+		talk_log.erase(legacy_key)
+		_autosave()
+		return {"awarded": false, "migrated": true}
 	talk_log[key] = category
 	var base_amount: int = TALK_XP_QUEST if category == "quest" else TALK_XP_WORLD
 	# Conversation XP is anchored to the zone the conversation happens in: once the
@@ -232,7 +242,19 @@ func award_talk_xp(npc_id: String, node_id: String, category: String) -> Diction
 	}
 
 func has_logged_talk(npc_id: String, node_id: String) -> bool:
-	return talk_log.has("%s::%s" % [npc_id, node_id])
+	return talk_log.has(_scoped_talk_key(npc_id, node_id)) \
+		or talk_log.has(_legacy_talk_key(npc_id, node_id))
+
+
+func _scoped_talk_key(npc_id: String, node_id: String) -> String:
+	var context: Dictionary = get_scene_context()
+	var chapter := str(context.get("chapter", context.get("chapter_key", "0")))
+	var zone_id := str(context.get("zone_id", "unknown"))
+	return "v2::chapter=%s::zone=%s::%s::%s" % [chapter, zone_id, npc_id, node_id]
+
+
+func _legacy_talk_key(npc_id: String, node_id: String) -> String:
+	return "%s::%s" % [npc_id, node_id]
 
 # ── companion progression ──────────────────────────────────────────────────────
 
@@ -255,6 +277,7 @@ func ensure_companion(npc_id: String) -> Dictionary:
 		companion_progress[npc_id] = {
 			"level": start_level,
 			"xp": 0,
+			"hp": -1,
 		}
 	return companion_progress[npc_id]
 
@@ -271,12 +294,15 @@ func gain_companion_xp(npc_id: String, amount: int) -> int:
 	while int(data["xp"]) >= xp_to_next_level_for(int(data["level"])):
 		data["xp"] = int(data["xp"]) - xp_to_next_level_for(int(data["level"]))
 		data["level"] = int(data["level"]) + 1
+		data["hp"] = -1  # level up fully heals, mirroring the protagonist
 		levels_gained += 1
 	if levels_gained > 0:
 		companion_leveled.emit(npc_id, int(data["level"]))
 	return levels_gained
 
-## A companion's own combat sheet — used for the party passive bonus and any UI.
+## A companion's own combat sheet — now that companions FIGHT actively in battle,
+## this is their real actor sheet (HP/attack/defense/speed/SP), tuned slightly
+## below the protagonist's own curve so the hero stays the strongest member.
 func companion_battle_stats(npc_id: String) -> Dictionary:
 	var level: int = companion_level(npc_id)
 	return {
@@ -285,7 +311,28 @@ func companion_battle_stats(npc_id: String) -> Dictionary:
 		"attack": 7 + 3 * level,
 		"defense": 3 + 2 * level,
 		"speed": 7 + level,
+		"sp_max": 2 + int(level / 3.0),
 	}
+
+## Persistent companion HP (between battles), mirroring the player's lazy pattern:
+## -1 means "full", clamped to the level-derived max.
+func get_companion_hp(npc_id: String) -> int:
+	var data: Dictionary = ensure_companion(npc_id)
+	var max_hp: int = int(companion_battle_stats(npc_id)["max_hp"])
+	var hp: int = int(data.get("hp", -1))
+	if hp < 0 or hp > max_hp:
+		data["hp"] = max_hp
+		hp = max_hp
+	return hp
+
+func set_companion_hp(npc_id: String, value: int) -> void:
+	var data: Dictionary = ensure_companion(npc_id)
+	var max_hp: int = int(companion_battle_stats(npc_id)["max_hp"])
+	# Keep the same lazy "full health" sentinel used by player_hp. Battle defeat
+	# and level-up recovery deliberately pass -1 so the next read resolves against
+	# the companion's CURRENT level-derived maximum instead of freezing an old max.
+	data["hp"] = -1 if value < 0 else clampi(value, 0, max_hp)
+	player_stats_changed.emit()
 
 func _companion_role(npc_id: String) -> String:
 	var pm: Node = _party_manager()
@@ -300,8 +347,12 @@ func _companion_display_name(npc_id: String) -> String:
 	return npc_id
 
 ## Aggregate passive bonus from every companion travelling with the player, scaled
-## by each companion's level and shaped by their combat role. Kept gentle and capped
-## so a full party is a clear help without trivializing fights.
+## by each companion's level and shaped by their combat role. Since the multi-actor
+## battle rework, companions FIGHT actively (their own turn, HP, skills) — the
+## passive layer is therefore HALVED versus its original values: it now reads as
+## "travelling together sharpens you", not as the companion's whole contribution.
+## Encounters also scale in enemy count with party size (see BattleScene), so the
+## passive must stay a garnish or a full party would double-dip.
 func party_passive_bonus() -> Dictionary:
 	var bonus := {
 		"attack_mult": 1.0,
@@ -317,25 +368,25 @@ func party_passive_bonus() -> Dictionary:
 		var level: int = companion_level(id)
 		match _companion_role(id):
 			"attacker":
-				bonus["attack_mult"] = float(bonus["attack_mult"]) + minf(0.04 * level, 0.30)
+				bonus["attack_mult"] = float(bonus["attack_mult"]) + minf(0.02 * level, 0.15)
 			"tank":
-				bonus["defense_mult"] = float(bonus["defense_mult"]) + minf(0.05 * level, 0.40)
-				bonus["max_hp_mult"] = float(bonus["max_hp_mult"]) + minf(0.03 * level, 0.25)
-			"healer":
-				bonus["regen"] = int(bonus["regen"]) + 1 + int(level / 2.0)
+				bonus["defense_mult"] = float(bonus["defense_mult"]) + minf(0.025 * level, 0.20)
 				bonus["max_hp_mult"] = float(bonus["max_hp_mult"]) + minf(0.015 * level, 0.12)
+			"healer":
+				bonus["regen"] = int(bonus["regen"]) + 1 + int(level / 4.0)
+				bonus["max_hp_mult"] = float(bonus["max_hp_mult"]) + minf(0.008 * level, 0.06)
 			"support":
 				bonus["sp_bonus"] = int(bonus["sp_bonus"]) + (1 if level >= 3 else 0)
 				bonus["xp_mult"] = float(bonus["xp_mult"]) + minf(0.04 * level, 0.25)
-				bonus["attack_mult"] = float(bonus["attack_mult"]) + minf(0.015 * level, 0.12)
+				bonus["attack_mult"] = float(bonus["attack_mult"]) + minf(0.008 * level, 0.06)
 			_:
-				bonus["attack_mult"] = float(bonus["attack_mult"]) + minf(0.01 * level, 0.10)
+				bonus["attack_mult"] = float(bonus["attack_mult"]) + minf(0.005 * level, 0.05)
 		bonus["members"].append({"npc_id": id, "level": level, "role": _companion_role(id)})
 	# Global guard rails so a large party never gets out of hand.
-	bonus["attack_mult"] = minf(float(bonus["attack_mult"]), 1.6)
-	bonus["defense_mult"] = minf(float(bonus["defense_mult"]), 1.7)
-	bonus["max_hp_mult"] = minf(float(bonus["max_hp_mult"]), 1.5)
-	bonus["regen"] = mini(int(bonus["regen"]), 12)
+	bonus["attack_mult"] = minf(float(bonus["attack_mult"]), 1.3)
+	bonus["defense_mult"] = minf(float(bonus["defense_mult"]), 1.35)
+	bonus["max_hp_mult"] = minf(float(bonus["max_hp_mult"]), 1.25)
+	bonus["regen"] = mini(int(bonus["regen"]), 6)
 	bonus["xp_mult"] = minf(float(bonus["xp_mult"]), 1.5)
 	return bonus
 
@@ -373,6 +424,169 @@ const SKILL_LIBRARY: Array = [
 	{"id": "pierce", "name": "Pierce", "power": 2.0, "sp_cost": 3, "unlock_level": 18, "effect": "pierce",
 		"desc": "A thrust that punches through the enemy's defense."},
 ]
+
+# ── status effects (shared vocabulary for the multi-actor battle) ───────────────
+## Every battle status an actor (ally OR enemy) can carry. BattleScene owns the
+## per-instance state ({id, turns_left, magnitude}); this table is the immutable
+## definition. Numeric fields are MULTIPLIERS unless suffixed otherwise.
+##   tick_pct      damage per turn as a fraction of max HP (poison/burn)
+##   tick_heal     flat healing per turn (regen — magnitude set by the caster)
+##   skip_turn     actor loses their action while active (freeze/sleep/stun)
+##   skip_chance   probability of losing the action each turn (paralyze)
+##   wake_on_hit   taking damage removes the status (sleep)
+##   hit_chance    actor's chance for their attacks to connect (blind)
+##   no_skills     actor may only use a basic strike (silence)
+##   speed_mult    turn-order speed scaling (slow/haste)
+##   crit_bonus    additive crit chance (haste)
+##   attack_mult / defense_mult   outgoing damage / damage-taken shaping
+##   taunt         enemies must target this actor (tank provoke)
+##   absorb        the instance's magnitude is a damage-absorbing pool (shield)
+const STATUS_LIBRARY: Dictionary = {
+	"poison": {"name": "Poison", "kind": "debuff", "turns": 3, "tick_pct": 0.08},
+	"burn": {"name": "Burn", "kind": "debuff", "turns": 2, "tick_pct": 0.06, "attack_mult": 0.85},
+	"freeze": {"name": "Freeze", "kind": "debuff", "turns": 1, "skip_turn": true},
+	"sleep": {"name": "Sleep", "kind": "debuff", "turns": 3, "skip_turn": true, "wake_on_hit": true},
+	"paralyze": {"name": "Paralyze", "kind": "debuff", "turns": 2, "skip_chance": 0.5},
+	"stun": {"name": "Stun", "kind": "debuff", "turns": 1, "skip_turn": true},
+	"blind": {"name": "Blind", "kind": "debuff", "turns": 2, "hit_chance": 0.5},
+	"silence": {"name": "Silence", "kind": "debuff", "turns": 2, "no_skills": true},
+	"slow": {"name": "Slow", "kind": "debuff", "turns": 3, "speed_mult": 0.6},
+	"haste": {"name": "Haste", "kind": "buff", "turns": 3, "speed_mult": 1.4, "crit_bonus": 0.15},
+	"shield": {"name": "Shield", "kind": "buff", "turns": 3, "absorb": true},
+	"regen": {"name": "Regen", "kind": "buff", "turns": 3, "tick_heal": true},
+	"attack_up": {"name": "Attack Up", "kind": "buff", "turns": 3, "attack_mult": 1.25},
+	"defense_up": {"name": "Defense Up", "kind": "buff", "turns": 3, "defense_mult": 1.2},
+	"weaken": {"name": "Weaken", "kind": "debuff", "turns": 3, "attack_mult": 0.75},
+	"armor_break": {"name": "Armor Break", "kind": "debuff", "turns": 3, "defense_mult": 0.65},
+	"taunt": {"name": "Provoke", "kind": "buff", "turns": 2, "taunt": true},
+}
+
+# ── companion skill pool (companions draw a random-feeling, LLM-chosen set) ─────
+## The protagonist keeps the fixed SKILL_LIBRARY above; companions instead carry a
+## PERSONAL set of 4 skills picked from this pool by the backend LLM step
+## (SceneBuilder utils/chapter_companion_skills.py — the catalog there MUST mirror
+## this table; change both together). Slot N unlocks at COMPANION_SKILL_SLOT_LEVELS[N]
+## of the COMPANION's own level, so a freshly-joined friend grows into their kit.
+## Schema mirrors SKILL_LIBRARY plus:
+##   effect   attack | multi | drain | heal | heal_all | shield | cleanse | revive | status
+##   status / status_chance   status applied on hit (attack) or directly (status)
+##   target   enemy | ally | ally_all | self  (which side the skill points at)
+##   roles    which combat_role archetypes favour it (used by the BE fallback)
+const COMPANION_SKILL_POOL: Dictionary = {
+	"venom_fang": {"name": "Venom Fang", "power": 1.2, "sp_cost": 1, "effect": "attack",
+		"status": "poison", "status_chance": 0.9, "target": "enemy", "roles": ["attacker"],
+		"desc": "A toxic bite that leaves the foe poisoned."},
+	"flame_burst": {"name": "Flame Burst", "power": 1.4, "sp_cost": 2, "effect": "attack",
+		"status": "burn", "status_chance": 0.85, "target": "enemy", "roles": ["attacker"],
+		"desc": "An explosive blast that sets the foe ablaze."},
+	"frost_lance": {"name": "Frost Lance", "power": 1.3, "sp_cost": 2, "effect": "attack",
+		"status": "freeze", "status_chance": 0.6, "target": "enemy", "roles": ["attacker"],
+		"desc": "An ice lance that can freeze the foe solid."},
+	"thunder_jolt": {"name": "Thunder Jolt", "power": 1.3, "sp_cost": 2, "effect": "attack",
+		"status": "paralyze", "status_chance": 0.55, "target": "enemy", "roles": ["attacker"],
+		"desc": "A lightning strike that may paralyze."},
+	"shadow_drain": {"name": "Shadow Drain", "power": 1.2, "sp_cost": 2, "effect": "drain",
+		"target": "enemy", "roles": ["attacker"],
+		"desc": "Steal the foe's life force to mend your own."},
+	"wild_flurry": {"name": "Wild Flurry", "power": 2.0, "sp_cost": 2, "effect": "multi",
+		"target": "enemy", "roles": ["attacker"],
+		"desc": "A feral storm of quick slashes."},
+	"skull_crack": {"name": "Skull Crack", "power": 1.1, "sp_cost": 3, "effect": "attack",
+		"status": "stun", "status_chance": 0.7, "target": "enemy", "roles": ["attacker", "tank"],
+		"desc": "A heavy blow that can stun the foe."},
+	"armor_break": {"name": "Armor Break", "power": 1.0, "sp_cost": 2, "effect": "attack",
+		"status": "armor_break", "status_chance": 1.0, "target": "enemy", "roles": ["attacker", "tank"],
+		"desc": "Shatter the foe's guard, lowering its defense."},
+	"lullaby": {"name": "Lullaby", "power": 0.0, "sp_cost": 2, "effect": "status",
+		"status": "sleep", "status_chance": 0.85, "target": "enemy", "roles": ["support"],
+		"desc": "A drowsy melody that sings the foe to sleep."},
+	"blinding_dust": {"name": "Blinding Dust", "power": 0.0, "sp_cost": 1, "effect": "status",
+		"status": "blind", "status_chance": 0.9, "target": "enemy", "roles": ["support"],
+		"desc": "A cloud of dust that makes attacks miss."},
+	"silencing_seal": {"name": "Silencing Seal", "power": 0.0, "sp_cost": 2, "effect": "status",
+		"status": "silence", "status_chance": 0.9, "target": "enemy", "roles": ["support"],
+		"desc": "A rune that seals away the foe's techniques."},
+	"slow_mire": {"name": "Slowing Mire", "power": 0.0, "sp_cost": 1, "effect": "status",
+		"status": "slow", "status_chance": 1.0, "target": "enemy", "roles": ["support"],
+		"desc": "Clinging mire that drags the foe's pace down."},
+	"war_cry": {"name": "War Cry", "power": 0.0, "sp_cost": 2, "effect": "status",
+		"status": "attack_up", "status_chance": 1.0, "target": "ally_all", "roles": ["support", "tank"],
+		"desc": "A rallying cry that raises the party's attack."},
+	"stone_ward": {"name": "Stone Ward", "power": 0.0, "sp_cost": 2, "effect": "shield",
+		"target": "ally", "roles": ["support", "healer", "tank"],
+		"desc": "Raise a stone barrier that absorbs damage."},
+	"quicksilver": {"name": "Quicksilver", "power": 0.0, "sp_cost": 2, "effect": "status",
+		"status": "haste", "status_chance": 1.0, "target": "ally", "roles": ["support"],
+		"desc": "Hasten an ally to act sooner and strike truer."},
+	"purify": {"name": "Purify", "power": 0.0, "sp_cost": 1, "effect": "cleanse",
+		"target": "ally", "roles": ["support", "healer"],
+		"desc": "Cleanse an ally's ailments and soothe wounds."},
+	"soothing_light": {"name": "Soothing Light", "power": 16.0, "sp_cost": 2, "effect": "heal",
+		"target": "ally", "roles": ["healer"],
+		"desc": "A gentle light that restores an ally's HP."},
+	"verdant_rain": {"name": "Verdant Rain", "power": 10.0, "sp_cost": 3, "effect": "heal_all",
+		"target": "ally_all", "roles": ["healer"],
+		"desc": "Healing rain that mends the whole party."},
+	"regrowth": {"name": "Regrowth", "power": 0.0, "sp_cost": 2, "effect": "status",
+		"status": "regen", "status_chance": 1.0, "target": "ally", "roles": ["healer"],
+		"desc": "Blessing of growth that heals over time."},
+	"guiding_star": {"name": "Guiding Star", "power": 0.0, "sp_cost": 3, "effect": "revive",
+		"target": "ally", "roles": ["healer"],
+		"desc": "Call a fallen ally back to their feet."},
+	"taunt": {"name": "Provoke", "power": 0.0, "sp_cost": 1, "effect": "status",
+		"status": "taunt", "status_chance": 1.0, "target": "self", "roles": ["tank"],
+		"desc": "Draw every foe's fury onto yourself."},
+	"iron_bastion": {"name": "Iron Bastion", "power": 0.0, "sp_cost": 2, "effect": "shield",
+		"target": "self", "roles": ["tank"],
+		"desc": "Become a living fortress behind heavy iron."},
+	"shield_bash": {"name": "Shield Bash", "power": 0.9, "sp_cost": 2, "effect": "attack",
+		"status": "stun", "status_chance": 0.4, "target": "enemy", "roles": ["tank"],
+		"desc": "Slam the shield forward — it may stun."},
+}
+
+## Companion skill slot N (0-based) unlocks at this COMPANION level. Spread like the
+## player's own pacing: the first two arrive fast (a new friend must feel useful),
+## the last two land around later chapter bosses.
+const COMPANION_SKILL_SLOT_LEVELS: Array = [1, 3, 6, 10]
+
+## Deterministic per-role fallback sets — used when the backend hasn't authored
+## skills for a companion (old runs, LLM failure). Mirrors the BE fallback.
+const COMPANION_ROLE_DEFAULT_SKILLS: Dictionary = {
+	"attacker": ["venom_fang", "wild_flurry", "flame_burst", "skull_crack"],
+	"support": ["war_cry", "blinding_dust", "quicksilver", "lullaby"],
+	"healer": ["soothing_light", "regrowth", "verdant_rain", "guiding_star"],
+	"tank": ["taunt", "shield_bash", "stone_ward", "iron_bastion"],
+	"none": ["war_cry", "stone_ward", "purify", "wild_flurry"],
+}
+
+func status_def(status_id: String) -> Dictionary:
+	return (STATUS_LIBRARY.get(status_id, {}) as Dictionary).duplicate(true)
+
+## The full, UNLOCKED skill list a companion brings into battle right now:
+## backend-authored ids (PartyManager) or the role fallback, gated by the
+## companion's own level via COMPANION_SKILL_SLOT_LEVELS.
+func companion_skills(npc_id: String) -> Array[Dictionary]:
+	var ids: Array = []
+	var pm: Node = _party_manager()
+	if pm != null and pm.has_method("companion_skill_ids"):
+		ids = pm.companion_skill_ids(npc_id)
+	if ids.is_empty():
+		ids = COMPANION_ROLE_DEFAULT_SKILLS.get(
+			_companion_role(npc_id), COMPANION_ROLE_DEFAULT_SKILLS["none"]) as Array
+	var level: int = companion_level(npc_id)
+	var unlocked: Array[Dictionary] = []
+	for slot in range(ids.size()):
+		var gate: int = int(COMPANION_SKILL_SLOT_LEVELS[mini(slot, COMPANION_SKILL_SLOT_LEVELS.size() - 1)])
+		if level < gate:
+			continue
+		var skill_id := str(ids[slot])
+		if not COMPANION_SKILL_POOL.has(skill_id):
+			continue
+		var skill: Dictionary = (COMPANION_SKILL_POOL[skill_id] as Dictionary).duplicate(true)
+		skill["id"] = skill_id
+		skill["unlock_level"] = gate
+		unlocked.append(skill)
+	return unlocked
 
 func player_skills() -> Array[Dictionary]:
 	var unlocked: Array[Dictionary] = []

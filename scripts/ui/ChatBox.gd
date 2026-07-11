@@ -94,6 +94,7 @@ var _quest_refresh_connected: bool = false
 var _talk_notified  : bool       = false # fired notify_npc_talked once for the current tree beat
 var _tree_has_quest_reveal: bool = false # quest trees must reach their reveal node
 var _visited_nodes  : Dictionary = {}    # node ids the player has already reached
+var _closing: bool = false
 var _opt_rows     : Array[Node]        = []
 var _opt_styles   : Array[StyleBoxFlat]= []
 var _opt_cursors  : Array[CanvasItem]  = []
@@ -171,6 +172,7 @@ var _choice_rect   : Rect2 = Rect2()
 
 func _ready() -> void:
 	layer   = 64
+	add_to_group("active_chatbox")
 	transform = Transform2D.IDENTITY.scaled(Vector2(UI_SCALE, UI_SCALE))  # authored near 480x270
 	visible = false
 	_default_portrait_texture = _npc_portrait.texture
@@ -1892,6 +1894,12 @@ func _on_start_error(error: String) -> void:
 	print("[ChatBox] start-stream error: ", error)
 
 func close(hand_off_ceremony: bool = false) -> void:
+	# Quest signals are synchronous: interrupt_for_cutscene() can close this box
+	# from inside _tree_select(), which then reaches its ordinary close() call.
+	# Preserve the first handoff decision and make all later calls no-ops.
+	if _closing:
+		return
+	_closing = true
 	_disconnect_quest_refresh()
 	NPCConversationManager.cancel_all()
 	_loading_label     = null
@@ -1915,6 +1923,14 @@ func close(hand_off_ceremony: bool = false) -> void:
 	visible = false
 	# NPCController instantiates a fresh ChatBox per interaction, so free this one.
 	queue_free()
+
+func interrupt_for_cutscene() -> bool:
+	## A quest event inside this conversation matched a planned cutscene. Tear down
+	## dialogue/camera now, but keep queued rewards held until the cutscene finishes.
+	if not visible or is_queued_for_deletion():
+		return false
+	close(true)
+	return true
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not visible:

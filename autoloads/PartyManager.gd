@@ -107,6 +107,22 @@ func companion_name(npc_id: String) -> String:
 	return str((companions.get(npc_id, {}) as Dictionary).get("name", npc_id))
 
 
+## Backend-authored battle skill ids for this companion (the LLM-picked set from
+## SceneBuilder's companion-skills step, riding on public_party as `skills`).
+## Empty when the payload predates the skill system — GameManager then falls back
+## to the combat-role default set.
+func companion_skill_ids(npc_id: String) -> Array:
+	var data: Dictionary = companions.get(npc_id, {}) as Dictionary
+	var skills: Variant = data.get("skills", [])
+	if skills is Array and not (skills as Array).is_empty():
+		return (skills as Array).duplicate()
+	var nested: Dictionary = data.get("companion", {}) as Dictionary
+	var nested_skills: Variant = nested.get("skills", [])
+	if nested_skills is Array:
+		return (nested_skills as Array).duplicate()
+	return []
+
+
 ## Combat role drives the party passive bonus in GameManager. Values authored by the
 ## SceneBuilder party step: attacker / support / healer / tank / none.
 func companion_combat_role(npc_id: String) -> String:

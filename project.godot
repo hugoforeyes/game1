@@ -44,7 +44,8 @@ window/size/viewport_height=576
 window/size/window_width_override=2048
 window/size/window_height_override=1152
 window/stretch/mode="canvas_items"
-window/stretch/scale_mode="integer"
+window/stretch/aspect="expand"
+window/stretch/scale_mode="fractional"
 
 [gui]
 

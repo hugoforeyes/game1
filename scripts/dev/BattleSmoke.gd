@@ -37,9 +37,10 @@ func _process(_delta: float) -> void:
 		if _frames % (press_every * 6) == 0:
 			_press("ui_right")
 		_press("ui_accept")
-	if slow and _frames % 75 == 0:
+	if slow and DisplayServer.get_name() != "headless" and _frames % 75 == 0:
 		var image: Image = get_viewport().get_texture().get_image()
-		image.save_png("/tmp/battle_shot_%03d.png" % (_frames / 75))
+		if image != null:
+			image.save_png("/tmp/battle_shot_%03d.png" % (_frames / 75))
 
 func _press(action: String) -> void:
 	var press := InputEventAction.new()

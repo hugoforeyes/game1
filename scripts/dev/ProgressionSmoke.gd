@@ -15,6 +15,7 @@ func _init() -> void:
 	_test_skill_unlocks(gm)
 	_test_talk_xp(gm)
 	_test_companion_progression(gm)
+	_test_companion_hp_sentinel(gm)
 	_test_party_bonus_default(gm)
 	_test_serialize_roundtrip(gm)
 
@@ -80,6 +81,7 @@ func _skill_ids(skills: Array) -> Array:
 func _test_talk_xp(gm: Node) -> void:
 	print("[talk XP]")
 	gm.reset_combat_progress()
+	gm.imported_scene_context = {"chapter": 1, "zone_id": "zone_a"}
 	var before: int = gm.player_xp
 	var r1: Dictionary = gm.award_talk_xp("npc_1", "s:beat_1", "quest")
 	_ok(bool(r1.get("awarded")) and int(r1.get("amount")) == gm.TALK_XP_QUEST, "quest beat awards TALK_XP_QUEST")
@@ -90,6 +92,27 @@ func _test_talk_xp(gm: Node) -> void:
 	_ok(bool(r3.get("awarded")) and int(r3.get("amount")) == gm.TALK_XP_WORLD, "world lore awards TALK_XP_WORLD")
 	_ok(gm.TALK_XP_QUEST != gm.TALK_XP_WORLD, "quest and world talk XP are different amounts")
 	_ok(gm.has_logged_talk("npc_1", "w:lore_1"), "talk log records the awarded node")
+	gm.imported_scene_context = {"chapter": 1, "zone_id": "zone_b"}
+	var scoped_repeat: Dictionary = gm.award_talk_xp("npc_1", "w:lore_1", "world")
+	_ok(bool(scoped_repeat.get("awarded")), "same NPC/node awards again in a different zone scope")
+	gm.imported_scene_context = {"chapter": 2, "zone_id": "zone_b"}
+	var chapter_repeat: Dictionary = gm.award_talk_xp("npc_1", "w:lore_1", "world")
+	_ok(bool(chapter_repeat.get("awarded")), "same NPC/node awards again in a different chapter scope")
+
+	# Legacy saves had no scope. First contact claims that old entry for the current
+	# scope without paying twice; a later scope may then award normally.
+	gm.talk_log["npc_legacy::shared"] = "world"
+	var legacy_xp_before: int = gm.player_xp
+	var migrated: Dictionary = gm.award_talk_xp("npc_legacy", "shared", "world")
+	_ok(not bool(migrated.get("awarded")) and bool(migrated.get("migrated")),
+		"legacy talk key migrates without duplicate XP")
+	_ok(gm.player_xp == legacy_xp_before and not gm.talk_log.has("npc_legacy::shared"),
+		"legacy migration preserves XP and removes the ambiguous key")
+	_ok(gm.has_logged_talk("npc_legacy", "shared"), "migrated key is logged in the current scope")
+	gm.imported_scene_context = {"chapter": 2, "zone_id": "zone_c"}
+	_ok(bool(gm.award_talk_xp("npc_legacy", "shared", "world").get("awarded")),
+		"migrated legacy node can award in a later scope")
+	gm.imported_scene_context.clear()
 
 
 func _test_companion_progression(gm: Node) -> void:
@@ -104,6 +127,21 @@ func _test_companion_progression(gm: Node) -> void:
 	var gained: int = gm.gain_companion_xp("arlo", 500)
 	_ok(gained >= 1 and int(leveled[0]) >= 1, "companion levels up and emits companion_leveled")
 	_ok(gm.companion_level("arlo") == 2 + gained, "companion level advanced by the number gained")
+
+
+func _test_companion_hp_sentinel(gm: Node) -> void:
+	print("[companion HP]")
+	gm.reset_combat_progress()
+	gm.player_level = 4
+	gm.ensure_companion("arlo")
+	gm.set_companion_hp("arlo", 7)
+	_ok(gm.get_companion_hp("arlo") == 7, "companion HP stores battle damage")
+	gm.set_companion_hp("arlo", -1)
+	_ok(int(gm.ensure_companion("arlo").get("hp", 0)) == -1,
+		"-1 remains the lazy full-health sentinel (defeat recovery)")
+	var expected_max: int = int(gm.companion_battle_stats("arlo").get("max_hp", 0))
+	_ok(gm.get_companion_hp("arlo") == expected_max,
+		"sentinel resolves to the current companion max HP")
 
 
 func _test_party_bonus_default(gm: Node) -> void:

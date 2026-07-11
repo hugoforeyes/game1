@@ -78,12 +78,26 @@ func _process(_delta: float) -> void:
 	if _pending_celebration.is_empty():
 		set_process(false)
 		return
-	if GameManager.ui_blocking_input:
+	if _higher_priority_narrative_playback_pending():
 		return
 	var pending: Dictionary = _pending_celebration
 	_pending_celebration = {}
 	set_process(false)
 	_show_chapter_celebration(int(pending["chapter"]), str(pending["title"]))
+
+
+func _higher_priority_narrative_playback_pending() -> bool:
+	# Chapter completion is the final ceremony. Shared ui_blocking_input covers
+	# battles, dialogue and choices; the explicit checks below also cover gaps
+	# between queued cutscenes, their letterbox teardown, and queued rewards.
+	if GameManager.ui_blocking_input:
+		return true
+	if AnnouncementCenter.conversation_active or AnnouncementCenter.playing \
+			or AnnouncementCenter.has_pending():
+		return true
+	var scene := get_tree().current_scene
+	return scene != null and scene.has_method("has_pending_narrative_playback") \
+			and bool(scene.call("has_pending_narrative_playback"))
 
 
 func _show_chapter_celebration(chapter_number: int, chapter_title: String) -> void:

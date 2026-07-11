@@ -10,12 +10,9 @@ signal actor_return_finished
 
 const TYPE_SPEED := 44.0
 const MOVE_SPEED_PX := 144.0
-const DEFAULT_NPC_RETURN_SPEED_PX := 36.0
-const DEFAULT_ENEMY_RETURN_SPEED_PX := 44.0
 const LETTERBOX_H := 9.0
 const PRESTAGE_DISTANCE_TILES := 5.0
 const PRESTAGE_APPROACH_TILES := 2.0
-const WALK_BACK_MAX_SECONDS := 2.5
 const MOVE_CLAMP_TILES := 4  # max tiles a cutscene actor may stray from the player
 const ATTACK_LUNGE_PX := 30.0
 const HURT_KNOCKBACK_PX := 18.0
@@ -70,11 +67,6 @@ var _start_tiles: Dictionary = {}  # actor_id -> {x,y}: backend pre-placement (a
 var _blocked_tiles: Dictionary = {}
 var _astar: AStarGrid2D = null  # walkable-grid pathfinding for cutscene moves
 var _collision_state: Dictionary = {}  # actor -> {layer, mask}: restored on finish
-var _return_physics_state: Dictionary = {}  # non-NPC actor -> pre-return physics enabled
-var _walk_home_tweens: Array[Tween] = []
-var _walk_home_sprites: Dictionary = {}  # Tween -> AnimatedSprite2D
-var _walk_home_actors: Dictionary = {}  # Tween -> Node2D
-var _walk_home_paused: bool = false
 
 # Design-space size of this scale-2 layer (512x288 at a 1024x576 viewport).
 # The dialogue/title blocks are authored for a 480x270 canvas and anchored
@@ -99,6 +91,7 @@ var _skip_hint: Label
 
 
 func play(actions: Array, world: Node2D, player: Node2D, characters_root: Node2D, start_tiles: Dictionary = {}) -> void:
+	add_to_group("active_cutscene_player")
 	_actions = actions
 	_world = world
 	_player = player
@@ -136,6 +129,8 @@ func _disable_actor_collisions() -> void:
 			if _collision_state.has(body):
 				continue
 			_collision_state[body] = {"layer": body.collision_layer, "mask": body.collision_mask}
+			if body.has_method("suspend_return_home_for_cutscene"):
+				body.call("suspend_return_home_for_cutscene")
 			body.collision_layer = 0
 			body.collision_mask = 0
 
@@ -176,7 +171,10 @@ func _record_origins() -> void:
 			if data is Dictionary:
 				var actor_id: String = str((data as Dictionary).get("id", ""))
 				if not actor_id.is_empty():
-					_origin_positions[actor_id] = (child as Node2D).global_position
+					var origin := (child as Node2D).global_position
+					if child.has_method("get_return_home_destination"):
+						origin = child.call("get_return_home_destination") as Vector2
+					_origin_positions[actor_id] = origin
 
 
 # On-screen tile offsets around the player, ordered by preference (sides and
@@ -766,32 +764,6 @@ func _run() -> void:
 	await _finish()
 
 
-func _process(_delta: float) -> void:
-	if _walk_home_tweens.is_empty():
-		return
-	_cancel_invalid_walk_home_actors()
-	if _walk_home_tweens.is_empty():
-		return
-	# A conversation/menu opened while an NPC is returning should hold the NPC
-	# still, so staged dialogue cameras never lose their subject. Resume when the
-	# blocking UI closes.
-	var should_pause := GameManager.ui_blocking_input
-	if should_pause == _walk_home_paused:
-		return
-	_walk_home_paused = should_pause
-	for tween in _walk_home_tweens:
-		if tween != null and tween.is_valid():
-			var sprite := _valid_walk_home_sprite(tween)
-			if should_pause:
-				tween.pause()
-				if sprite != null:
-					sprite.pause()
-			else:
-				tween.play()
-				if sprite != null:
-					sprite.play()
-
-
 func _execute(action: Dictionary) -> void:
 	match str(action.get("type", "")):
 		"title":
@@ -804,6 +776,9 @@ func _execute(action: Dictionary) -> void:
 			await _do_move(str(action.get("actor", "")), action.get("to", {}) as Dictionary)
 		"face":
 			_do_face(str(action.get("actor", "")), str(action.get("direction", "down")))
+			# Keep _execute awaitable even when this instantaneous action is the
+			# final/only beat in a cutscene.
+			await get_tree().process_frame
 		"say":
 			await _do_say(action)
 		"attack":
@@ -1400,10 +1375,11 @@ func _finish() -> void:
 	# no longer consume Esc/Enter after gameplay control is returned.
 	set_process_unhandled_input(false)
 
-	# The NPCs START walking home now — and that's the moment the cutscene ends.
-	# Hand camera/input/interaction back in this same frame; they finish walking
-	# in the background at their normal world movement speed.
-	_begin_walk_home()
+	# Restore gameplay ownership completely. NPCController receives a return-home
+	# destination and handles pathfinding, physics, collision and interaction from
+	# this point onward; CutscenePlayer never coordinates background movement.
+	_restore_actor_collisions()
+	_release_actors_to_world()
 	await _restore_player_camera(true)
 	if _camera != null:
 		_camera.queue_free()
@@ -1414,13 +1390,7 @@ func _finish() -> void:
 	bars.tween_property(_top_bar, "position:y", -LETTERBOX_H, 0.5)
 	bars.parallel().tween_property(_bottom_bar, "position:y", _design_size.y, 0.5)
 	cutscene_finished.emit()
-
-	# Keep this coordinator alive until every possibly-paused return tween ends.
-	# A fixed timer is unsafe because talking to a walking NPC pauses that tween.
 	await bars.finished
-	while _has_active_walk_home_tweens():
-		await get_tree().process_frame
-	_restore_actor_collisions()
 	actor_return_finished.emit()
 	queue_free()
 
@@ -1457,56 +1427,7 @@ func _restore_collision_for(node: Node) -> void:
 		_collision_state.erase(node)
 
 
-func _finalize_walked_actor(actor: Node2D, sprite: AnimatedSprite2D) -> void:
-	# Called when an NPC reaches home: stop walking, restore collision + AI.
-	if not is_instance_valid(actor):
-		return
-	if sprite != null:
-		sprite.pause()
-	var can_restore := true
-	if actor.has_method("can_restore_from_scripted_return"):
-		can_restore = bool(actor.call("can_restore_from_scripted_return"))
-	if not can_restore:
-		# Dialogue outcomes may turn a returning NPC into a corpse/inactive actor.
-		# That presentation is authoritative; discard the old cutscene collision
-		# snapshot instead of resurrecting physics/collision during cleanup.
-		_collision_state.erase(actor)
-		if actor.has_method("set_scripted_return_active"):
-			actor.call("set_scripted_return_active", false)
-		elif _return_physics_state.has(actor):
-			_return_physics_state.erase(actor)
-		return
-	# The player may have stepped onto an NPC's home tile after gameplay was
-	# released. Resolve beside it before restoring collision to avoid overlap.
-	var actor_tile := _tile_of(actor.global_position)
-	var occupied := _occupied_actor_tiles(actor)
-	if occupied.has(_tile_key(actor_tile)):
-		var safe_tile := _nearest_unoccupied_tile(actor_tile, occupied)
-		actor.global_position = _tile_to_world(safe_tile)
-	_restore_collision_for(actor)
-	var was_scripted_return := false
-	if actor.has_method("set_scripted_return_active"):
-		if actor.has_method("is_scripted_return_active"):
-			was_scripted_return = bool(actor.call("is_scripted_return_active"))
-		actor.call("set_scripted_return_active", false)
-	elif _return_physics_state.has(actor):
-		was_scripted_return = true
-		actor.set_physics_process(bool(_return_physics_state[actor]))
-		_return_physics_state.erase(actor)
-	if was_scripted_return and actor.is_physics_processing():
-		_resync_actor_ai(actor)
-
-
-func _begin_walk_home() -> void:
-	# Start every displaced NPC walking back to its pre-cutscene spot AROUND
-	# obstacles (A*), in parallel, WITHOUT awaiting — so the cutscene can end the
-	# instant they start moving. Each NPC's own AI is paused (so it doesn't fight
-	# the tween once player control returns) and collision stays off until it
-	# arrives; a per-tween callback restores everything on arrival.
-	_walk_home_tweens.clear()
-	_walk_home_sprites.clear()
-	_walk_home_actors.clear()
-	_walk_home_paused = false
+func _release_actors_to_world() -> void:
 	for actor_id in _origin_positions:
 		if actor_id == "player":
 			continue
@@ -1514,95 +1435,17 @@ func _begin_walk_home() -> void:
 		if actor == null or not actor.visible:
 			continue
 		var origin: Vector2 = _origin_positions[actor_id]
-		var sprite: AnimatedSprite2D = _actor_anim_sprite(actor)
-		if _skip or actor.global_position.distance_to(origin) < GameManager.TILE_SIZE * 0.75:
-			if _skip:
-				actor.global_position = origin
-			_finalize_walked_actor(actor, sprite)
+		if actor.has_method("return_home_to"):
+			actor.call("return_home_to", origin)
 			continue
-		# Normal NPCs keep a special interaction-only physics tick. Other actors
-		# are frozen with their exact previous physics state remembered.
-		if actor.has_method("set_scripted_return_active"):
-			actor.call("set_scripted_return_active", true)
-		else:
-			_return_physics_state[actor] = actor.is_physics_processing()
-			actor.set_physics_process(false)
-		var path: Array = _path_tiles(_tile_of(actor.global_position), _tile_of(origin))
-		var tween := create_tween()
-		var prev: Vector2 = actor.global_position
-		var return_speed := _normal_return_speed(actor)
-		var has_motion := false
-		for step_tile in path:
-			var tgt: Vector2 = _tile_to_world(step_tile)
-			var seg_dist: float = prev.distance_to(tgt)
-			if seg_dist < 1.0:
-				continue
-			has_motion = true
-			tween.tween_callback(_play_walk.bind(sprite, _dir_name(tgt - prev)))
-			tween.tween_property(actor, "global_position", tgt, seg_dist / return_speed)
-			prev = tgt
-		if not has_motion:
-			tween.kill()
-			_finalize_walked_actor(actor, sprite)
-			continue
-		tween.tween_callback(_finalize_walked_actor.bind(actor, sprite))
-		_walk_home_tweens.append(tween)
-		_walk_home_sprites[tween] = sprite
-		_walk_home_actors[tween] = actor
-
-
-func _normal_return_speed(actor: Node2D) -> float:
-	var enemy_data: Variant = actor.get("enemy_data")
-	if enemy_data is Dictionary and not (enemy_data as Dictionary).is_empty():
-		return DEFAULT_ENEMY_RETURN_SPEED_PX
-	var npc_data: Variant = actor.get("npc_data")
-	if npc_data is Dictionary:
-		var runtime_speed: Variant = actor.get("speed")
-		if runtime_speed is float or runtime_speed is int:
-			var value := float(runtime_speed)
-			if value > 0.0:
-				return value
-	return DEFAULT_NPC_RETURN_SPEED_PX
-
-
-func _has_active_walk_home_tweens() -> bool:
-	_cancel_invalid_walk_home_actors()
-	for index in range(_walk_home_tweens.size() - 1, -1, -1):
-		var tween := _walk_home_tweens[index]
-		if tween == null or not tween.is_valid():
-			_walk_home_sprites.erase(tween)
-			_walk_home_actors.erase(tween)
-			_walk_home_tweens.remove_at(index)
-	return not _walk_home_tweens.is_empty()
-
-
-func _cancel_invalid_walk_home_actors() -> void:
-	for index in range(_walk_home_tweens.size() - 1, -1, -1):
-		var tween := _walk_home_tweens[index]
-		var actor_ref: Variant = _walk_home_actors.get(tween)
-		var actor: Node2D = null
-		if is_instance_valid(actor_ref) and actor_ref is Node2D:
-			actor = actor_ref as Node2D
-		var can_continue := actor != null and is_instance_valid(actor) and actor.visible
-		if can_continue and actor.has_method("can_restore_from_scripted_return"):
-			can_continue = bool(actor.call("can_restore_from_scripted_return"))
-		if can_continue:
-			continue
-		if tween != null and tween.is_valid():
-			tween.kill()
-		var sprite := _valid_walk_home_sprite(tween)
-		if actor != null and is_instance_valid(actor):
-			_finalize_walked_actor(actor, sprite)
-		_walk_home_sprites.erase(tween)
-		_walk_home_actors.erase(tween)
-		_walk_home_tweens.remove_at(index)
-
-
-func _valid_walk_home_sprite(tween: Tween) -> AnimatedSprite2D:
-	var sprite_ref: Variant = _walk_home_sprites.get(tween)
-	if is_instance_valid(sprite_ref) and sprite_ref is AnimatedSprite2D:
-		return sprite_ref as AnimatedSprite2D
-	return null
+		# Non-NPC cutscene actors do not have ambient navigation ownership. Restore
+		# them immediately and safely; no CutscenePlayer process remains afterward.
+		actor.global_position = origin
+		var actor_tile := _tile_of(actor.global_position)
+		var occupied := _occupied_actor_tiles(actor)
+		if occupied.has(_tile_key(actor_tile)):
+			actor.global_position = _tile_to_world(_nearest_unoccupied_tile(actor_tile, occupied))
+		_resync_actor_ai(actor)
 
 
 func _resync_actor_ai(actor: Node2D) -> void:
