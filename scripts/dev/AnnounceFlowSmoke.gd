@@ -2,7 +2,7 @@ extends Node2D
 ## Dev-only smoke for the in-conversation reward-ceremony flow:
 ##   - rewards earned during an open ChatBox queue in AnnouncementCenter
 ##   - when the line finishes revealing, the chat HIDES and ceremonies play
-##     one at a time, quest banner BEFORE item reveal (priority order)
+##     one at a time, item reveal BEFORE its quest banner (priority order)
 ##   - dismissing them brings the conversation back with its options intact
 ##   - closing a conversation with rewards still queued plays them standalone
 ## Exit code 0 = all pass, 1 = a failure. Needs the SceneBuilder server on :5001.
@@ -51,21 +51,21 @@ func _test_mid_conversation_ceremony() -> void:
 	# a reward lands while the NPC line is still typing out
 	InventoryManager.add_item(_item_id, 3)
 	_check(AnnouncementCenter.has_pending(), "the item was queued as a ceremony, not a toast")
-	# a quest banner enqueued AFTER the item must still play FIRST (priority)
+	# The item is the cause, so it keeps priority over the resulting quest update.
 	AnnouncementCenter.enqueue("new_quest", {"quest": {"title": "Tiếng Gọi Rừng Thẳm", "type": "main"}})
 
 	var hid := await _wait_until(func() -> bool: return not chatbox.visible, 6.0)
 	_check(hid, "the chat screen hid once the line finished revealing")
 	var first: Node = await _wait_for_ceremony(3.0)
-	_check(first != null and first.get_script() == AnnouncementViewScript,
-		"the NEW QUEST banner plays before the item reveal (priority order)")
-	await _shot("/tmp/announce_flow_quest.png")
+	_check(first != null and first.get_script() == ObjectInteractionViewScript,
+		"the item reveal plays before the quest banner (priority order)")
+	await _shot("/tmp/announce_flow_item.png")
 	await _dismiss_and_free(first)
 
 	var second: Node = await _wait_for_ceremony(3.0)
-	_check(second != null and second.get_script() == ObjectInteractionViewScript,
-		"the item ceremony plays second")
-	await _shot("/tmp/announce_flow_item.png")
+	_check(second != null and second.get_script() == AnnouncementViewScript,
+		"the NEW QUEST banner plays second")
+	await _shot("/tmp/announce_flow_quest.png")
 	await _dismiss_and_free(second)
 
 	var back := await _wait_until(func() -> bool: return chatbox.visible, 4.0)

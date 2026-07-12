@@ -11,14 +11,14 @@ extends Node
 const AnnouncementViewScript := preload("res://scripts/ui/AnnouncementView.gd")
 const ObjectInteractionViewScript := preload("res://scripts/ui/ObjectInteractionView.gd")
 
-## Narrative playback order (stable within a kind): quest banners first, then
-## hints, then item reveals, and the companion celebration as the finale.
+## Narrative playback order (stable within a kind): acquired items are revealed
+## before their resulting quest/objective updates; companion remains the finale.
 const KIND_PRIORITY := {
-	"new_quest": 0,
-	"objective": 1,
-	"quest_complete": 2,
-	"hint": 3,
-	"item": 4,
+	"item": 0,
+	"new_quest": 1,
+	"objective": 2,
+	"quest_complete": 3,
+	"hint": 4,
 	"companion": 5,
 }
 const MAX_ITEMS_PER_SCREEN := 4
@@ -27,6 +27,7 @@ const BREATH_BETWEEN := 0.10
 var conversation_active: bool = false
 var playing: bool = false
 var _queue: Array = []
+var _standalone_waiting: bool = false
 
 
 func _ready() -> void:
@@ -36,6 +37,7 @@ func _ready() -> void:
 func reset() -> void:
 	_queue.clear()
 	conversation_active = false
+	_standalone_waiting = false
 
 
 ## ChatBox marks the conversation window. Closing a conversation that still has
@@ -43,7 +45,7 @@ func reset() -> void:
 ## standalone ceremony right after the chat disappears.
 func set_conversation_active(active: bool) -> void:
 	conversation_active = active
-	if not active and has_pending() and not playing:
+	if not active and has_pending() and not playing and not _standalone_waiting:
 		_play_standalone()
 
 
@@ -64,10 +66,37 @@ func has_pending() -> bool:
 	return not _queue.is_empty()
 
 
+## Drop every still-queued "objective" ceremony for one quest. QuestManager calls
+## this when a quest advances several objectives in a single beat (e.g. talk-to-NPC
+## completes a talk objective and immediately settles the next collect objective)
+## so only the newest objective plays instead of a flicker of intermediate ones.
+func drop_pending_objectives(quest_id: String) -> void:
+	if quest_id.is_empty():
+		return
+	var kept: Array = []
+	for entry in _queue:
+		if str((entry as Dictionary).get("kind", "")) == "objective" \
+				and str(((entry as Dictionary).get("quest", {}) as Dictionary).get("id", "")) == quest_id:
+			continue
+		kept.append(entry)
+	_queue = kept
+
+
 ## Play every queued announcement, one at a time; returns when the queue is
 ## drained (awaitable from ChatBox). Player input stays blocked throughout;
 ## afterwards the blocking flag is left to the conversation if one is open.
 func play_queue() -> void:
+	if playing:
+		while playing:
+			await get_tree().process_frame
+		return
+	# A cutscene is the higher-priority story beat. Keep every queued objective /
+	# reward ceremony intact until its action, letterbox and camera teardown finish.
+	while CutsceneDirector.has_pending_playback():
+		if _queue.is_empty():
+			return
+		await get_tree().process_frame
+	# Another caller may have been waiting on the same cutscene barrier.
 	if playing:
 		while playing:
 			await get_tree().process_frame
@@ -84,7 +113,17 @@ func play_queue() -> void:
 
 
 func _play_standalone() -> void:
+	_standalone_waiting = true
+	while CutsceneDirector.has_pending_playback():
+		if conversation_active or not has_pending():
+			_standalone_waiting = false
+			return
+		await get_tree().process_frame
+	if conversation_active or not has_pending():
+		_standalone_waiting = false
+		return
 	await play_queue()
+	_standalone_waiting = false
 
 
 ## Drain the queue into playback order: stable-sort by kind priority, then

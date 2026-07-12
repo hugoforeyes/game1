@@ -12,6 +12,8 @@ extends CanvasLayer
 
 
 
+const BattleSpeechBubbleScript := preload("res://scripts/battle/BattleSpeechBubble.gd")
+
 signal battle_finished(result: String, enemy_id: String)
 
 const FONT_SIZE: = 16
@@ -111,6 +113,14 @@ var _menu_items: Array[Control] = []
 var _menu_index: int = 0
 var _battle_over: bool = false
 
+# Enemy barks are real-time overlays, independent from the turn/input state. Each
+# foe owns a small bounded FIFO: different enemies may speak simultaneously while
+# repeated lines from one enemy remain ordered without creating stacked bubbles.
+const MAX_PENDING_BARKS_PER_ENEMY := 3
+var _enemy_bark_channels: Dictionary = {}
+var _enemy_bark_generation: int = 0
+var _enemy_barks_shutting_down: bool = false
+
 
 var _panel_style: StyleBox = null
 var _cursor_texture: Texture2D = null
@@ -126,12 +136,6 @@ var _root: Control
 
 var _design: Control
 var _fx_layer: Control
-var _enemy_panel: Panel
-var _enemy_name_label: Label
-var _enemy_rank_label: Label
-var _enemy_hp_bar: Control
-var _enemy_hp_ghost: Control
-var _enemy_status_row: HBoxContainer
 var _intent_label: Label
 var _intent_icon: TextureRect
 var _turn_stack: Control
@@ -148,8 +152,6 @@ var _menu_info_icon: TextureRect
 var _menu_info_name: Label
 var _menu_info_desc: Label
 var _hint_label: Label
-var _enemy_lv_label: Label
-var _enemy_hp_text: Label
 
 # Per-ally status cards (index-parallel with _allies):
 # {root, name_label, lv_label, hp_bar, hp_ghost, hp_text, status_row, sp_pips,
@@ -163,27 +165,21 @@ var _round_serial: int = 0
 
 # Target-selection overlay state (gold arrows over foe portraits / ally cards).
 var _target_arrows: Array[Control] = []
-# The foe the top-left readout panel describes (follows the last selected target).
+# The foe the target cursor last rested on (drives intent + selection helpers).
 var _target_foe_index: int = 0
-var _enemy_medallion: TextureRect
 
 # Per-skill FX sheets (assets/fx/skills/<id>_sheet.png), cached SpriteFrames.
 var _skill_fx_cache: Dictionary = {}
 
-const ENEMY_HP_BAR_W: = 170.0
 const PLAYER_HP_BAR_W: = 130.0
 const DESIGN_SIZE: = Vector2(960, 540)
-const ENEMY_PANEL_POS: = Vector2(2, 2)
-const ENEMY_PANEL_SIZE: = Vector2(312, 96)
-const LOG_PANEL_POS: = Vector2(2, 106)
+const LOG_PANEL_POS: = Vector2(2, 2)
 const LOG_PANEL_SIZE: = Vector2(330, 152)
 const PLAYER_PANEL_POS: = Vector2(2, 380)
 const PLAYER_PANEL_SIZE: = Vector2(312, 158)
 const MENU_PANEL_POS: = Vector2(404, 422)
 const MENU_PANEL_SIZE: = Vector2(470, 172)
-const TURN_ORDER_TITLE_POS: = Vector2(778, 2)
-const TURN_ORDER_TITLE_SIZE: = Vector2(176, 18)
-const TURN_ORDER_STACK_POS: = Vector2(0, 28)
+const TURN_ORDER_STACK_POS: = Vector2(0, 2)
 const TURN_ORDER_STACK_SIZE: = Vector2(960, 230)
 const PORTRAIT_HOME: = Vector2(350, 48)
 const PORTRAIT_SIZE: = Vector2(280, 290)
@@ -1055,60 +1051,9 @@ func _build_ui() -> void :
     _root.add_child(_design)
 
 
-    _enemy_panel = _make_panel_node(Rect2(ENEMY_PANEL_POS, ENEMY_PANEL_SIZE))
-    _design.add_child(_enemy_panel)
-
-    _enemy_medallion = TextureRect.new()
-    _enemy_medallion.texture = _cropped_portrait(_battle_portrait_texture(), 128, true)
-    _enemy_medallion.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-    _enemy_medallion.stretch_mode = TextureRect.STRETCH_SCALE
-    _enemy_medallion.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-    _enemy_medallion.position = Vector2(16, 15)
-    _enemy_medallion.size = Vector2(66, 66)
-    _enemy_medallion.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    _enemy_panel.add_child(_enemy_medallion)
-    var ring_texture: = _v3("portrait_ring.png")
-    if ring_texture != null:
-        var ring: = TextureRect.new()
-        ring.texture = ring_texture
-        ring.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-        ring.stretch_mode = TextureRect.STRETCH_SCALE
-        ring.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-        ring.position = Vector2(9, 3)
-        ring.size = Vector2(80, 89)
-        ring.mouse_filter = Control.MOUSE_FILTER_IGNORE
-        _enemy_panel.add_child(ring)
-
-    _enemy_name_label = _make_display_label("", 22, COLOR_TEXT)
-    _enemy_name_label.position = Vector2(100, 12)
-    _enemy_name_label.size = Vector2(138, 30)
-    _enemy_name_label.clip_text = true
-    _enemy_panel.add_child(_enemy_name_label)
-
-    var enemy_chip: = _make_chip(Rect2(238, 16, 58, 21))
-    _enemy_panel.add_child(enemy_chip["root"])
-    _enemy_lv_label = enemy_chip["label"]
-    _enemy_rank_label = _enemy_lv_label
-
-    var enemy_hp_tag: = UiKit.make_label_strong("HP", 12, COLOR_ACCENT)
-    enemy_hp_tag.position = Vector2(100, 50)
-    enemy_hp_tag.size = Vector2(24, 18)
-    _enemy_panel.add_child(enemy_hp_tag)
-
-    var enemy_bar: = _make_ornate_bar(Rect2(126, 50, ENEMY_HP_BAR_W, 16), "red", COLOR_HP_GHOST)
-    _enemy_panel.add_child(enemy_bar["root"])
-    _enemy_hp_ghost = enemy_bar["ghost"]
-    _enemy_hp_bar = enemy_bar["fill"]
-
-    _enemy_hp_text = UiKit.make_label_strong("", 10, Color(0.98, 0.95, 0.88, 0.96))
-    _enemy_hp_text.position = Vector2(126, 50)
-    _enemy_hp_text.size = Vector2(ENEMY_HP_BAR_W, 16)
-    _enemy_hp_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-    _enemy_hp_text.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-    _enemy_panel.add_child(_enemy_hp_text)
-
-    _enemy_status_row = _make_status_row(
-        _enemy_panel, Rect2(126, 69, ENEMY_HP_BAR_W, 17), BoxContainer.ALIGNMENT_END, 16)
+    # The top-left enemy card was removed — the foe's name + HP already show under
+    # its sprite (per-foe readout), the intent line lives in the log, and the target
+    # cursor marks which foe is selected. The log panel takes over this space.
 
     _build_turn_order_strip()
     _build_foe_row()
@@ -1430,6 +1375,224 @@ func _actor_fx_center(actor: Dictionary, is_ally: bool) -> Vector2:
     return _foe_center(actor)
 
 
+# ── enemy speech bubbles (real-time barks, kept OUT of the battle log) ─────────
+## Enqueue-only by design: this function never awaits playback, changes _ui_mode,
+## or consumes input. Each enemy drains its own fixed-template bark channel.
+func _enemy_say(foe: Dictionary, quote: String) -> void :
+    if _battle_over or _enemy_barks_shutting_down:
+        return
+    var text: = quote.strip_edges()
+    if text.is_empty():
+        return
+
+    var key := _enemy_bark_key(foe)
+    var channel: Dictionary = _enemy_bark_channels.get(key, {}) as Dictionary
+    if channel.is_empty():
+        channel = {
+            "foe": foe,
+            "pending": [],
+            "active": null,
+            "current": "",
+            "running": false,
+            "generation": 0,
+        }
+    var pending: Array = channel.get("pending", []) as Array
+    var current := str(channel.get("current", ""))
+    if current == text or (not pending.is_empty() and str(pending[pending.size() - 1]) == text):
+        return
+    if pending.size() >= MAX_PENDING_BARKS_PER_ENEMY:
+        pending[pending.size() - 1] = text # newest context replaces stale backlog
+    else:
+        pending.append(text)
+    channel["foe"] = foe
+    channel["pending"] = pending
+
+    if not bool(channel.get("running", false)):
+        _enemy_bark_generation += 1
+        channel["running"] = true
+        channel["generation"] = _enemy_bark_generation
+        _enemy_bark_channels[key] = channel
+        # Deferred start guarantees the caller continues its action in this frame.
+        call_deferred("_start_next_enemy_bark", key, _enemy_bark_generation)
+    else:
+        _enemy_bark_channels[key] = channel
+
+
+func _start_next_enemy_bark(key: String, generation: int) -> void:
+    if _enemy_barks_shutting_down or not is_inside_tree():
+        return
+    if _design == null or not _design.is_inside_tree() or not _enemy_bark_channels.has(key):
+        return
+    var channel: Dictionary = _enemy_bark_channels[key] as Dictionary
+    if int(channel.get("generation", -1)) != generation:
+        return
+    var pending: Array = channel.get("pending", []) as Array
+    if pending.is_empty():
+        _enemy_bark_channels.erase(key)
+        return
+
+    var text := str(pending.pop_front())
+    var foe: Dictionary = channel.get("foe", {}) as Dictionary
+    channel["pending"] = pending
+    channel["current"] = text
+    var bubble := _spawn_enemy_bubble(foe, text)
+    channel["active"] = bubble
+    _enemy_bark_channels[key] = channel
+    if bubble == null:
+        channel["current"] = ""
+        _enemy_bark_channels[key] = channel
+        call_deferred("_start_next_enemy_bark", key, generation)
+        return
+
+    # Signal-driven sequencing avoids suspended coroutine states. Cancellation,
+    # natural completion and tree teardown all pass through the same cleanup path.
+    bubble.playback_finished.connect(
+        _on_enemy_bark_playback_finished.bind(key, generation, bubble),
+        CONNECT_ONE_SHOT,
+    )
+    bubble.play()
+
+
+func _on_enemy_bark_playback_finished(
+    _cancelled: bool,
+    key: String,
+    generation: int,
+    bubble: Control,
+) -> void:
+    if is_instance_valid(bubble) and bubble.is_inside_tree():
+        bubble.queue_free()
+    if _enemy_barks_shutting_down or not _enemy_bark_channels.has(key):
+        return
+    var channel: Dictionary = _enemy_bark_channels[key] as Dictionary
+    if int(channel.get("generation", -1)) != generation:
+        return
+    channel["active"] = null
+    channel["current"] = ""
+    var pending: Array = channel.get("pending", []) as Array
+    if pending.is_empty():
+        _enemy_bark_channels.erase(key)
+        return
+    _enemy_bark_channels[key] = channel
+    # Always defer the next add_child: a cancellation signal can originate while
+    # the previous bubble or its parent is in the middle of exiting the tree.
+    call_deferred("_start_next_enemy_bark", key, generation)
+
+
+func _enemy_bark_key(foe: Dictionary) -> String:
+    var key := str(foe.get("id", ""))
+    if not key.is_empty():
+        return key
+    var index := _foes.find(foe)
+    return "foe_%d" % maxi(index, 0)
+
+
+func _shutdown_enemy_barks() -> void:
+    if _enemy_barks_shutting_down:
+        return
+    _enemy_barks_shutting_down = true
+    _enemy_bark_generation += 1
+    for raw_channel in _enemy_bark_channels.values():
+        var channel: Dictionary = raw_channel as Dictionary
+        var active: Variant = channel.get("active")
+        if active != null and is_instance_valid(active):
+            if (active as Object).has_method("cancel_playback"):
+                (active as Object).call("cancel_playback")
+            (active as Node).queue_free()
+    _enemy_bark_channels.clear()
+
+
+func _spawn_enemy_bubble(foe: Dictionary, text: String) -> Control:
+    var bubble: = BattleSpeechBubbleScript.new()
+    bubble.setup(text)
+    _design.add_child(bubble)   # newest child → drawn above the battlefield
+
+    # Start from the face centre for layout, but anchor the pointer on the near
+    # hair/horn/shoulder edge so the speaking enemy's expression stays visible.
+    var face_center: Vector2
+    var face_safe_x := 30.0
+    var ui: = _foe_ui(foe)
+    if ui.is_empty():
+        var c: = _foe_center(foe)
+        face_center = c - Vector2(0.0, 40.0)
+    else:
+        var holder: Control = ui["holder"]
+        var slot: Vector2 = ui["size"]
+        # Generated battle portraits often keep generous transparent padding.
+        face_center = holder.position + Vector2(slot.x * 0.5, slot.y * 0.32)
+        face_safe_x = clampf(slot.x * 0.16, 24.0, 48.0)
+
+    var w: float = bubble.size.x
+    var h: float = bubble.size.y
+
+    # Evaluate both authored directions. Preference follows the enemy's half of
+    # the screen, while overflow and collision with the battle log carry a much
+    # larger penalty. No template is stretched or procedurally re-aimed.
+    var prefer_bubble_on_right: = face_center.x < DESIGN_SIZE.x * 0.52
+    var candidates: Array[Dictionary] = []
+    for bubble_on_right in [true, false]:
+        # Bubble on the right of the enemy needs the mirrored down-left pointer.
+        var pointer_side: int = 0 if bubble_on_right else 1
+        bubble.set_pointer_side(pointer_side)
+        var tip: Vector2 = bubble.pointer_tip_local()
+        var side_sign := 1.0 if bubble_on_right else -1.0
+        var speaker_anchor := face_center + Vector2(face_safe_x * side_sign, -4.0)
+        var candidate_pos: = speaker_anchor - tip
+        var candidate_rect: = Rect2(candidate_pos, Vector2(w, h))
+        var penalty: = 0.0
+        penalty += maxf(12.0 - candidate_rect.position.x, 0.0) * 180.0
+        penalty += maxf(candidate_rect.end.x - (DESIGN_SIZE.x - 12.0), 0.0) * 180.0
+        penalty += maxf(12.0 - candidate_rect.position.y, 0.0) * 120.0
+        penalty += maxf(candidate_rect.end.y - (DESIGN_SIZE.y - 12.0), 0.0) * 120.0
+        var log_rect := Rect2(LOG_PANEL_POS, LOG_PANEL_SIZE).grow(8.0)
+        if candidate_rect.intersects(log_rect):
+            var overlap := candidate_rect.intersection(log_rect)
+            penalty += overlap.size.x * overlap.size.y * 0.9
+
+        # Concurrent barks remain independent, but prefer opposite sides when two
+        # live templates would obscure each other.
+        for raw_channel in _enemy_bark_channels.values():
+            var other_channel: Dictionary = raw_channel as Dictionary
+            var other: Variant = other_channel.get("active")
+            if other == null or not is_instance_valid(other) or other == bubble:
+                continue
+            var other_bubble := other as Control
+            var other_rect := Rect2(other_bubble.position, other_bubble.size).grow(5.0)
+            if candidate_rect.intersects(other_rect):
+                var bubble_overlap := candidate_rect.intersection(other_rect)
+                penalty += bubble_overlap.size.x * bubble_overlap.size.y * 1.2
+        if bubble_on_right != prefer_bubble_on_right:
+            penalty += 28.0
+        candidates.append({
+            "right": bubble_on_right,
+            "position": candidate_pos,
+            "anchor": speaker_anchor,
+            "penalty": penalty,
+        })
+
+    var chosen: Dictionary = candidates[0]
+    if float(candidates[1]["penalty"]) < float(chosen["penalty"]):
+        chosen = candidates[1]
+    var on_right: bool = bool(chosen["right"])
+    bubble.set_pointer_side(0 if on_right else 1)
+    var pos: Vector2 = chosen["position"]
+    pos.x = clampf(pos.x, 12.0, DESIGN_SIZE.x - w - 12.0)
+    pos.y = clampf(pos.y, 12.0, DESIGN_SIZE.y - h - 12.0)
+
+    # Clamping near a screen edge can pull the authored tip back toward the eyes.
+    # Nudge it outward once more when canvas room allows.
+    var actual_tip := pos + bubble.pointer_tip_local()
+    var minimum_face_clearance := face_safe_x * 0.72
+    if absf(actual_tip.x - face_center.x) < minimum_face_clearance:
+        var clearance_sign := 1.0 if on_right else -1.0
+        var desired_tip_x := face_center.x + minimum_face_clearance * clearance_sign
+        pos.x += desired_tip_x - actual_tip.x
+        pos.x = clampf(pos.x, 12.0, DESIGN_SIZE.x - w - 12.0)
+    bubble.position = pos
+    bubble.set_meta("speaker_face_center", face_center)
+    bubble.set_meta("speaker_anchor", pos + bubble.pointer_tip_local())
+    return bubble
+
+
 # ── ally card stack (hero + companions, bottom-left) ─────────────────────────
 const ALLY_HERO_CARD_H: = 112.0
 const ALLY_COMP_CARD_H: = 74.0
@@ -1556,19 +1719,7 @@ func _ally_portrait_texture(ally: Dictionary) -> Texture2D:
 
 
 func _build_turn_order_strip() -> void :
-
-
-    # Small display-serif glyphs lost contrast over bright backdrops at 2x output;
-    # the strong UI face keeps this navigation label legible in every scene.
-    var title: = _make_header_label("TURN ORDER", 12, COLOR_ACCENT)
-    title.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.95))
-    title.add_theme_constant_override("shadow_offset_x", 1)
-    title.add_theme_constant_override("shadow_offset_y", 1)
-    title.position = TURN_ORDER_TITLE_POS
-    title.size = TURN_ORDER_TITLE_SIZE
-    title.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-    _design.add_child(title)
-
+    # The "TURN ORDER" title was removed; the card stack now sits at the top edge.
     _turn_stack = Control.new()
     _turn_stack.position = TURN_ORDER_STACK_POS
     _turn_stack.size = TURN_ORDER_STACK_SIZE
@@ -1577,7 +1728,9 @@ func _build_turn_order_strip() -> void :
 
 
 const TURN_CARD_SIZE: = Vector2(148, 44)
-const TURN_CARD_RIGHT: = 954.0
+# Card right edge sits 2px from the canvas edge (960) so the gap on the right
+# matches the stack's 2px gap from the top (TURN_ORDER_STACK_POS.y).
+const TURN_CARD_RIGHT: = 958.0
 const TURN_CARD_TUCK: = 0.0
 const TURN_CARD_POP: = 6.0
 
@@ -1776,12 +1929,10 @@ func _play_intro_animation() -> void :
 
 
     var off: Vector2 = _design.position
-    _enemy_panel.position.y = -ENEMY_PANEL_SIZE.y - 40.0 - off.y
     _log_panel.position.x = -LOG_PANEL_SIZE.x - 40.0 - off.x
     _menu_panel.position.y = DESIGN_SIZE.y + 24.0 + off.y
 
     var slide: = create_tween().set_parallel(true)
-    slide.tween_property(_enemy_panel, "position:y", ENEMY_PANEL_POS.y, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
     slide.tween_property(_log_panel, "position:x", LOG_PANEL_POS.x, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
     slide.tween_property(_menu_panel, "position:y", MENU_PANEL_POS.y, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
@@ -2086,7 +2237,9 @@ func _animate_ally_hp(ally: Dictionary) -> void :
 func _run_battle() -> void :
     await get_tree().create_timer(0.6).timeout
     for line in _dialogue("intro"):
-        await _say(line)
+        if _foes.is_empty():
+            break
+        _enemy_say(_foes[0], line)
     if _foes.size() > 1:
         await _say("%s does not come alone — %d foes face your party of %d!" % [_enemy_name(), _foes.size(), _allies.size()])
 
@@ -2649,13 +2802,18 @@ func _ally_attack(ally: Dictionary, foe: Dictionary, power: float, flavor: Strin
         var low_lines: Array = _dialogue("low_hp")
         if not low_lines.is_empty() and not triggered_phases.has("_low_hp"):
             triggered_phases["_low_hp"] = true
-            await _say("%s: \"%s\"" % [_enemy_name(), low_lines[0]])
+            _enemy_say(foe, str(low_lines[0]))
             if bool(enemy.get("can_spare", false)):
                 await _say("It is wavering. You could choose to spare it.")
     return damage
 
 
 func _handle_foe_death(foe: Dictionary) -> void :
+    # The primary foe's final bark starts in real time as its dissolve begins; it
+    # never delays death resolution or the player's transition to rewards.
+    if _living_foes().is_empty() and not _foes.is_empty() and _foes[0] == foe:
+        for line in _dialogue("player_victory"):
+            _enemy_say(foe, str(line))
     var ui: Dictionary = _foe_ui(foe)
     if not ui.is_empty():
         var holder: Control = ui["holder"]
@@ -2691,7 +2849,7 @@ func _check_phases() -> void :
             _shake(4.0, 0.35)
             var beat: String = str((phase as Dictionary).get("story_beat", ""))
             if not beat.is_empty():
-                await _say("%s: \"%s\"" % [_enemy_name(), beat])
+                _enemy_say(primary, beat)
             match str((phase as Dictionary).get("behavior", "aggressive")):
                 "aggressive":
                     phase_damage_bonus = 1.15
@@ -2867,7 +3025,8 @@ func _try_flee() -> void :
 
 func _spare_enemy() -> void :
     for line in _dialogue("spare"):
-        await _say("%s: \"%s\"" % [_enemy_name(), line])
+        if not _foes.is_empty():
+            _enemy_say(_foes[0], str(line))
     for foe in _foes:
         var ui: Dictionary = _foe_ui(foe)
         if not ui.is_empty():
@@ -2882,10 +3041,10 @@ func _victory() -> void :
     _set_exposed_glow(false)
     _shake(3.0, 0.25)
 
+    # player_victory was already queued as a real-time bark when the foe began to
+    # dissolve; the log keeps only the neutral mechanical "finish" line.
     for line in _dialogue("finish"):
         await _say(line)
-    for line in _dialogue("player_victory"):
-        await _say("%s: \"%s\"" % [_enemy_name(), line])
 
     _show_victory_banner()
     var xp: = 0
@@ -3035,7 +3194,8 @@ func _defeat() -> void :
     var dark: = create_tween()
     dark.tween_property(_root, "modulate", Color(0.55, 0.5, 0.6), 1.2)
     for line in _dialogue("player_defeat"):
-        await _say("%s: \"%s\"" % [_enemy_name(), line])
+        if not _foes.is_empty():
+            _enemy_say(_foes[0], str(line))
     GameManager.lose_xp_on_defeat()
     # Companions wake alongside the protagonist.
     for ally in _allies:
@@ -3202,31 +3362,16 @@ func _refresh_all_panels() -> void :
         _refresh_ally_card(_allies[index], _ally_cards[index])
 
 
-## The top-left readout mirrors the foe the cursor last rested on.
+## Keeps the target-index bookkeeping and the intent line (in the log panel) — the
+## top-left enemy card was removed, so name/HP/status now come from the per-foe
+## readout under each sprite (see _refresh_foe_overlay, which also shows EXPOSED).
 func _refresh_target_readout() -> void :
-    if _enemy_name_label == null or _foes.is_empty():
+    if _foes.is_empty():
         return
     var living: Array[int] = _living_foes()
     if _target_foe_index >= _foes.size() or (_actor_down(_foes[_target_foe_index], false) and not living.is_empty()):
         _target_foe_index = living[0] if not living.is_empty() else 0
     var foe: Dictionary = _foes[_target_foe_index]
-    _enemy_name_label.text = str(foe.get("name"))
-    _fit_label_font(_enemy_name_label, 22, 12)
-    _enemy_lv_label.text = "Lv %d" % int(foe.get("level", 1))
-    _enemy_hp_text.text = "%d / %d" % [maxi(int(foe.get("hp", 0)), 0), int(foe.get("max_hp", 1))]
-    var ratio: float = clampf(float(foe.get("hp", 0)) / float(foe.get("max_hp", 1)), 0.0, 1.0)
-    _enemy_hp_bar.size.x = ENEMY_HP_BAR_W * ratio
-    _enemy_hp_ghost.size.x = ENEMY_HP_BAR_W * ratio
-    if _enemy_medallion != null:
-        _enemy_medallion.texture = _cropped_portrait(_foe_portrait_texture(foe), 128, true)
-    var status_extra: Array[Dictionary] = []
-    if exposed_turns > 0 and foe == _foes[0]:
-        status_extra.append({
-            "id": "exposed", "label": "EXP", "count": exposed_turns,
-            "tooltip": "Exposed · takes amplified damage · %d turn%s" % [
-                exposed_turns, "" if exposed_turns == 1 else "s"],
-        })
-    _refresh_status_row(_enemy_status_row, foe, status_extra)
     if _intent_label != null:
         var intent: Dictionary = foe.get("intent", {}) as Dictionary
         var telegraph: String = str(intent.get("telegraph", ""))
@@ -3335,9 +3480,14 @@ func _update_turn_order_view(animate: bool = true) -> void :
 
 func _finish(result: String) -> void :
     _battle_over = true
+    _shutdown_enemy_barks()
     GameManager.ui_blocking_input = false
     battle_finished.emit(result, enemy_id)
     queue_free()
+
+
+func _exit_tree() -> void:
+    _shutdown_enemy_barks()
 
 
 

@@ -81,6 +81,13 @@ func reset() -> void:
 	_icon_sheet = null
 	_detail_image_cache.clear()
 	_close_item_detail_view()
+	# Notifications belong to the chapter/session that produced them. A pending
+	# item toast must not keep the next chapter's quest notifications waiting.
+	_toast_queue.clear()
+	_toast_busy = false
+	if _toast_host != null:
+		for child in _toast_host.get_children():
+			child.queue_free()
 	inventory_changed.emit()
 
 
@@ -251,6 +258,9 @@ func add_item(item_id: String, amount: int = 1, silent: bool = false) -> void:
 		return
 	counts[item_id] = count_of(item_id) + amount
 	if not silent:
+		# Item acquisition is the cause; quest/objective updates produced by the
+		# item_obtained signal are the consequence and must be presented afterward.
+		QuestManager.yield_notifications_to_item()
 		# In a conversation this becomes the full-screen "item get" ceremony;
 		# in the open world it stays a lightweight toast.
 		var announced: bool = AnnouncementCenter.enqueue("item", {"items": [{
@@ -903,7 +913,7 @@ func _ensure_ui() -> void:
 	_detail_view_text.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	detail_view_panel.add_child(_detail_view_text)
 
-	var detail_view_close_hint := UiKit.make_label("Esc / V để đóng", 10, Color(0.93, 0.88, 0.75, 0.72))
+	var detail_view_close_hint := UiKit.make_label("Enter / Esc để đóng", 10, Color(0.93, 0.88, 0.75, 0.72))
 	detail_view_close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	detail_view_close_hint.position = Vector2(20, 402)
 	detail_view_close_hint.size = Vector2(360, 16)
@@ -1019,7 +1029,13 @@ func _refresh_screen() -> void:
 				"quest": "Quest item cannot be discarded.",
 			}.get(kind, "")
 			if not _item_detail(definition).is_empty():
-				_action_hint.text += "   •   V: Xem chi tiết"
+				# This owned item has a rich detail view — Enter opens it (reading a
+				# LORE·READABLE item, or examining an illustrated keepsake/photo/map).
+				if kind == "lore":
+					_action_hint.text = "Enter để đọc."
+				else:
+					_action_button_label.text = "Xem"
+					_action_hint.text = "Enter để xem chi tiết."
 	else:
 		_detail_name.text = ""
 		_detail_kind.text = ""
@@ -1028,6 +1044,21 @@ func _refresh_screen() -> void:
 		_detail_icon.texture = null
 		_action_hint.text = ""
 		_action_button_label.text = ""
+
+
+## Enter is the primary action on the selected item. An item that has a detail
+## view (every LORE·READABLE item, plus any keepsake/photo/map the item-details
+## step illustrated) opens that view to READ / examine it; otherwise Enter uses
+## the item (heal now, etc.). This is the ONLY way to open a detail — the old
+## separate V shortcut was removed.
+func _activate_selected() -> void:
+	var definition := _definition_at_filtered_index(_selected)
+	if definition.is_empty() or count_of(str(definition.get("id"))) <= 0:
+		return
+	if not _item_detail(definition).is_empty():
+		_open_item_detail_view()
+	else:
+		_use_selected()
 
 
 func _use_selected() -> void:
@@ -1119,6 +1150,18 @@ func _push_item_toast(definition: Dictionary, amount: int = 1) -> void:
 		"count": maxi(1, amount),
 		"icon": icon_for(definition),
 	})
+	QuestManager.yield_notifications_to_item()
+
+
+func has_pending_item_notifications() -> bool:
+	if _toast_busy and _toast_host != null:
+		for child in _toast_host.get_children():
+			if child is ItemPickupToast:
+				return true
+	for entry in _toast_queue:
+		if entry is Dictionary and str((entry as Dictionary).get("kind", "")) == "item":
+			return true
+	return false
 
 
 func _process(_delta: float) -> void:
@@ -1164,12 +1207,12 @@ func _show_next_toast() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	# The item detail view is a modal ON TOP of the inventory screen — while
-	# open, only Esc/V close it; every other key/click is swallowed so it can
+	# open, only Enter/Esc close it; every other key/click is swallowed so it can
 	# never fall through to grid navigation or close the whole screen.
 	if _detail_view_open:
 		if event is InputEventKey and event.is_pressed() and not event.is_echo():
-			var keycode := (event as InputEventKey).physical_keycode
-			if keycode == KEY_V or event.is_action_pressed("ui_cancel"):
+			# Enter (opened it) or Esc closes the reader.
+			if event.is_action_pressed("ui_accept") or event.is_action_pressed("ui_cancel"):
 				_close_item_detail_view()
 		get_viewport().set_input_as_handled()
 		return
@@ -1182,10 +1225,6 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventKey and event.is_pressed() and not event.is_echo():
 		var keycode := (event as InputEventKey).physical_keycode
-		if keycode == KEY_V:
-			_open_item_detail_view()
-			get_viewport().set_input_as_handled()
-			return
 		if keycode >= KEY_1 and keycode <= KEY_5:
 			var filter_index := int(keycode - KEY_1)
 			if filter_index >= 0 and filter_index < INV_FILTER_IDS.size():
@@ -1196,7 +1235,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		_toggle_screen()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("ui_accept"):
-		_use_selected()
+		_activate_selected()
 		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("ui_right"):
 		_selected = mini(_selected + 1, _max_selectable_index())

@@ -95,9 +95,7 @@ func _higher_priority_narrative_playback_pending() -> bool:
 	if AnnouncementCenter.conversation_active or AnnouncementCenter.playing \
 			or AnnouncementCenter.has_pending():
 		return true
-	var scene := get_tree().current_scene
-	return scene != null and scene.has_method("has_pending_narrative_playback") \
-			and bool(scene.call("has_pending_narrative_playback"))
+	return CutsceneDirector.has_pending_playback()
 
 
 func _show_chapter_celebration(chapter_number: int, chapter_title: String) -> void:

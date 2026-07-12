@@ -58,6 +58,9 @@ var _tracker_layer: CanvasLayer = null
 var _toast_host: Control
 var _toast_queue: Array = []
 var _toast_busy: bool = false
+var _active_toast_payload: Dictionary = {}
+var _active_toast_panel: Control = null
+var _active_toast_tween: Tween = null
 var _journal_root: Control
 var _journal_view
 var _journal_open: bool = false
@@ -84,6 +87,11 @@ func reset() -> void:
 	_chapter_snapshots = {}
 	_pending_choices.clear()
 	_toast_queue.clear()
+	if _active_toast_tween != null and _active_toast_tween.is_valid():
+		_active_toast_tween.kill()
+	_active_toast_tween = null
+	_active_toast_payload = {}
+	_active_toast_panel = null
 	_toast_busy = false
 	if _toast_host != null:
 		for child in _toast_host.get_children():
@@ -227,7 +235,6 @@ func _quest_giver_zone(quest: Dictionary) -> String:
 
 
 func notify_npc_talked(npc_id: String) -> void:
-	npc_talked.emit(npc_id)
 	# Talking to a quest giver is how that quest BEGINS — the NPC asks for help, and
 	# only then do its objectives appear. This is what makes the chain feel like a
 	# story ("meet Arlo → he sends you to the field → bring the petals back to him").
@@ -260,6 +267,12 @@ func notify_npc_talked(npc_id: String) -> void:
 				_try_deliver(quest, objective)
 	_grant_current_npc_collect_objectives(npc_id)
 	_settle_collect_objectives()
+	# Emit only after every synchronous talk/choice/collect mutation above. Planned
+	# cutscenes use connects.from as a prerequisite, so observers must see the
+	# objective that this conversation just completed. Keep this before
+	# quests_changed so the specific npc_talked beat retains queue priority over a
+	# generic quest-progress beat raised by the same conversation.
+	npc_talked.emit(npc_id)
 	quests_changed.emit()
 	_refresh_tracker()
 
@@ -714,6 +727,41 @@ func stage_unlocked(unlock: Dictionary) -> bool:
 			return false
 
 
+func has_reached_story_ref(story_ref: String) -> bool:
+	## Resolve chapter_cutscene_plan.connects.from against live quest progress.
+	## Objective IDs are looked up in the authored quest array instead of assuming
+	## that every ID is numerically shaped like o1/o2/etc.
+	var ref := story_ref.strip_edges()
+	if ref == "chapter_start":
+		return true
+	var separator := ref.rfind(":")
+	if separator <= 0 or separator >= ref.length() - 1:
+		return false
+	var quest_id := ref.left(separator)
+	var milestone := ref.substr(separator + 1)
+	var quest_definition: Dictionary = {}
+	for quest in quests:
+		if quest is Dictionary and str((quest as Dictionary).get("id", "")) == quest_id:
+			quest_definition = quest as Dictionary
+			break
+	if quest_definition.is_empty():
+		return false
+	if milestone == "complete":
+		return str(_state_of(quest_definition).get("state", "")) == "completed"
+
+	var objectives: Array = quest_definition.get("objectives", []) as Array
+	for index in range(objectives.size()):
+		if not (objectives[index] is Dictionary):
+			continue
+		var objective: Dictionary = objectives[index] as Dictionary
+		var objective_id := str(objective.get("id", "")).strip_edges()
+		if objective_id.is_empty():
+			objective_id = "o%d" % (index + 1)
+		if objective_id == milestone:
+			return completed_objective_count(quest_id) >= index + 1
+	return false
+
+
 # ── internals ─────────────────────────────────────────────────────────────────
 
 
@@ -1091,7 +1139,19 @@ func _build_journal() -> void:
 func _process(_delta: float) -> void:
 	if _ui == null:
 		return
-	if not _toast_queue.is_empty() and not _toast_busy:
+	var cutscene_has_priority := CutsceneDirector.has_pending_playback()
+	var item_has_priority := InventoryManager.has_pending_item_notifications()
+	# ObjectInteractionView is modal while it reveals a silently granted item.
+	# Holding quest toasts behind every blocking modal also prevents objectives
+	# from drawing over dialogue, choices, inventory, or chapter transitions.
+	var modal_has_priority := GameManager.ui_blocking_input
+	var ceremony_has_priority := AnnouncementCenter.conversation_active \
+			or AnnouncementCenter.playing or AnnouncementCenter.has_pending()
+	var higher_priority_notification := cutscene_has_priority or item_has_priority \
+			or modal_has_priority or ceremony_has_priority
+	if higher_priority_notification and _toast_busy:
+		_defer_active_toast()
+	if not higher_priority_notification and not _toast_queue.is_empty() and not _toast_busy:
 		_show_next_toast()
 	var has_active: bool = quests.any(func(q): return str(_state_of(q).get("state")) == "active")
 	var hud_visible := has_active and not GameManager.ui_blocking_input and not _journal_open \
@@ -1148,6 +1208,12 @@ func _push_toast(kind: String, quest: Dictionary) -> void:
 	if kind == "objective":
 		payload["objective"] = _current_objective(quest).duplicate(true)
 		payload["progress"] = int(_state_of(quest).get("progress", 0))
+		# One beat can advance a quest through several objectives at once (a talk
+		# objective completing, then its next collect objective being granted and
+		# settled), queuing a notice per step. Collapse them so only the newest
+		# objective of this quest shows: drop any still-pending objective notice
+		# for it from whichever queue is holding it.
+		_drop_pending_objective_notifications(str(quest.get("id", "")))
 	# During a conversation the event becomes a full-screen ceremony instead of
 	# a corner toast (AnnouncementCenter refuses outside conversations).
 	if AnnouncementCenter.enqueue(kind, payload):
@@ -1155,10 +1221,29 @@ func _push_toast(kind: String, quest: Dictionary) -> void:
 	_toast_queue.append(payload)
 
 
+## Remove not-yet-shown objective notifications for one quest from both the
+## in-conversation ceremony queue and the open-world toast queue. Only pending
+## entries are touched; a toast already animating on screen is left alone.
+func _drop_pending_objective_notifications(quest_id: String) -> void:
+	if quest_id.is_empty():
+		return
+	AnnouncementCenter.drop_pending_objectives(quest_id)
+	var kept: Array = []
+	for payload in _toast_queue:
+		if payload is Dictionary \
+				and str((payload as Dictionary).get("kind", "")) == "objective" \
+				and str(((payload as Dictionary).get("quest", {}) as Dictionary).get("id", "")) == quest_id:
+			continue
+		kept.append(payload)
+	_toast_queue = kept
+
+
 func _show_next_toast() -> void:
 	_toast_busy = true
 	var item: Dictionary = _toast_queue.pop_front()
-	var panel = QuestNotificationToastScript.new()
+	_active_toast_payload = item
+	var panel: Control = QuestNotificationToastScript.new()
+	_active_toast_panel = panel
 	panel.setup(_notification_display_data(item))
 	panel.position = Vector2(-panel.size.x * 0.5, -panel.size.y - 8).round()
 	panel.scale = Vector2(0.96, 0.96)
@@ -1167,16 +1252,52 @@ func _show_next_toast() -> void:
 	panel.animate_effects()
 
 	var tween := create_tween()
+	_active_toast_tween = tween
 	tween.tween_property(panel, "position:y", 8.0, 0.32).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tween.parallel().tween_property(panel, "modulate:a", 1.0, 0.18)
 	tween.parallel().tween_property(panel, "scale", Vector2.ONE, 0.24).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tween.tween_interval(TOAST_SECONDS)
 	tween.tween_property(panel, "position:y", -panel.size.y - 8.0, 0.26).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	tween.parallel().tween_property(panel, "modulate:a", 0.0, 0.18)
-	tween.tween_callback(func() -> void:
-		panel.queue_free()
-		_toast_busy = false
-	)
+	tween.tween_callback(_finish_active_toast)
+
+
+func yield_notifications_to_cutscene() -> void:
+	## Main calls this synchronously when it queues a cutscene, eliminating even a
+	## one-frame overlap before _process observes the shared priority barrier.
+	if _toast_busy:
+		_defer_active_toast()
+
+
+func yield_notifications_to_item() -> void:
+	## Item acquisition is shown before the quest/objective updates it causes.
+	if _toast_busy:
+		_defer_active_toast()
+
+
+func _defer_active_toast() -> void:
+	if not _toast_busy:
+		return
+	if _active_toast_tween != null and _active_toast_tween.is_valid():
+		_active_toast_tween.kill()
+	_active_toast_tween = null
+	if is_instance_valid(_active_toast_panel):
+		_active_toast_panel.visible = false
+		_active_toast_panel.queue_free()
+	_active_toast_panel = null
+	if not _active_toast_payload.is_empty():
+		_toast_queue.push_front(_active_toast_payload)
+	_active_toast_payload = {}
+	_toast_busy = false
+
+
+func _finish_active_toast() -> void:
+	if is_instance_valid(_active_toast_panel):
+		_active_toast_panel.queue_free()
+	_active_toast_panel = null
+	_active_toast_tween = null
+	_active_toast_payload = {}
+	_toast_busy = false
 
 
 func _notification_display_data(item: Dictionary) -> Dictionary:

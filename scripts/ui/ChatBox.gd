@@ -12,9 +12,13 @@ const TEX_NAMEPLATE_PATH      := "res://assets/ui/dialogue_v2/nameplate.png"
 # portrait, refined panel, 3-slice nameplate/highlight, nine-slice menu frame.
 # Every piece is optional: a missing file falls back to the dialogue_v2 look.
 const CHAT_V3_DIR := "res://assets/ui/chat_v3/"
-const BUST_ASPECT := 0.70    # tall visual-novel crop of the square emotion art
-const BUST_HEIGHT := 206.0   # design units (~64% of the 324-unit canvas)
 const BUST_OVERHANG := 70.0  # how far the bust juts LEFT of the panel edge
+# Keep the ChatBox emotion portrait on the exact same screen-space rect as the
+# cutscene dialogue portrait. CutscenePlayer authors its UI at scale 2 on a
+# bottom-anchored 480x270 canvas, with this portrait rect inside that canvas.
+const CUTSCENE_UI_SCALE := 2.0
+const CUTSCENE_DIALOGUE_CANVAS_SIZE := Vector2(480.0, 270.0)
+const CUTSCENE_PORTRAIT_RECT := Rect2(0.0, 62.0, 158.0, 208.0)
 const TEX_CHOICE_CURSOR_PATH  := "res://assets/ui/dialogue_choice_clean/choice_cursor.png"
 const TEX_CHOICE_HILITE_PATH  := "res://assets/ui/dialogue_choice_clean/choice_highlight.png"
 const TEX_CHOICE_ANCHOR_PATH  := "res://assets/ui/dialogue_choice_clean/choice_anchor.png"
@@ -134,7 +138,6 @@ var _tex_nameplate_v3: Texture2D = null
 var _tex_highlight_v3: Texture2D = null
 var _nameplate_v3: Control = null
 var _continue_gem: TextureRect = null
-var _bust_cache: Dictionary = {}  # source texture rid -> cropped tall-bust texture
 
 # ── frameless option menu (user-approved mockup): no frame at all — a soft
 # edge-fading haze keeps the floating text readable, the selected row gets a
@@ -373,7 +376,7 @@ func _build_dialogue_v2_nodes() -> void:
 		# right, so nothing readable ever sits underneath it.
 		_portrait_fg.visible = false
 		_npc_portrait.clip_contents = false
-		_npc_portrait.stretch_mode = TextureRect.STRETCH_SCALE
+		_npc_portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		_npc_portrait.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 		move_child(_npc_portrait, _panel.get_index() + 1)
 		# The panel art bakes its own edge ornaments — the loose divider retires.
@@ -458,33 +461,6 @@ func _mount_three_slice(host: Control, texture: Texture2D, cap_frac_l: float, ca
 	relayout.call()
 
 
-## Center-crop an emotion portrait (square bust art) to a tall visual-novel
-## aspect in Image space — STRETCH_SCALE then never distorts and we never rely
-## on KEEP_ASPECT_COVERED (known unreliable). Cached per source texture.
-func _bust_texture(texture: Texture2D) -> Texture2D:
-	if texture == null:
-		return null
-	var key := texture.get_rid().get_id()
-	if _bust_cache.has(key):
-		return _bust_cache[key]
-	var image := texture.get_image()
-	if image == null:
-		return texture
-	image = image.duplicate() as Image
-	if image.is_compressed():
-		image.decompress()
-	image.convert(Image.FORMAT_RGBA8)
-	var w := image.get_width()
-	var h := image.get_height()
-	var target_w := int(round(h * BUST_ASPECT))
-	if target_w < w:
-		var crop := Image.create(target_w, h, false, Image.FORMAT_RGBA8)
-		crop.blit_rect(image, Rect2i(int((w - target_w) * 0.5), 0, target_w, h), Vector2i.ZERO)
-		image = crop
-	var result := ImageTexture.create_from_image(image)
-	_bust_cache[key] = result
-	return result
-
 func _make_texture_style(
 	texture: Texture2D,
 	left: float,
@@ -507,8 +483,21 @@ func _make_texture_style(
 	style.axis_stretch_vertical = StyleBoxTexture.AXIS_STRETCH_MODE_TILE_FIT
 	return style
 
+func _cutscene_portrait_rect_in_chat_space(viewport_size: Vector2) -> Rect2:
+	var cutscene_design_size := viewport_size / CUTSCENE_UI_SCALE
+	var cutscene_root := Vector2(
+		(cutscene_design_size.x - CUTSCENE_DIALOGUE_CANVAS_SIZE.x) * 0.5,
+		cutscene_design_size.y - CUTSCENE_DIALOGUE_CANVAS_SIZE.y
+	)
+	var cutscene_to_chat_scale := CUTSCENE_UI_SCALE / UI_SCALE
+	return Rect2(
+		(cutscene_root + CUTSCENE_PORTRAIT_RECT.position) * cutscene_to_chat_scale,
+		CUTSCENE_PORTRAIT_RECT.size * cutscene_to_chat_scale
+	)
+
 func _layout() -> void:
-	var vp := get_viewport().get_visible_rect().size / UI_SCALE
+	var viewport_size := get_viewport().get_visible_rect().size
+	var vp := viewport_size / UI_SCALE
 	if _screen_dim != null:
 		_screen_dim.size = vp
 
@@ -525,32 +514,16 @@ func _layout() -> void:
 	_panel.size     = Vector2(pw, ph)
 	_panel.position = Vector2(px, py)
 
-	var pf_h := minf(ph + 22.0, 108.0)
-	var pf_w := pf_h * (346.0 / 436.0)
-	var pf_pos := Vector2(px + 8.0, py - 8.0)
-	if _chat_v3:
-		# Frameless visual-novel bust: tall, seated just above the panel's
-		# lower border, standing BEHIND the panel art.
-		var bust_h := BUST_HEIGHT
-		var bust_w := bust_h * BUST_ASPECT
-		var bust_pos := Vector2(maxf(6.0, px - BUST_OVERHANG), py + ph - 8.0 - bust_h)
-		_npc_portrait.size = Vector2(bust_w, bust_h)
-		_npc_portrait.position = bust_pos
-		pf_pos = bust_pos
-		pf_w = bust_w
-	else:
-		_portrait_fg.size     = Vector2(pf_w, pf_h)
-		_portrait_fg.position = pf_pos
-
-		var np_w := pf_w * 0.70
-		var np_h := pf_h * 0.95
-		_npc_portrait.size = Vector2(np_w, np_h)
-		_npc_portrait.position = Vector2(
-			pf_pos.x + (pf_w - np_w) * 0.5,
-			pf_pos.y + (pf_h - np_h) * 0.5
-		)
-		_npc_portrait.clip_contents = true
-		_npc_portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	var portrait_rect := _cutscene_portrait_rect_in_chat_space(viewport_size)
+	_npc_portrait.position = portrait_rect.position
+	_npc_portrait.size = portrait_rect.size
+	_npc_portrait.clip_contents = false
+	_npc_portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	var pf_pos := portrait_rect.position
+	var pf_w := portrait_rect.size.x
+	if not _chat_v3:
+		_portrait_fg.position = portrait_rect.position
+		_portrait_fg.size = portrait_rect.size
 
 	var ib_x := px + 76.0
 	var ib_w := px + pw - ib_x - 22.0
@@ -816,9 +789,9 @@ func _set_portrait_for_emotion(emotion: String) -> void:
 		normalized = "neutral"
 	if texture == null:
 		texture = _default_portrait_texture
-	# v3 shows the portrait as a frameless tall bust — crop once in Image space
-	# (cached) so STRETCH_SCALE never distorts the art.
-	_npc_portrait.texture = _bust_texture(texture) if _chat_v3 else texture
+	# Match cutscene portraits: use the source emotion art unchanged and let the
+	# TextureRect fit the whole image while preserving its aspect ratio.
+	_npc_portrait.texture = texture
 	if not normalized.is_empty():
 		print("[ChatBox] portrait npc=%s emotion=%s" % [_npc_id, normalized])
 

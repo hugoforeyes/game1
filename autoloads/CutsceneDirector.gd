@@ -4,11 +4,13 @@ extends Node
 ## Each zone's scene_package carries a `cutscenes` array authored by the
 ## scene_cutscenes step: every entry has a `trigger` (zone_enter / zone_cleared /
 ## enemy_defeated / quest_objective / quest_complete / quest_choice /
-## item_obtained / npc_talked)
+## flag / relationship / item_obtained / npc_talked)
 ## plus an `actions` + absolute `start_tiles` script. This director
 ## keeps the current zone's list and a per-run "already played" set, and matches
-## events the game reports against the unplayed cutscenes' triggers. Quest gates
-## reuse QuestManager.stage_unlocked (same contract as story dialogue).
+## events the game reports against the unplayed cutscenes' triggers. Every modern
+## plan also carries connects.from; it is an additional causal prerequisite
+## resolved against QuestManager so visiting a later zone cannot skip quest order.
+## Quest trigger gates reuse QuestManager.stage_unlocked (same contract as story dialogue).
 ##
 ## It only MATCHES — Main owns playback (so it can gate on battle/transitions and
 ## reuse the same CutscenePlayer for every planned beat).
@@ -39,6 +41,18 @@ func mark_played(cutscene_id: String) -> void:
 		_played[cutscene_id] = true
 
 
+func has_pending_playback() -> bool:
+	## Shared priority barrier for quest/reward UI. Main owns the planned-cutscene
+	## queue, while CutscenePlayer owns the active/teardown phase.
+	if get_tree().get_first_node_in_group("active_cutscene_player") != null:
+		return true
+	var owner := get_tree().get_first_node_in_group("narrative_playback_owner")
+	if owner == null:
+		owner = get_tree().current_scene
+	return owner != null and owner.has_method("has_pending_narrative_playback") \
+			and bool(owner.call("has_pending_narrative_playback"))
+
+
 ## First unplayed cutscene in the current zone whose trigger matches this event,
 ## or {} if none. `event_type` is one of: zone_enter, zone_cleared, quest_changed,
 ## enemy_defeated, item_obtained, npc_talked. `params` carries event specifics.
@@ -51,9 +65,34 @@ func match_event(event_type: String, params: Dictionary = {}) -> Dictionary:
 			continue
 		if ((cs as Dictionary).get("actions", []) as Array).is_empty():
 			continue
-		if _trigger_matches((cs as Dictionary).get("trigger", {}) as Dictionary, event_type, params):
-			return cs as Dictionary
+		if not _trigger_matches((cs as Dictionary).get("trigger", {}) as Dictionary, event_type, params):
+			continue
+		if not _connects_from_reached(cs as Dictionary):
+			continue
+		return cs as Dictionary
 	return {}
+
+
+func _connects_from_reached(cutscene: Dictionary) -> bool:
+	# Packages created before connects became a runtime gate have no edge (or an
+	# empty one); preserve their trigger-only behavior. Once an edge is present,
+	# malformed/missing `from` fails closed instead of replaying content out of order.
+	if not cutscene.has("connects"):
+		return true
+	var raw_connects: Variant = cutscene.get("connects")
+	if not (raw_connects is Dictionary):
+		return false
+	var connects := raw_connects as Dictionary
+	if connects.is_empty():
+		return true
+	if not connects.has("from"):
+		return false
+	var from_ref := str(connects.get("from", "")).strip_edges()
+	if from_ref.is_empty():
+		return false
+	if from_ref == "chapter_start" and str(cutscene.get("role", "")) != "opening":
+		return false
+	return QuestManager.has_reached_story_ref(from_ref)
 
 
 func _trigger_matches(trigger: Dictionary, event_type: String, params: Dictionary) -> bool:

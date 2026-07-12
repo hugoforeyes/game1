@@ -26,6 +26,7 @@ var name_label: Label
 var quantity_label: Label
 var icon_rect: TextureRect
 
+var _progress := 1.0
 var _frame_texture: Texture2D
 var _panel_style: StyleBoxFlat
 var _shadow_style: StyleBoxFlat
@@ -159,7 +160,7 @@ func play() -> void:
 
 	var hold := create_tween()
 	hold.set_pause_mode(Tween.TWEEN_PAUSE_PROCESS)
-	hold.tween_interval(HOLD_SECONDS)
+	hold.tween_method(_set_progress, 1.0, 0.0, HOLD_SECONDS).set_trans(Tween.TRANS_LINEAR)
 	await hold.finished
 
 	var outro := create_tween().set_parallel(true)
@@ -168,6 +169,11 @@ func play() -> void:
 	outro.tween_property(self, "modulate:a", 0.0, 0.18).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	outro.tween_property(self, "scale", Vector2(0.985, 0.985), 0.22)
 	await outro.finished
+
+
+func _set_progress(value: float) -> void:
+	_progress = clampf(value, 0.0, 1.0)
+	queue_redraw()
 
 
 func _draw() -> void:
@@ -189,10 +195,25 @@ func _draw() -> void:
 	draw_circle(ICON_WELL.get_center(), 23.0, Color(C_CYAN, 0.035))
 	draw_arc(ICON_WELL.get_center(), 23.0, 0.0, TAU, 48, Color(C_CYAN, 0.22), 1.0, true)
 
-	# Mask the baked reference line from the frame artwork now that the toast
-	# no longer draws a countdown bar over it.
+	# Bottom lifetime line. The tiny gold diamond marks the live edge so the
+	# countdown remains legible without adding a numeric timer.
+	# Mask the baked reference line so the generated component still exposes an
+	# actual countdown rather than a static decoration.
 	if _frame_texture != null:
 		draw_rect(Rect2(PROGRESS_RECT.position - Vector2(0, 1), PROGRESS_RECT.size + Vector2(0, 3)), Color(C_NAVY, 0.98))
+	draw_rect(PROGRESS_RECT, Color(C_GOLD, 0.22))
+	var fill_w := PROGRESS_RECT.size.x * _progress
+	if fill_w > 0.0:
+		var cyan_w := minf(fill_w, PROGRESS_RECT.size.x * 0.58)
+		draw_rect(Rect2(PROGRESS_RECT.position, Vector2(cyan_w, PROGRESS_RECT.size.y)), Color(C_CYAN, 0.94))
+		if fill_w > cyan_w:
+			draw_rect(Rect2(PROGRESS_RECT.position + Vector2(cyan_w, 0), Vector2(fill_w - cyan_w, PROGRESS_RECT.size.y)), Color(C_GOLD_BRIGHT, 0.94))
+		var tip := Vector2(PROGRESS_RECT.position.x + fill_w, PROGRESS_RECT.position.y + 1)
+		var diamond := PackedVector2Array([
+			tip + Vector2(0, -3), tip + Vector2(3, 0),
+			tip + Vector2(0, 3), tip + Vector2(-3, 0),
+		])
+		draw_colored_polygon(diamond, C_GOLD_BRIGHT)
 
 func _style(background: Color, border: Color, radius: int, border_width: int) -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()

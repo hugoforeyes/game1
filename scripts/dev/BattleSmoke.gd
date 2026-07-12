@@ -14,6 +14,11 @@ func _ready() -> void:
 	var enemy_data: Dictionary = main_helper._fallback_enemy(
 		"smoke_enemy", "Smoke Echo", "elite", 2, true, Vector2i(3, 3)
 	)
+	var bark_override := OS.get_environment("BATTLE_BARK_OVERRIDE").strip_edges()
+	if not bark_override.is_empty():
+		var dialogue: Dictionary = (enemy_data.get("dialogue", {}) as Dictionary).duplicate(true)
+		dialogue["intro"] = [bark_override]
+		enemy_data["dialogue"] = dialogue
 	main_helper.free()
 	_battle = BattleSceneScript.new()
 	add_child(_battle)

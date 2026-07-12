@@ -34,6 +34,7 @@ var _pending_triggered_cutscenes: Array = []  # queued cutscene dicts waiting to
 var _cutscene_conversation_handoff_pending: bool = false
 
 func _ready() -> void:
+	add_to_group("narrative_playback_owner")
 	NPCConversationManager._start_prewarm()
 	_mount_party_hud()
 	_mount_quest_compass()
@@ -1333,6 +1334,7 @@ func _try_trigger_cutscene(event_type: String, params: Dictionary = {}) -> void:
 		if str((queued as Dictionary).get("id", "")) == id:
 			return  # already queued
 	_pending_triggered_cutscenes.append(cutscene)
+	QuestManager.yield_notifications_to_cutscene()
 	if _interrupt_active_chat_for_cutscene():
 		_cutscene_conversation_handoff_pending = true
 		_drain_triggered_cutscenes.call_deferred()
@@ -1347,8 +1349,8 @@ func _interrupt_active_chat_for_cutscene() -> bool:
 	return bool(chatbox.call("interrupt_for_cutscene"))
 
 func has_pending_narrative_playback() -> bool:
-	# ChapterCompleteView uses this as an explicit priority barrier. Include the
-	# queue, the action phase, and CutscenePlayer's letterbox/camera cleanup phase.
+	# Narrative UI uses this as an explicit priority barrier. Include the queue,
+	# action phase, and CutscenePlayer's letterbox/camera cleanup phase.
 	return _triggered_cutscene_active \
 			or not _pending_triggered_cutscenes.is_empty() \
 			or get_tree().get_first_node_in_group("active_cutscene_player") != null

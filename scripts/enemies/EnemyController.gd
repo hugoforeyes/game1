@@ -80,7 +80,13 @@ func _physics_process(delta: float) -> void:
 		State.CHASE:
 			_chase_step()
 		State.RETURN_HOME:
-			_return_home_step(delta)
+			# A hostile enemy walking back to its post after a cutscene must stay
+			# ambushable: if the player closes in mid-return, drop the walk-home and
+			# engage right away instead of making them wait until it settles.
+			if _return_resume_state != State.PASSIVE and _player_within_aggro():
+				_engage_from_return_home()
+			else:
+				_return_home_step(delta)
 
 	move_and_slide()
 	_update_animation()
@@ -201,13 +207,26 @@ func _finish_return_home() -> void:
 	state = _return_resume_state
 	_pick_wander_target()
 
-func _check_aggro() -> void:
+func _player_within_aggro() -> bool:
 	if _player == null or not is_instance_valid(_player):
-		return
+		return false
 	var distance_tiles: float = global_position.distance_to(_player.global_position) / GameManager.TILE_SIZE
-	if distance_tiles <= aggro_radius:
+	return distance_tiles <= aggro_radius
+
+func _check_aggro() -> void:
+	if _player_within_aggro():
 		state = State.CHASE
 		alert_label.visible = true
+
+func _engage_from_return_home() -> void:
+	# Abandon the post-cutscene walk-home and switch to chasing the player, so the
+	# next _chase_step can request a battle once contact distance is reached.
+	_return_home_active = false
+	_return_home_suspended = false
+	_return_path.clear()
+	_return_path_index = 0
+	state = State.CHASE
+	alert_label.visible = true
 
 func _chase_step() -> void:
 	if _player == null or not is_instance_valid(_player):
