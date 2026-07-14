@@ -13,11 +13,30 @@ extends CanvasLayer
 
 
 const BattleSpeechBubbleScript := preload("res://scripts/battle/BattleSpeechBubble.gd")
+const EnemyIdentityPlateScript := preload("res://scripts/battle/EnemyIdentityPlate.gd")
+const EnemyTargetHighlightScript := preload("res://scripts/battle/EnemyTargetHighlight.gd")
+const BattleCommandMenuScript := preload("res://scripts/battle/BattleCommandMenu.gd")
+const BattleAllyCardStackScript := preload("res://scripts/battle/BattleAllyCardStack.gd")
 
 signal battle_finished(result: String, enemy_id: String)
 
 const FONT_SIZE: = 16
-const TYPE_SPEED: = 46.0
+const BATTLE_LOG_FONT_SIZE: = 11
+const MAX_BATTLE_LOG_ENTRIES: = 8
+const BATTLE_LOG_ENTRY_TTL: = 8.0
+const BATTLE_LOG_APPEND_DURATION: = 0.18
+const BATTLE_LOG_EXIT_DURATION: = 0.2
+const BATTLE_LOG_SCROLL_DURATION: = 0.28
+const BATTLE_LOG_APPEND_OFFSET: = Vector2(0, 3)
+const BATTLE_LOG_EXIT_OFFSET: = Vector2(-4, 0)
+const BATTLE_LOG_ENTRY_GAP: = 3
+const BATTLE_LOG_MIN_ENTRY_HEIGHT: = 15.0
+const BATTLE_FINISH_CONFIRM_DELAY: = 1.2
+const TURN_TRANSITION_DELAY: = 1.0
+# Offensive effects are authored at a conservative baseline so they also fit
+# ally cards. Player/companion attacks landing on the much larger foe portraits
+# get a small, consistent lift without enlarging heals or enemy attacks.
+const ALLY_TO_FOE_FX_SCALE: = 1.15
 
 const COLOR_TEXT: = Color(0.93, 0.88, 0.75, 1.0)
 const COLOR_TEXT_DIM: = Color(0.93, 0.88, 0.75, 0.4)
@@ -35,27 +54,15 @@ const COLOR_PLAYER_DMG: = Color(1.0, 0.42, 0.38, 1.0)
 const COLOR_HEAL: = Color(0.55, 0.95, 0.6, 1.0)
 
 const TEX_PANEL: = "res://assets/ui/battle/panel.png"
-const TEX_CURSOR: = "res://assets/ui/battle/cursor.png"
 const TEX_SLASH: = "res://assets/ui/battle/slash_sheet.png"
 const TEX_BACKDROP: = "res://assets/ui/battle/backdrop.png"
 const TEX_BANNER: = "res://assets/ui/battle/banner.png"
-const TEX_B2_COMMAND: = "res://assets/ui/battle_v2/command_card.png"
-const TEX_B2_COMMAND_SELECTED: = "res://assets/ui/battle_v2/command_card_selected.png"
 const TEX_B2_ENEMY: = "res://assets/ui/battle_v2/panel_enemy.png"
-const TEX_B2_INTENT: = "res://assets/ui/battle_v2/panel_intent.png"
 const TEX_B2_LOG: = "res://assets/ui/battle_v2/panel_log.png"
 const TEX_B2_PLAYER: = "res://assets/ui/battle_v2/panel_player.png"
 const TEX_B2_ORNAMENT: = "res://assets/ui/battle_v2/ornament_gem.png"
 const TEX_B2_TURN_ORDER_ENEMY: = "res://assets/ui/battle_v2/turn_order_card_enemy.png"
 const TEX_B2_TURN_ORDER_ALLY: = "res://assets/ui/battle_v2/turn_order_card_ally.png"
-const TEX_B2_ICON_ATTACK: = "res://assets/ui/battle_v2/icons/icon_attack.png"
-const TEX_B2_ICON_SKILL: = "res://assets/ui/battle_v2/icons/icon_skill.png"
-const TEX_B2_ICON_PROBE: = "res://assets/ui/battle_v2/icons/icon_probe.png"
-const TEX_B2_ICON_ITEM: = "res://assets/ui/battle_v2/icons/icon_item.png"
-const TEX_B2_ICON_GUARD: = "res://assets/ui/battle_v2/icons/icon_guard.png"
-const TEX_B2_ICON_FLEE: = "res://assets/ui/battle_v2/icons/icon_flee.png"
-const TEX_B2_ICON_FINISHER: = "res://assets/ui/battle_v2/icons/icon_finisher.png"
-const TEX_B2_ICON_SPARE: = "res://assets/ui/battle_v2/icons/icon_spare.png"
 
 enum UiMode{NONE, TYPING, CONFIRM, MENU, TARGET}
 
@@ -71,10 +78,6 @@ const HARD_CC_STATUS_IDS: = {
     "paralyze": true,
     "stun": true,
 }
-
-signal _confirmed
-signal _menu_picked(id: String)
-
 
 # ── multi-actor battle state ─────────────────────────────────────────────────
 # The battle is party-vs-group: every combatant is an "actor" Dictionary.
@@ -106,24 +109,25 @@ var phase_defense_factor: float = 1.0
 var flee_failed_count: int = 0
 
 var _ui_mode: UiMode = UiMode.NONE
-var _type_target: String = ""
-var _type_progress: float = 0.0
-var _menu_ids: Array[String] = []
-var _menu_items: Array[Control] = []
-var _menu_index: int = 0
 var _battle_over: bool = false
+var _pending_finish_result: String = ""
+var _finish_confirm_ready: bool = false
+var _battle_log_entries: Array[Dictionary] = []
+var _next_battle_log_entry_id: int = 1
+var _battle_log_scroll_queued: bool = false
+var _battle_log_scroll_tween: Tween
 
 # Enemy barks are real-time overlays, independent from the turn/input state. Each
 # foe owns a small bounded FIFO: different enemies may speak simultaneously while
 # repeated lines from one enemy remain ordered without creating stacked bubbles.
 const MAX_PENDING_BARKS_PER_ENEMY := 3
+const ENEMY_BARK_VERTICAL_LIFT := 16.0
 var _enemy_bark_channels: Dictionary = {}
 var _enemy_bark_generation: int = 0
 var _enemy_barks_shutting_down: bool = false
 
 
 var _panel_style: StyleBox = null
-var _cursor_texture: Texture2D = null
 var _slash_frames: SpriteFrames = null
 var _banner_texture: Texture2D = null
 var _texture_cache: Dictionary = {}
@@ -136,35 +140,27 @@ var _root: Control
 
 var _design: Control
 var _fx_layer: Control
-var _intent_label: Label
-var _intent_icon: TextureRect
 var _turn_stack: Control
 var _turn_cards: Array[Control] = []
 var _turn_active_actor: = "player"
 var _log_panel: Panel
-var _log_label: RichTextLabel
+var _log_scroll: ScrollContainer
+var _log_list: VBoxContainer
 var _continue_marker: Label
-var _menu_panel: Panel
-var _menu_row: HBoxContainer
-var _menu_cursor: Control
-var _menu_descs: Array[String] = []
-var _menu_info_icon: TextureRect
-var _menu_info_name: Label
-var _menu_info_desc: Label
+var _command_menu: BattleCommandMenu
 var _hint_label: Label
 
 # Per-ally status cards (index-parallel with _allies):
 # {root, name_label, lv_label, hp_bar, hp_ghost, hp_text, status_row, sp_pips,
 #  xp_bar, xp_text, fx_center: Vector2}
 var _ally_cards: Array[Dictionary] = []
+var _ally_stack: BattleAllyCardStack
 
 # Round-based turn queue: [{"side": "ally"|"foe", "index": int}, ...]
 var _round_queue: Array[Dictionary] = []
 var _queue_pos: int = 0
 var _round_serial: int = 0
 
-# Target-selection overlay state (gold arrows over foe portraits / ally cards).
-var _target_arrows: Array[Control] = []
 # The foe the target cursor last rested on (drives intent + selection helpers).
 var _target_foe_index: int = 0
 
@@ -177,10 +173,11 @@ const LOG_PANEL_POS: = Vector2(2, 2)
 const LOG_PANEL_SIZE: = Vector2(330, 152)
 const PLAYER_PANEL_POS: = Vector2(2, 380)
 const PLAYER_PANEL_SIZE: = Vector2(312, 158)
-const MENU_PANEL_POS: = Vector2(404, 422)
-const MENU_PANEL_SIZE: = Vector2(470, 172)
+const MENU_PANEL_TOP: = 422.0
+const MENU_PANEL_HEIGHT: = 172.0
 const TURN_ORDER_STACK_POS: = Vector2(0, 2)
 const TURN_ORDER_STACK_SIZE: = Vector2(960, 230)
+const FOE_VERTICAL_OFFSET: = 10.0
 const PORTRAIT_HOME: = Vector2(350, 48)
 const PORTRAIT_SIZE: = Vector2(280, 290)
 const PLAYER_FX_CENTER: = Vector2(124, 454)
@@ -655,11 +652,20 @@ func _refresh_status_row(row: HBoxContainer, actor: Dictionary, extra: Array[Dic
         return
 
     var icon_size: int = int(row.get_meta("icon_size", 15))
-    var token_width: int = icon_size + 3
-    var capacity: int = maxi(1, int(floor((row.size.x + STATUS_TOKEN_GAP) / float(token_width + STATUS_TOKEN_GAP))))
-    var visible_count: int = mini(entries.size(), capacity)
-    if entries.size() > capacity and capacity > 1:
-        visible_count = capacity - 1
+    var capacity_width: float = float(row.get_meta("capacity_width", row.size.x))
+    var more_width: float = float(icon_size + 3)
+    var visible_count: int = 0
+    var used_width: float = 0.0
+    for index in range(entries.size()):
+        var token_width: float = _status_token_width(entries[index], icon_size)
+        var separator: float = STATUS_TOKEN_GAP if visible_count > 0 else 0.0
+        var reserve_more: float = (
+            STATUS_TOKEN_GAP + more_width if index < entries.size() - 1 else 0.0)
+        if visible_count == 0 or used_width + separator + token_width + reserve_more <= capacity_width:
+            used_width += separator + token_width
+            visible_count += 1
+        else:
+            break
     for index in range(visible_count):
         row.add_child(_make_status_token(entries[index], icon_size))
     if entries.size() > visible_count:
@@ -672,18 +678,36 @@ func _refresh_status_row(row: HBoxContainer, actor: Dictionary, extra: Array[Dic
         }, icon_size))
 
 
+func _status_token_width(entry: Dictionary, icon_size: int) -> float:
+    var wide_label: = str(entry.get("wide_label", ""))
+    if wide_label.is_empty():
+        return float(icon_size + 3)
+    var label_size: int = maxi(7, icon_size - 8)
+    var font: Font = UiKit.body_semibold_font()
+    if font == null:
+        font = ThemeDB.fallback_font
+    return float(icon_size + 5) + ceilf(font.get_string_size(
+        wide_label,
+        HORIZONTAL_ALIGNMENT_LEFT,
+        -1.0,
+        label_size,
+    ).x)
+
+
 func _make_status_token(entry: Dictionary, icon_size: int) -> Control:
     var token: = Control.new()
-    token.custom_minimum_size = Vector2(icon_size + 3, icon_size)
+    var token_width: float = _status_token_width(entry, icon_size)
+    token.custom_minimum_size = Vector2(token_width, icon_size)
     token.size = token.custom_minimum_size
     token.tooltip_text = str(entry.get("tooltip", entry.get("label", "")))
     token.mouse_filter = Control.MOUSE_FILTER_STOP
 
     var status_id: = str(entry.get("id", ""))
-    var icon_path: = STATUS_ICON_DIR + status_id + ".png"
-    # Actor-only tokens (DOWN/GUARD/EXPOSED/"+N") intentionally use the text
-    # fallback. Guard the load so Image.load_from_file never logs a false ERROR
-    # for artwork that is not part of the 18-icon status catalog.
+    var icon_path: = (
+        ENEMY_EXPOSED_ICON if status_id == "exposed"
+        else STATUS_ICON_DIR + status_id + ".png")
+    # Actor-only tokens without authored art still use the text fallback. Guard
+    # the load so Image.load_from_file never logs a false ERROR for custom states.
     var icon: Texture2D = null
     if ResourceLoader.exists(icon_path) or FileAccess.file_exists(icon_path):
         icon = _load_png_texture(icon_path)
@@ -704,6 +728,21 @@ func _make_status_token(entry: Dictionary, icon_size: int) -> Control:
         fallback.clip_text = true
         fallback.mouse_filter = Control.MOUSE_FILTER_IGNORE
         token.add_child(fallback)
+
+    var wide_label: = str(entry.get("wide_label", ""))
+    if not wide_label.is_empty():
+        var caption: = UiKit.make_label_strong(
+            wide_label,
+            maxi(7, icon_size - 8),
+            COLOR_EXPOSED if status_id == "exposed" else COLOR_TEXT,
+        )
+        caption.position = Vector2(icon_size + 2, 0)
+        caption.size = Vector2(maxf(1.0, token_width - icon_size - 2.0), icon_size)
+        caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+        caption.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+        caption.clip_text = true
+        caption.mouse_filter = Control.MOUSE_FILTER_IGNORE
+        token.add_child(caption)
 
     var count: int = int(entry.get("count", 0))
     if count > 0:
@@ -767,8 +806,6 @@ func _load_ui_kit() -> void :
         style.set_texture_margin_all(11.0)
         style.set_content_margin_all(4.0)
         _panel_style = style
-    if ResourceLoader.exists(TEX_CURSOR):
-        _cursor_texture = load(TEX_CURSOR)
     if ResourceLoader.exists(TEX_BANNER):
         _banner_texture = load(TEX_BANNER)
     if ResourceLoader.exists(TEX_SLASH):
@@ -803,6 +840,7 @@ func _load_png_texture(path: String) -> Texture2D:
 
 const BATTLE_V3_DIR: = "res://assets/ui/battle_v3/"
 const STATUS_ICON_DIR: = "res://assets/ui/battle/status/"
+const ENEMY_EXPOSED_ICON: = "res://assets/ui/enemy_identity_v1/exposed.png"
 const STATUS_TOKEN_GAP: = 2
 
 
@@ -1052,8 +1090,8 @@ func _build_ui() -> void :
 
 
     # The top-left enemy card was removed — the foe's name + HP already show under
-    # its sprite (per-foe readout), the intent line lives in the log, and the target
-    # cursor marks which foe is selected. The log panel takes over this space.
+    # its sprite, while the target cursor marks which foe is selected. The battle
+    # action readout takes over this space without a separate intent/telegraph row.
 
     _build_turn_order_strip()
     _build_foe_row()
@@ -1091,145 +1129,43 @@ func _build_ui() -> void :
     _log_panel.add_child(scrim)
 
 
-    var warning_texture: = _v3("warning_triangle.png")
-    if warning_texture != null:
-        _intent_icon = TextureRect.new()
-        _intent_icon.texture = warning_texture
-        _intent_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-        _intent_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-        _intent_icon.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-        _intent_icon.position = Vector2(6, 6)
-        _intent_icon.size = Vector2(22, 22)
-        _intent_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-        _log_panel.add_child(_intent_icon)
+    # Each action owns its own row so its TTL/fade can run independently. A
+    # single RichTextLabel would force every existing line (and icon) to flash
+    # whenever just one history entry expires.
+    _log_scroll = ScrollContainer.new()
+    _log_scroll.position = Vector2(6, 6)
+    _log_scroll.size = Vector2(300, 134)
+    _log_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+    _log_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+    _log_scroll.follow_focus = false
+    _log_scroll.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    _log_panel.add_child(_log_scroll)
 
-    _intent_label = _make_label("", 13, Color(0.98, 0.92, 0.78, 0.98))
-    var intent_font: = UiKit.body_font()
-    if intent_font != null:
-        var italic: = FontVariation.new()
-        italic.base_font = intent_font
-        italic.variation_transform = Transform2D(Vector2(1.0, 0.0), Vector2(-0.22, 1.0), Vector2.ZERO)
-        _intent_label.add_theme_font_override("font", italic)
-    _intent_label.position = Vector2(36, 0)
-    _intent_label.size = Vector2(286, 46)
-    _intent_label.add_theme_font_size_override("font_size", 13)
-    _intent_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.95))
-    _intent_label.add_theme_constant_override("shadow_offset_x", 1)
-    _intent_label.add_theme_constant_override("shadow_offset_y", 1)
-    _intent_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    _intent_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-    _intent_label.clip_text = false
-    _intent_label.max_lines_visible = 3
-    _intent_label.text_overrun_behavior = TextServer.OVERRUN_NO_TRIMMING
-    _log_panel.add_child(_intent_label)
+    _log_list = VBoxContainer.new()
+    _log_list.custom_minimum_size = Vector2(286, 0)
+    _log_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _log_list.add_theme_constant_override("separation", BATTLE_LOG_ENTRY_GAP)
+    _log_list.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    _log_scroll.add_child(_log_list)
 
-    var log_divider: = ColorRect.new()
-    log_divider.color = Color(0.76, 0.58, 0.27, 0.4)
-    log_divider.position = Vector2(6, 50)
-    log_divider.size = Vector2(300, 1)
-    log_divider.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    _log_panel.add_child(log_divider)
+    var log_scrollbar := _log_scroll.get_v_scroll_bar()
+    log_scrollbar.modulate.a = 0.0
+    log_scrollbar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
-    _log_label = RichTextLabel.new()
-    _log_label.bbcode_enabled = true
-    _log_label.scroll_active = false
-    _log_label.fit_content = false
-    _log_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    _log_label.position = Vector2(6, 58)
-    _log_label.size = Vector2(300, 82)
-    _log_label.add_theme_font_size_override("normal_font_size", FONT_SIZE - 1)
-    _log_label.add_theme_color_override("default_color", COLOR_TEXT)
-    _log_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
-    _log_label.add_theme_constant_override("shadow_offset_x", 1)
-    _log_label.add_theme_constant_override("shadow_offset_y", 1)
-    _log_label.add_theme_constant_override("line_separation", 3)
-    _log_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    _log_panel.add_child(_log_label)
-
+    # Only terminal results use Enter. Ordinary action-log entries append and
+    # auto-scroll without ever showing this marker or taking input focus.
     _continue_marker = _make_label("v", FONT_SIZE, COLOR_ACCENT)
     _continue_marker.position = Vector2(292, 120)
     _continue_marker.visible = false
     _log_panel.add_child(_continue_marker)
 
 
-    _menu_panel = Panel.new()
-    _menu_panel.position = MENU_PANEL_POS
-    _menu_panel.size = MENU_PANEL_SIZE
-    _menu_panel.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
-    _menu_panel.visible = false
-    _design.add_child(_menu_panel)
-
-    # Info readout (icon + name + optional description) on a soft scrim,
-    # directly above the icon-only command row — no frame, mockup-style.
-    var info_scrim := TextureRect.new()
-    var info_gradient := Gradient.new()
-    info_gradient.offsets = PackedFloat32Array([0.0, 0.55, 1.0])
-    info_gradient.colors = PackedColorArray([
-        Color(0.008, 0.012, 0.028, 0.72),
-        Color(0.008, 0.012, 0.028, 0.50),
-        Color(0.008, 0.012, 0.028, 0.0),
-    ])
-    var info_texture := GradientTexture2D.new()
-    info_texture.gradient = info_gradient
-    info_texture.fill = GradientTexture2D.FILL_RADIAL
-    info_texture.fill_from = Vector2(0.5, 0.5)
-    info_texture.fill_to = Vector2(0.5, 0.0)
-    info_texture.width = 470
-    info_texture.height = 86
-    info_scrim.texture = info_texture
-    info_scrim.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-    info_scrim.stretch_mode = TextureRect.STRETCH_SCALE
-    info_scrim.position = Vector2(-20, -34)
-    info_scrim.size = Vector2(510, 104)
-    info_scrim.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    _menu_panel.add_child(info_scrim)
-
-    _menu_info_icon = TextureRect.new()
-    _menu_info_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-    _menu_info_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-    _menu_info_icon.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-    _menu_info_icon.position = Vector2(80, 8)
-    _menu_info_icon.size = Vector2(34, 34)
-    _menu_info_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    _menu_panel.add_child(_menu_info_icon)
-
-    _menu_info_name = UiKit.make_title("", 16, COLOR_ACCENT)
-    _menu_info_name.position = Vector2(124, 2)
-    _menu_info_name.size = Vector2(336, 22)
-    _menu_info_name.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    _menu_info_name.vertical_alignment = VERTICAL_ALIGNMENT_TOP
-    _menu_info_name.clip_text = false
-    _menu_info_name.text_overrun_behavior = TextServer.OVERRUN_NO_TRIMMING
-    _menu_panel.add_child(_menu_info_name)
-
-    _menu_info_desc = _make_label("", 10, Color(0.93, 0.88, 0.72, 0.98))
-    _menu_info_desc.position = Vector2(124, 26)
-    _menu_info_desc.size = Vector2(346, 14)
-    _menu_info_desc.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.95))
-    _menu_info_desc.add_theme_constant_override("shadow_offset_x", 1)
-    _menu_info_desc.add_theme_constant_override("shadow_offset_y", 1)
-    _menu_info_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    _menu_info_desc.vertical_alignment = VERTICAL_ALIGNMENT_TOP
-    _menu_info_desc.clip_text = false
-    _menu_info_desc.text_overrun_behavior = TextServer.OVERRUN_NO_TRIMMING
-    _menu_panel.add_child(_menu_info_desc)
-
-    _menu_row = HBoxContainer.new()
-    _menu_row.position = Vector2(0, 56)
-    _menu_row.size = Vector2(470, 60)
-    _menu_row.add_theme_constant_override("separation", 8)
-    _menu_panel.add_child(_menu_row)
-
-    _menu_cursor = Control.new()
-    var cursor_line: = ColorRect.new()
-    cursor_line.color = Color(1.0, 0.79, 0.35, 0.95)
-    cursor_line.size = Vector2(64, 2)
-    _menu_cursor.add_child(cursor_line)
-    _menu_cursor.visible = false
-    _menu_panel.add_child(_menu_cursor)
-
-
     _build_ally_stack()
+    var command_left := _ally_stack.right_edge()
+    _command_menu = BattleCommandMenuScript.new()
+    _command_menu.position = Vector2(command_left, MENU_PANEL_TOP)
+    _design.add_child(_command_menu)
+    _command_menu.setup(Vector2(DESIGN_SIZE.x - command_left, MENU_PANEL_HEIGHT))
 
     _hint_label = _make_label("Arrows Move    Enter Select    / Esc Back", 13, COLOR_TEXT_DIM)
     _hint_label.position = Vector2(476, 520)
@@ -1277,7 +1213,9 @@ func _build_foe_row() -> void :
     for index in range(_foes.size()):
         var foe: Dictionary = _foes[index]
         var slot: Dictionary = layout[mini(index, layout.size() - 1)]
-        var home: Vector2 = slot["home"]
+        # Shift the complete foe rig as one unit so the portrait, labels, bars,
+        # status row, target marker, speech anchor, animations, and FX stay aligned.
+        var home: Vector2 = slot["home"] + Vector2(0, FOE_VERTICAL_OFFSET)
         var size: Vector2 = slot["size"]
 
         var holder: = Control.new()
@@ -1285,6 +1223,15 @@ func _build_foe_row() -> void :
         holder.size = size
         holder.modulate.a = 0.0
         _design.add_child(holder)
+
+        # Every portrait effect shares one bottom-pivoted transform. The target
+        # rim, EXPOSED glow and hit flash therefore breathe with the enemy while
+        # metadata and the overhead cursor remain perfectly stable.
+        var visual_root := Control.new()
+        visual_root.size = size
+        visual_root.pivot_offset = Vector2(size.x * 0.5, size.y)
+        visual_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+        holder.add_child(visual_root)
 
         var portrait: = TextureRect.new()
         portrait.size = size
@@ -1296,48 +1243,61 @@ func _build_foe_row() -> void :
         portrait.pivot_offset = Vector2(size.x * 0.5, size.y)
         if texture == null:
             portrait.modulate = Color(1.0, 0.45, 0.45)
-        holder.add_child(portrait)
+        visual_root.add_child(portrait)
 
         var glow: = portrait.duplicate() as TextureRect
         glow.material = add_material
         glow.modulate = Color(COLOR_EXPOSED, 0.0)
-        holder.add_child(glow)
+        visual_root.add_child(glow)
 
         var flash: = portrait.duplicate() as TextureRect
         flash.material = add_material.duplicate()
         flash.modulate = Color(1, 1, 1, 0.0)
-        holder.add_child(flash)
+        visual_root.add_child(flash)
 
-        # Floating name chip + HP bar + status line directly under the portrait.
-        var bar_w: = size.x * 0.72
+        var target_visual := EnemyTargetHighlightScript.new()
+        target_visual.setup(portrait, size)
+        holder.add_child(target_visual)
+
+        # Lightweight level/status metadata floats above the portrait, while the
+        # redesigned nameplate stays below the enemy like the original layout.
+        # Name width follows measured text; only its middle rail changes width.
+        var identity: = EnemyIdentityPlateScript.new()
+        identity.setup(
+            str(foe.get("name")),
+            int(foe.get("level", 1)),
+            size.x,
+            size.y,
+            _foes.size(),
+        )
+        holder.add_child(identity)
+        var status_row: HBoxContainer = identity.status_row
+
+        # Match the approved hierarchy: portrait → HP → name. The footer keeps
+        # the same total height as before, so pair/trio layouts do not drift.
+        var bar_w: = size.x * 0.88
         var bar_x: = (size.x - bar_w) * 0.5
-        var chip: = _make_chip(Rect2(bar_x, size.y + 2, bar_w, 18))
-        (chip["label"] as Label).text = str(foe.get("name"))
-        holder.add_child(chip["root"])
-
-        var bar: = _make_ornate_bar(Rect2(bar_x, size.y + 23, bar_w, 12), "red", COLOR_HP_GHOST)
+        var hp_y := size.y + 2.0
+        var hp_height := 14.0
+        identity.set_nameplate_top(hp_y + hp_height + 2.0)
+        var bar: = _make_ornate_bar(
+            Rect2(bar_x, hp_y, bar_w, hp_height), "red", COLOR_HP_GHOST)
         holder.add_child(bar["root"])
 
-        var hp_text: = UiKit.make_label_strong("", 9, Color(0.98, 0.95, 0.88, 0.96))
-        hp_text.position = Vector2(bar_x, size.y + 23)
-        hp_text.size = Vector2(bar_w, 12)
+        var hp_text: = UiKit.make_title(
+            "", 9 if _foes.size() >= 3 else 10, Color(0.98, 0.95, 0.88, 0.98))
+        hp_text.position = Vector2(bar_x, hp_y + HP_TEXT_Y_OFFSET)
+        hp_text.size = Vector2(bar_w, hp_height)
         hp_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
         hp_text.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
         holder.add_child(hp_text)
 
-        var status_row: = _make_status_row(
-            holder, Rect2(bar_x, size.y + 37, bar_w, 15), BoxContainer.ALIGNMENT_CENTER, 14)
-
-        # Target arrow (hidden unless this foe is under the selection cursor).
-        var arrow: = _make_display_label("▼", 22, COLOR_ACCENT)
-        arrow.position = Vector2(size.x * 0.5 - 12, -30)
-        arrow.size = Vector2(24, 26)
-        arrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-        arrow.visible = false
-        holder.add_child(arrow)
+        var overhead_bounds: Rect2 = identity.holder_local_bounds().merge(
+            target_visual.marker_bounds())
 
         foe["ui"] = {
             "holder": holder,
+            "visual_root": visual_root,
             "portrait": portrait,
             "glow": glow,
             "flash": flash,
@@ -1346,9 +1306,15 @@ func _build_foe_row() -> void :
             "hp_bar": bar["fill"],
             "hp_ghost": bar["ghost"],
             "hp_text": hp_text,
-            "chip_label": chip["label"],
+            "hp_root": bar["root"],
+            "hp_y": hp_y,
+            "identity_root": identity,
+            "identity_bounds": overhead_bounds,
+            "name_label": identity.name_label,
+            "level_label": identity.level_label,
             "status_row": status_row,
-            "arrow": arrow,
+            "target_visual": target_visual,
+            "arrow": target_visual.marker,
             "bar_w": bar_w,
         }
 
@@ -1511,6 +1477,8 @@ func _spawn_enemy_bubble(foe: Dictionary, text: String) -> Control:
     var face_center: Vector2
     var face_safe_x := 30.0
     var ui: = _foe_ui(foe)
+    var identity_rect := Rect2()
+    var has_identity_rect := false
     if ui.is_empty():
         var c: = _foe_center(foe)
         face_center = c - Vector2(0.0, 40.0)
@@ -1520,6 +1488,10 @@ func _spawn_enemy_bubble(foe: Dictionary, text: String) -> Control:
         # Generated battle portraits often keep generous transparent padding.
         face_center = holder.position + Vector2(slot.x * 0.5, slot.y * 0.32)
         face_safe_x = clampf(slot.x * 0.16, 24.0, 48.0)
+        if ui.has("identity_bounds"):
+            var local_identity: Rect2 = ui["identity_bounds"]
+            identity_rect = Rect2(holder.position + local_identity.position, local_identity.size).grow(4.0)
+            has_identity_rect = true
 
     var w: float = bubble.size.x
     var h: float = bubble.size.y
@@ -1535,7 +1507,12 @@ func _spawn_enemy_bubble(foe: Dictionary, text: String) -> Control:
         bubble.set_pointer_side(pointer_side)
         var tip: Vector2 = bubble.pointer_tip_local()
         var side_sign := 1.0 if bubble_on_right else -1.0
-        var speaker_anchor := face_center + Vector2(face_safe_x * side_sign, -4.0)
+        # Keep the fixed pointer attached near the upper hair/horn edge while
+        # lifting the complete bubble slightly above the speaking enemy.
+        var speaker_anchor := face_center + Vector2(
+            face_safe_x * side_sign,
+            -4.0 - ENEMY_BARK_VERTICAL_LIFT,
+        )
         var candidate_pos: = speaker_anchor - tip
         var candidate_rect: = Rect2(candidate_pos, Vector2(w, h))
         var penalty: = 0.0
@@ -1547,6 +1524,9 @@ func _spawn_enemy_bubble(foe: Dictionary, text: String) -> Control:
         if candidate_rect.intersects(log_rect):
             var overlap := candidate_rect.intersection(log_rect)
             penalty += overlap.size.x * overlap.size.y * 0.9
+        if has_identity_rect and candidate_rect.intersects(identity_rect):
+            var identity_overlap := candidate_rect.intersection(identity_rect)
+            penalty += identity_overlap.size.x * identity_overlap.size.y * 1.5
 
         # Concurrent barks remain independent, but prefer opposite sides when two
         # live templates would obscure each other.
@@ -1594,28 +1574,33 @@ func _spawn_enemy_bubble(foe: Dictionary, text: String) -> Control:
 
 
 # ── ally card stack (hero + companions, bottom-left) ─────────────────────────
-const ALLY_HERO_CARD_H: = 112.0
-const ALLY_COMP_CARD_H: = 74.0
-const ALLY_CARD_W: = 312.0
-const ALLY_CARD_GAP: = 6.0
-const ALLY_STACK_BOTTOM: = 538.0
+const HP_TEXT_Y_OFFSET: = -4.0
+const SP_PIP_SIDE := 15.0
+const SP_PIP_GAP := 5.0
+const SP_ROW_HEIGHT := 15.0
 
 
-func _build_ally_stack() -> void :
-    _ally_cards.clear()
-    var total_h: = ALLY_HERO_CARD_H + float(maxi(_allies.size() - 1, 0)) * (ALLY_COMP_CARD_H + ALLY_CARD_GAP)
-    var y: = ALLY_STACK_BOTTOM - total_h
-    for index in range(_allies.size()):
-        var is_hero: = index == 0
-        var card_h: = ALLY_HERO_CARD_H if is_hero else ALLY_COMP_CARD_H
-        var card: Dictionary = _build_ally_card(_allies[index], Rect2(2, y, ALLY_CARD_W, card_h), is_hero)
-        _ally_cards.append(card)
-        y += card_h + ALLY_CARD_GAP
+func _build_ally_stack() -> void:
+    _ally_stack = BattleAllyCardStackScript.new()
+    _ally_stack.configure(
+        self,
+        _allies,
+        _ally_cards,
+        Callable(self, "_build_ally_card"),
+        Callable(self, "_refresh_ally_card"),
+        Callable(self, "_actor_down"),
+        Callable(self, "_effective_speed"),
+    )
+    _ally_stack.build(_round_queue, _queue_pos)
 
 
-func _build_ally_card(ally: Dictionary, rect: Rect2, is_hero: bool) -> Dictionary:
+func _build_ally_card(ally: Dictionary, rect: Rect2, is_full: bool) -> Dictionary:
     var panel: = _make_panel_node(rect)
     _design.add_child(panel)
+    # Runtime card swaps happen after the FX layer exists. Keep cards below it
+    # just like the initial stack so hit/heal effects remain visible.
+    if _fx_layer != null and is_instance_valid(_fx_layer):
+        _design.move_child(panel, _fx_layer.get_index())
 
     var portrait_side: = rect.size.y - 20.0
     var holder: = Control.new()
@@ -1629,29 +1614,31 @@ func _build_ally_card(ally: Dictionary, rect: Rect2, is_hero: bool) -> Dictionar
     picture.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
     picture.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED if texture != null and texture.get_width() > 200 else TextureRect.STRETCH_KEEP_ASPECT_CENTERED
     picture.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR if texture != null and texture.get_width() > 200 else CanvasItem.TEXTURE_FILTER_NEAREST
-    picture.position = Vector2(4, 4)
-    picture.size = holder.size - Vector2(8, 8)
+    var portrait_inset := 0.0 if is_full else 4.0
+    picture.position = Vector2(portrait_inset, portrait_inset)
+    picture.size = holder.size - Vector2.ONE * portrait_inset * 2.0
     picture.mouse_filter = Control.MOUSE_FILTER_IGNORE
     holder.add_child(picture)
     holder.add_child(UiKit.make_ornate_frame(holder.size, "slot.png", 0.2, 12.0, false))
 
     var left: = 20.0 + portrait_side
-    var name_label: = _make_display_label(str(ally.get("name")), 18 if is_hero else 15, COLOR_ACCENT)
+    var name_label: = _make_display_label(str(ally.get("name")), 18 if is_full else 15, COLOR_ACCENT)
     name_label.position = Vector2(left, 8)
     name_label.size = Vector2(rect.size.x - left - 74, 22)
     name_label.clip_text = true
     panel.add_child(name_label)
 
-    var chip: = _make_chip(Rect2(rect.size.x - 70, 8, 56, 19))
+    var chip: = _make_chip(Rect2(rect.size.x - 70, 10, 56, 19))
+    (chip["label"] as Label).add_theme_font_size_override("font_size", 11)
     panel.add_child(chip["root"])
 
     var bar_w: = rect.size.x - left - 18.0
-    var hp_y: = 34.0 if is_hero else 30.0
+    var hp_y: = 34.0 if is_full else 30.0
     var bar: = _make_ornate_bar(Rect2(left, hp_y, bar_w, 13), "green", COLOR_HP_GHOST)
     panel.add_child(bar["root"])
 
     var hp_text: = UiKit.make_label_strong("", 9, Color(0.98, 0.95, 0.88, 0.96))
-    hp_text.position = Vector2(left, hp_y)
+    hp_text.position = Vector2(left, hp_y + HP_TEXT_Y_OFFSET)
     hp_text.size = Vector2(bar_w, 13)
     hp_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
     hp_text.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -1660,15 +1647,20 @@ func _build_ally_card(ally: Dictionary, rect: Rect2, is_hero: bool) -> Dictionar
     # SP gem pips.
     var sp_row: = Control.new()
     sp_row.position = Vector2(left, hp_y + 17)
+    sp_row.size = Vector2(bar_w, SP_ROW_HEIGHT)
+    # The fit calculation keeps every pip inside; clipping is a final guard for
+    # fractional rendering at unusual viewport scales.
+    sp_row.clip_contents = true
     panel.add_child(sp_row)
-    var sp_pips: Array = _build_sp_pips_for(sp_row, int(ally.get("sp_max", 3)))
+    var sp_pips: Array = _build_sp_pips_for(
+        sp_row, int(ally.get("sp_max", 3)), bar_w)
 
     var status_row: = _make_status_row(
         panel, Rect2(left, hp_y + 34, bar_w, 15), BoxContainer.ALIGNMENT_BEGIN, 14)
 
     var xp_bar: Control = null
     var xp_text: Label = null
-    if is_hero:
+    if is_full:
         var xp_label: = UiKit.make_label_strong("XP", 10, COLOR_TEXT_DIM)
         xp_label.position = Vector2(left, hp_y + 52)
         panel.add_child(xp_label)
@@ -1691,6 +1683,7 @@ func _build_ally_card(ally: Dictionary, rect: Rect2, is_hero: bool) -> Dictionar
     return {
         "root": panel,
         "rect": rect,
+        "is_full": is_full,
         "name_label": name_label,
         "lv_label": chip["label"],
         "hp_bar": bar["fill"],
@@ -1864,19 +1857,31 @@ func _make_turn_card(entry: Dictionary, is_active: bool) -> Control:
     return card
 
 ## Build SP gem pips into `row` and return the pip node list (per ally card).
-func _build_sp_pips_for(row: Control, sp_max: int) -> Array:
+## Normal counts keep the authored 15px gem and 5px gap. Larger pools scale
+## both proportionally so the complete row always fits its full/compact card.
+func _build_sp_pips_for(row: Control, sp_max: int, available_width: float) -> Array:
     var pips: Array = []
     var filled_texture: = _v3("sp_gem.png")
     var empty_texture: = _v3("sp_gem_empty.png")
-    for index in range(sp_max):
+    var pip_count := maxi(sp_max, 0)
+    if pip_count == 0:
+        return pips
+    var natural_width := float(pip_count) * SP_PIP_SIDE \
+        + float(maxi(pip_count - 1, 0)) * SP_PIP_GAP
+    var fit_scale := minf(1.0, maxf(available_width, 0.0) / maxf(natural_width, 1.0))
+    var pip_side := SP_PIP_SIDE * fit_scale
+    var pip_gap := SP_PIP_GAP * fit_scale
+    var pip_step := pip_side + pip_gap
+    var pip_y := (SP_ROW_HEIGHT - pip_side) * 0.5
+    for index in range(pip_count):
         if filled_texture != null:
             var gem: = TextureRect.new()
             gem.texture = filled_texture
             gem.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
             gem.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
             gem.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-            gem.position = Vector2(index * 20, 0)
-            gem.size = Vector2(15, 15)
+            gem.position = Vector2(float(index) * pip_step, pip_y)
+            gem.size = Vector2.ONE * pip_side
             gem.mouse_filter = Control.MOUSE_FILTER_IGNORE
             gem.set_meta("empty_texture", empty_texture)
             gem.set_meta("filled_texture", filled_texture)
@@ -1884,10 +1889,15 @@ func _build_sp_pips_for(row: Control, sp_max: int) -> Array:
             pips.append(gem)
         else:
             var pip: = ColorRect.new()
-            pip.size = Vector2(9, 9)
-            pip.position = Vector2(index * 16 + 4, 2)
+            var fallback_side := 9.0 * fit_scale
+            pip.size = Vector2.ONE * fallback_side
+            pip.position = Vector2(
+                float(index) * pip_step + (pip_side - fallback_side) * 0.5,
+                (SP_ROW_HEIGHT - fallback_side) * 0.5,
+            )
             pip.rotation_degrees = 45.0
-            pip.pivot_offset = Vector2(4.5, 4.5)
+            pip.pivot_offset = Vector2.ONE * fallback_side * 0.5
+            pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
             row.add_child(pip)
             pips.append(pip)
     return pips
@@ -1898,8 +1908,15 @@ func _refresh_sp_pips_for(card: Dictionary, ally: Dictionary) -> void :
     # SP max can grow on level-up mid battle — rebuild when the count drifts.
     if pips.size() != int(ally.get("sp_max", 3)):
         for pip in pips:
-            (pip as Node).queue_free()
-        card["sp_pips"] = _build_sp_pips_for(card["sp_row"], int(ally.get("sp_max", 3)))
+            var pip_node := pip as Node
+            if pip_node.get_parent() == card["sp_row"]:
+                (card["sp_row"] as Node).remove_child(pip_node)
+            pip_node.queue_free()
+        card["sp_pips"] = _build_sp_pips_for(
+            card["sp_row"],
+            int(ally.get("sp_max", 3)),
+            float(card.get("bar_w", 0.0)),
+        )
         pips = card["sp_pips"]
     var sp: int = int(ally.get("sp", 0))
     for index in range(pips.size()):
@@ -1930,11 +1947,11 @@ func _play_intro_animation() -> void :
 
     var off: Vector2 = _design.position
     _log_panel.position.x = -LOG_PANEL_SIZE.x - 40.0 - off.x
-    _menu_panel.position.y = DESIGN_SIZE.y + 24.0 + off.y
+    _command_menu.position.y = DESIGN_SIZE.y + 24.0 + off.y
 
     var slide: = create_tween().set_parallel(true)
     slide.tween_property(_log_panel, "position:x", LOG_PANEL_POS.x, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-    slide.tween_property(_menu_panel, "position:y", MENU_PANEL_POS.y, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+    slide.tween_property(_command_menu, "position:y", MENU_PANEL_TOP, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
     for index in range(_ally_cards.size()):
         var card_root: Control = _ally_cards[index]["root"]
@@ -1959,8 +1976,8 @@ func _start_breathing() -> void :
         if ui.is_empty():
             continue
         var breath: = create_tween().set_loops()
-        breath.tween_property(ui["portrait"], "scale", Vector2(1.0, 1.015), 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-        breath.tween_property(ui["portrait"], "scale", Vector2(1.0, 1.0), 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+        breath.tween_property(ui["visual_root"], "scale", Vector2(1.0, 1.015), 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+        breath.tween_property(ui["visual_root"], "scale", Vector2(1.0, 1.0), 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 
 
 func _battle_portrait_texture() -> Texture2D:
@@ -2106,11 +2123,12 @@ func _spawn_slash(at: Vector2, tint: Color = Color(1, 1, 1, 1), effect_scale: fl
     else:
 
         var line: = Line2D.new()
-        line.width = 3.0
+        var fallback_scale: float = effect_scale / 1.3
+        line.width = 3.0 * fallback_scale
         line.default_color = tint if tint != Color(1, 1, 1, 1) else COLOR_ACCENT
         for step in range(9):
             var angle: float = deg_to_rad(-60.0 + step * 15.0)
-            line.add_point(at + Vector2(cos(angle), sin(angle)) * 34.0)
+            line.add_point(at + Vector2(cos(angle), sin(angle)) * 34.0 * fallback_scale)
         _fx_layer.add_child(line)
         var tween: = create_tween()
         tween.tween_property(line, "modulate:a", 0.0, 0.25)
@@ -2256,12 +2274,15 @@ func _run_battle() -> void :
                 return
             var entry: Dictionary = _round_queue[_queue_pos]
             var index: int = int(entry.get("index", 0))
+            var turn_performed := false
             if str(entry.get("side")) == "ally":
                 if index < _allies.size() and not _actor_down(_allies[index], true):
+                    turn_performed = true
                     _update_turn_order_view()
                     await _ally_turn(_allies[index])
             else:
                 if index < _foes.size() and not _actor_down(_foes[index], false):
+                    turn_performed = true
                     _update_turn_order_view()
                     await _foe_turn(_foes[index])
             if _battle_over:
@@ -2270,6 +2291,10 @@ func _run_battle() -> void :
             if _battle_over:
                 return
             _queue_pos += 1
+            if turn_performed:
+                await get_tree().create_timer(TURN_TRANSITION_DELAY).timeout
+                if _battle_over:
+                    return
 
         # End-of-round upkeep: the exposed window closes one step.
         if exposed_turns > 0:
@@ -2393,7 +2418,6 @@ func _ally_action_menu(ally: Dictionary) -> void :
             labels.append("Spare")
             descs.append("Show mercy and end the fight.")
 
-    _show_menu_actor(ally)
     var choice: String = await _menu(ids, labels, descs)
     match choice:
         "attack":
@@ -2402,15 +2426,21 @@ func _ally_action_menu(ally: Dictionary) -> void :
                 await _ally_action_menu(ally)
                 return
             var foe: Dictionary = _foes[target]
-            _play_skill_fx("strike", _foe_center(foe))
+            _play_ally_attack_fx("strike", _foe_center(foe))
             await _ally_attack(ally, foe, 1.0, "%s strikes!" % str(ally.get("name")), COLOR_ACCENT)
         "finisher":
             finisher_used = true
             var primary: Dictionary = _foes[0]
             _flash_portrait(primary, COLOR_EXPOSED, 1.0)
             _shake(7.0, 0.4)
-            _spawn_slash(_foe_center(primary), COLOR_EXPOSED, 1.9)
-            _spawn_slash(_foe_center(primary) + Vector2(8, 10), Color(1, 1, 1, 0.9), 1.5, true)
+            _spawn_slash(
+                _foe_center(primary), COLOR_EXPOSED, 1.9 * ALLY_TO_FOE_FX_SCALE)
+            _spawn_slash(
+                _foe_center(primary) + Vector2(8, 10),
+                Color(1, 1, 1, 0.9),
+                1.5 * ALLY_TO_FOE_FX_SCALE,
+                true,
+            )
             await _ally_attack(ally, primary, 3.0, "You answer its secret with one decisive blow!", COLOR_EXPOSED)
         "skill":
             await _skill_menu(ally)
@@ -2443,17 +2473,19 @@ func _skill_menu(ally: Dictionary) -> void :
     var ids: Array[String] = []
     var labels: Array[String] = []
     var descs: Array[String] = []
+    var icon_keys: Array[String] = []
     for index in range(skills.size()):
         var skill: Dictionary = skills[index]
         ids.append(str(index))
         labels.append("%s (%d SP)" % [skill.get("name"), int(skill.get("sp_cost", 1))])
         descs.append(str(skill.get("desc", "")))
+        icon_keys.append(str(skill.get("id", "skill")))
     ids.append("back")
     labels.append("Back")
     descs.append("")
+    icon_keys.append("back")
 
-    _show_menu_actor(ally)
-    var choice: String = await _menu(ids, labels, descs)
+    var choice: String = await _menu(ids, labels, descs, icon_keys)
     if choice == "back":
         await _ally_action_menu(ally)
         return
@@ -2513,7 +2545,11 @@ func _use_skill(ally: Dictionary, skill: Dictionary) -> bool:
             for hit_index in range(hits):
                 if _battle_over or _actor_down(foe, false):
                     break
-                _play_skill_fx(skill_id, _foe_center(foe) + Vector2(randf_range(-14, 14), randf_range(-10, 10)))
+                _play_ally_attack_fx(
+                    skill_id,
+                    _foe_center(foe) + Vector2(
+                        randf_range(-14, 14), randf_range(-10, 10)),
+                )
                 await _ally_attack(ally, foe, 0.7, "%s — hit %d!" % [skill_name, hit_index + 1], Color(0.7, 0.9, 1.0))
         "pierce":
             var target: int = await _pick_foe_target()
@@ -2521,7 +2557,7 @@ func _use_skill(ally: Dictionary, skill: Dictionary) -> bool:
                 return false
             _spend_sp(ally, skill)
             var foe: Dictionary = _foes[target]
-            _play_skill_fx(skill_id, _foe_center(foe))
+            _play_ally_attack_fx(skill_id, _foe_center(foe))
             await _ally_attack(ally, foe, power, "%s unleashes %s — it pierces the guard!" % [caster_name, skill_name], Color(1.0, 0.55, 0.85), true)
         "drain":
             var target: int = await _pick_foe_target()
@@ -2529,7 +2565,7 @@ func _use_skill(ally: Dictionary, skill: Dictionary) -> bool:
                 return false
             _spend_sp(ally, skill)
             var foe: Dictionary = _foes[target]
-            _play_skill_fx(skill_id, _foe_center(foe))
+            _play_ally_attack_fx(skill_id, _foe_center(foe))
             var dealt: int = await _ally_attack(ally, foe, power, "%s uses %s!" % [caster_name, skill_name], Color(0.7, 0.4, 0.9))
             if dealt > 0 and not _actor_down(ally, true):
                 var siphon: int = maxi(1, int(round(dealt * 0.6)))
@@ -2582,7 +2618,7 @@ func _use_skill(ally: Dictionary, skill: Dictionary) -> bool:
                         return false
                     _spend_sp(ally, skill)
                     var foe: Dictionary = _foes[target]
-                    _play_skill_fx(skill_id, _foe_center(foe))
+                    _play_ally_attack_fx(skill_id, _foe_center(foe))
                     if randf() < float(skill.get("status_chance", 1.0)) and _apply_status(foe, status_id):
                         _refresh_all_panels()
                         await _say("%s uses %s — %s is afflicted by %s!" % [caster_name, skill_name, foe.get("name"), _status_label(status_id)])
@@ -2617,7 +2653,7 @@ func _use_skill(ally: Dictionary, skill: Dictionary) -> bool:
                 return false
             _spend_sp(ally, skill)
             var foe: Dictionary = _foes[target]
-            _play_skill_fx(skill_id, _foe_center(foe))
+            _play_ally_attack_fx(skill_id, _foe_center(foe))
             var dealt: int = await _ally_attack(ally, foe, maxf(power, 0.1), "%s unleashes %s!" % [caster_name, skill_name], Color(1.0, 0.62, 0.2))
             var rider: = str(skill.get("status", ""))
             if dealt > 0 and not rider.is_empty() and not _actor_down(foe, false):
@@ -2656,17 +2692,21 @@ func _item_menu(ally: Dictionary) -> void :
     var ids: Array[String] = []
     var labels: Array[String] = []
     var descs: Array[String] = []
+    var icon_sources: Array = []
     for index in range(usable.size()):
         var item: Dictionary = usable[index]
         ids.append(str(index))
         labels.append("%s ×%d" % [item.get("name", "?"), InventoryManager.count_of(str(item.get("id")))])
-        descs.append(str(item.get("desc", item.get("description", ""))))
+        # Battle copy comes from real mechanics, never from flavor description.
+        descs.append(_item_battle_effect_text(item))
+        var item_icon: Texture2D = InventoryManager.icon_for(item)
+        icon_sources.append(item_icon if item_icon != null else "item")
     ids.append("back")
     labels.append("Back")
     descs.append("")
+    icon_sources.append("back")
 
-    _show_menu_actor(ally)
-    var choice: String = await _menu(ids, labels, descs)
+    var choice: String = await _menu(ids, labels, descs, icon_sources)
     if choice == "back":
         await _ally_action_menu(ally)
         return
@@ -2702,6 +2742,19 @@ func _item_menu(ally: Dictionary) -> void :
             await _say("%s uses %s. The next attack is empowered!" % [ally.get("name"), item.get("name")])
 
 
+func _item_battle_effect_text(item: Dictionary) -> String:
+    var power := int(item.get("power", 0))
+    match str(item.get("kind", "")):
+        "heal":
+            return "Restore %d HP to one ally." % maxi(power, 0)
+        "energy":
+            return "Restore %d SP to one ally." % maxi(power, 0)
+        "buff":
+            return "Empower the user's next attack to deal double damage."
+        _:
+            return "Usable during battle."
+
+
 func _probe_menu(ally: Dictionary) -> void :
     var weakness: Dictionary = enemy.get("weakness", {}) as Dictionary
     if weakness_found:
@@ -2717,13 +2770,16 @@ func _probe_menu(ally: Dictionary) -> void :
 
     var ids: Array[String] = []
     var labels: Array[String] = []
+    var icon_keys: Array[String] = []
     for index in range(probe_options.size()):
         ids.append(str(index))
         labels.append(str((probe_options[index] as Dictionary).get("text", "...")))
+        icon_keys.append("probe")
     ids.append("back")
     labels.append("Back")
+    icon_keys.append("back")
 
-    var choice: String = await _menu(ids, labels)
+    var choice: String = await _menu(ids, labels, [], icon_keys)
     if choice == "back":
         await _ally_action_menu(ally)
         return
@@ -2779,7 +2835,9 @@ func _ally_attack(ally: Dictionary, foe: Dictionary, power: float, flavor: Strin
     foe["hp"] = maxi(int(foe.get("hp", 1)) - damage, 0)
     _on_actor_damaged(foe)
 
-    _spawn_slash(_foe_center(foe), fx_color, 1.5 if power > 1.2 else 1.25)
+    var hit_slash_scale: float = (1.5 if power > 1.2 else 1.25) \
+        * ALLY_TO_FOE_FX_SCALE
+    _spawn_slash(_foe_center(foe), fx_color, hit_slash_scale)
     _enemy_hit_react(foe, power >= 1.5 or crit)
     _spawn_particles(_foe_center(foe), fx_color if not exposed_now else COLOR_EXPOSED)
     _spawn_damage_number(
@@ -3267,7 +3325,7 @@ func _update_target_arrows() -> void :
     for foe in _foes:
         var ui: Dictionary = _foe_ui(foe)
         if not ui.is_empty():
-            (ui["arrow"] as Control).visible = false
+            _set_foe_targeted(ui, false)
     for card in _ally_cards:
         (card["arrow"] as Control).visible = false
     if _target_pos >= _target_candidates.size():
@@ -3281,11 +3339,21 @@ func _update_target_arrows() -> void :
     else:
         var ui: Dictionary = _foe_ui(_foes[index])
         if not ui.is_empty():
-            var arrow: Control = ui["arrow"]
-            arrow.visible = true
-            _pulse_arrow(arrow)
+            _set_foe_targeted(ui, true)
         _target_foe_index = index
         _refresh_target_readout()
+
+
+func _set_foe_targeted(ui: Dictionary, targeted: bool) -> void:
+    var target_visual: EnemyTargetHighlight = ui.get("target_visual") as EnemyTargetHighlight
+    if target_visual != null:
+        target_visual.set_selected(targeted)
+    var identity: EnemyIdentityPlate = ui.get("identity_root") as EnemyIdentityPlate
+    if identity != null:
+        identity.set_targeted(targeted)
+    var hp_root: Control = ui.get("hp_root") as Control
+    if hp_root != null:
+        hp_root.modulate = Color(1.10, 1.05, 0.90, 1.0) if targeted else Color.WHITE
 
 
 func _pulse_arrow(arrow: Control) -> void :
@@ -3298,7 +3366,7 @@ func _hide_target_arrows() -> void :
     for foe in _foes:
         var ui: Dictionary = _foe_ui(foe)
         if not ui.is_empty():
-            (ui["arrow"] as Control).visible = false
+            _set_foe_targeted(ui, false)
     for card in _ally_cards:
         (card["arrow"] as Control).visible = false
 
@@ -3351,6 +3419,14 @@ func _play_skill_fx(skill_id: String, at: Vector2, effect_scale: float = 1.5) ->
     sprite.animation_finished.connect(sprite.queue_free)
 
 
+func _play_ally_attack_fx(
+    skill_id: String,
+    at: Vector2,
+    effect_scale: float = 1.5,
+) -> void:
+    _play_skill_fx(skill_id, at, effect_scale * ALLY_TO_FOE_FX_SCALE)
+
+
 # ── panel refresh (readout + foe bars + ally cards) ──────────────────────────
 
 
@@ -3362,30 +3438,23 @@ func _refresh_all_panels() -> void :
         _refresh_ally_card(_allies[index], _ally_cards[index])
 
 
-## Keeps the target-index bookkeeping and the intent line (in the log panel) — the
-## top-left enemy card was removed, so name/HP/status now come from the per-foe
-## readout under each sprite (see _refresh_foe_overlay, which also shows EXPOSED).
+## Keeps target-index bookkeeping for the selection cursor. Name/HP/status come
+## from the per-foe readout under each sprite (which also shows EXPOSED).
 func _refresh_target_readout() -> void :
     if _foes.is_empty():
         return
     var living: Array[int] = _living_foes()
     if _target_foe_index >= _foes.size() or (_actor_down(_foes[_target_foe_index], false) and not living.is_empty()):
         _target_foe_index = living[0] if not living.is_empty() else 0
-    var foe: Dictionary = _foes[_target_foe_index]
-    if _intent_label != null:
-        var intent: Dictionary = foe.get("intent", {}) as Dictionary
-        var telegraph: String = str(intent.get("telegraph", ""))
-        if str(intent.get("kind", "")) == "heavy":
-            _intent_label.add_theme_color_override("font_color", COLOR_HP.lightened(0.3))
-        else:
-            _intent_label.add_theme_color_override("font_color", Color(0.98, 0.92, 0.78, 0.98))
-        _intent_label.text = telegraph if not telegraph.is_empty() else "It watches you."
 
 
 func _refresh_foe_overlay(foe: Dictionary) -> void :
     var ui: Dictionary = _foe_ui(foe)
     if ui.is_empty():
         return
+    var identity: Control = ui.get("identity_root") as Control
+    if identity != null and identity.has_method("set_identity"):
+        identity.call("set_identity", str(foe.get("name", "Enemy")), int(foe.get("level", 1)))
     var bar_w: float = float(ui.get("bar_w", 120.0))
     var ratio: float = clampf(float(foe.get("hp", 0)) / float(foe.get("max_hp", 1)), 0.0, 1.0)
     (ui["hp_bar"] as Control).size.x = bar_w * ratio
@@ -3393,11 +3462,13 @@ func _refresh_foe_overlay(foe: Dictionary) -> void :
     var status_extra: Array[Dictionary] = []
     if exposed_turns > 0 and foe == _foes[0]:
         status_extra.append({
-            "id": "exposed", "label": "EXP", "count": exposed_turns,
+            "id": "exposed", "label": "EXP", "wide_label": "EXPOSED", "count": exposed_turns,
             "tooltip": "Exposed · takes amplified damage · %d turn%s" % [
                 exposed_turns, "" if exposed_turns == 1 else "s"],
         })
     _refresh_status_row(ui["status_row"] as HBoxContainer, foe, status_extra)
+    if identity != null and identity.has_method("refresh_status_layout"):
+        identity.call("refresh_status_layout")
 
 
 func _refresh_ally_card(ally: Dictionary, card: Dictionary) -> void :
@@ -3417,32 +3488,28 @@ func _refresh_ally_card(ally: Dictionary, card: Dictionary) -> void :
         status_extra.append({"id": "guard", "label": "GRD", "count": 0, "tooltip": "Guard · incoming damage is halved"})
     _refresh_status_row(card["status_row"] as HBoxContainer, ally, status_extra)
     (card["root"] as Control).modulate.a = 0.55 if (bool(ally.get("downed", false)) or hp <= 0) else 1.0
-    if str(ally.get("kind")) == "player" and card.get("xp_text") != null:
-        (card["xp_text"] as Label).text = "%d / %d" % [GameManager.player_xp, GameManager.xp_to_next_level()]
+    if card.get("xp_text") != null:
+        var current_xp: int
+        var needed_xp: int
+        if str(ally.get("kind")) == "player":
+            current_xp = GameManager.player_xp
+            needed_xp = GameManager.xp_to_next_level()
+        else:
+            current_xp = GameManager.companion_xp(str(ally.get("id", "")))
+            needed_xp = GameManager.xp_to_next_level_for(int(ally.get("level", 1)))
+        needed_xp = maxi(needed_xp, 1)
+        (card["xp_text"] as Label).text = "%d / %d" % [current_xp, needed_xp]
         if card.get("xp_bar") != null:
-            (card["xp_bar"] as Control).size.x = (float(card.get("bar_w", PLAYER_HP_BAR_W)) - 24.0) * clampf(float(GameManager.player_xp) / float(GameManager.xp_to_next_level()), 0.0, 1.0)
+            (card["xp_bar"] as Control).size.x = \
+                (float(card.get("bar_w", PLAYER_HP_BAR_W)) - 24.0) \
+                * clampf(float(current_xp) / float(needed_xp), 0.0, 1.0)
 
 
-## Gold pop on the card of whoever is choosing an action right now.
+## The controlled ally owns the full card at the fixed bottom position. No card
+## moves sideways; focus is communicated by the full form and a restrained tint.
 func _set_active_ally(ally: Variant) -> void :
-    for index in range(_ally_cards.size()):
-        var root: Control = _ally_cards[index]["root"]
-        var rect: Rect2 = _ally_cards[index]["rect"]
-        var active: bool = ally is Dictionary and index < _allies.size() and _allies[index] == ally
-        var target_x: = rect.position.x + (10.0 if active else 0.0)
-        var slide: = create_tween()
-        slide.tween_property(root, "position:x", target_x, 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-        root.modulate = Color(1.12, 1.08, 0.96) if active else (root.modulate if root.modulate.a < 1.0 else Color.WHITE)
-
-
-## Small acting-actor tag above the command row ("ARLO'S MOVE").
-func _show_menu_actor(ally: Dictionary) -> void :
-    if _menu_info_name == null:
-        return
-    _menu_actor_text = "%s" % str(ally.get("name", "")).to_upper()
-
-
-var _menu_actor_text: String = ""
+    if _ally_stack != null:
+        _ally_stack.set_active(ally, _round_queue, _queue_pos)
 
 
 ## Rebuild the right-edge queue strip from the REAL round order: the next up to
@@ -3479,7 +3546,42 @@ func _update_turn_order_view(animate: bool = true) -> void :
 
 
 func _finish(result: String) -> void :
+    if _battle_over:
+        return
     _battle_over = true
+    _pending_finish_result = result
+    _finish_confirm_ready = false
+    _ui_mode = UiMode.CONFIRM
+    if _continue_marker != null:
+        _continue_marker.visible = false
+    # Preserve victory/spare/defeat/flee presentation. The final Enter prompt is
+    # enabled only after the longest terminal tween (defeat darkening: 1.2 s).
+    get_tree().create_timer(BATTLE_FINISH_CONFIRM_DELAY).timeout.connect(
+        _enable_finish_confirmation,
+        CONNECT_ONE_SHOT,
+    )
+
+
+func _enable_finish_confirmation() -> void:
+    if not is_inside_tree() or _pending_finish_result.is_empty():
+        return
+    _finish_confirm_ready = true
+    if _continue_marker != null:
+        _continue_marker.visible = true
+        var bounce := create_tween().set_loops()
+        bounce.tween_property(_continue_marker, "position:y", 124.0, 0.25)
+        bounce.tween_property(_continue_marker, "position:y", 120.0, 0.25)
+
+
+func _finalize_finish() -> void:
+    if not is_inside_tree() or not _finish_confirm_ready:
+        return
+    var result := _pending_finish_result
+    _pending_finish_result = ""
+    _finish_confirm_ready = false
+    _ui_mode = UiMode.NONE
+    if _continue_marker != null:
+        _continue_marker.visible = false
     _shutdown_enemy_barks()
     GameManager.ui_blocking_input = false
     battle_finished.emit(result, enemy_id)
@@ -3487,6 +3589,7 @@ func _finish(result: String) -> void :
 
 
 func _exit_tree() -> void:
+    _clear_battle_log_runtime()
     _shutdown_enemy_barks()
 
 
@@ -3513,273 +3616,240 @@ func _decorate_log_line(text: String) -> String:
 
 
 func _say(text: String) -> void :
-    if _battle_over:
+    if _battle_over or _log_list == null:
         return
-    _clear_menu()
-    _continue_marker.visible = false
-    _type_target = text
-    _type_progress = 0.0
-    _log_label.text = _decorate_log_line(text)
-    _log_label.visible_characters = 0
-    _ui_mode = UiMode.TYPING
-    while _ui_mode == UiMode.TYPING:
-        await get_tree().process_frame
-    _continue_marker.visible = true
-    var bounce: = create_tween().set_loops(3)
-    bounce.tween_property(_continue_marker, "position:y", 124.0, 0.25)
-    bounce.tween_property(_continue_marker, "position:y", 120.0, 0.25)
-    _ui_mode = UiMode.CONFIRM
-    await _confirmed
-    _continue_marker.visible = false
-    _ui_mode = UiMode.NONE
+    var line := text.strip_edges()
+    if line.is_empty():
+        return
+    var entry_id := _next_battle_log_entry_id
+    _next_battle_log_entry_id += 1
+    var entry := _make_battle_log_entry(entry_id, _decorate_log_line(line))
+    _battle_log_entries.append(entry)
+    _log_list.add_child(entry["root"])
+    (entry["timer"] as Timer).start()
+    while _battle_log_entries.size() > MAX_BATTLE_LOG_ENTRIES:
+        _drop_oldest_battle_log_entry()
+    _finalize_battle_log_entry.call_deferred(entry_id)
 
 
-func _menu(ids: Array[String], labels: Array[String], descs: Array[String] = []) -> String:
-    _clear_menu()
-    _menu_ids = ids
-    _menu_descs = descs
-    _menu_index = 0
-    _menu_panel.visible = true
-    _menu_panel.modulate.a = 0.0
+func _make_battle_log_entry(entry_id: int, decorated_text: String) -> Dictionary:
+    # The raw Control deliberately owns the row height. Its RichTextLabel child
+    # cannot impose a minimum size, so expiry can smoothly collapse this height
+    # and let VBoxContainer scroll the remaining history upward.
+    var root := Control.new()
+    root.name = "BattleLogEntry_%d" % entry_id
+    root.clip_contents = true
+    root.custom_minimum_size = Vector2(0, BATTLE_LOG_MIN_ENTRY_HEIGHT)
+    root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    root.modulate = Color(1, 1, 1, 0.68)
+
+    var label := RichTextLabel.new()
+    label.name = "Text"
+    label.bbcode_enabled = true
+    label.text = decorated_text
+    label.visible_characters = -1
+    label.scroll_active = false
+    label.fit_content = false
+    label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    label.anchor_right = 1.0
+    label.offset_bottom = 256.0
+    label.position = BATTLE_LOG_APPEND_OFFSET
+    label.add_theme_font_size_override("normal_font_size", BATTLE_LOG_FONT_SIZE)
+    label.add_theme_color_override("default_color", COLOR_TEXT)
+    label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
+    label.add_theme_constant_override("shadow_offset_x", 1)
+    label.add_theme_constant_override("shadow_offset_y", 1)
+    label.add_theme_constant_override("line_separation", BATTLE_LOG_ENTRY_GAP)
+    label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    root.add_child(label)
+
+    var timer := Timer.new()
+    timer.name = "TimeToLive"
+    timer.one_shot = true
+    timer.wait_time = BATTLE_LOG_ENTRY_TTL
+    timer.timeout.connect(_expire_battle_log_entry.bind(entry_id), CONNECT_ONE_SHOT)
+    root.add_child(timer)
+
+    return {
+        "id": entry_id,
+        "root": root,
+        "label": label,
+        "timer": timer,
+        "arrival_tween": null,
+        "exit_tween": null,
+        "removing": false,
+    }
+
+
+func _finalize_battle_log_entry(entry_id: int) -> void:
+    var entry := _battle_log_entry(entry_id)
+    if entry.is_empty() or bool(entry.get("removing", false)):
+        return
+    var root: Control = entry["root"]
+    var label: RichTextLabel = entry["label"]
+    if not is_instance_valid(root) or not is_instance_valid(label):
+        return
+    # RichTextLabel needs one layout pass before wrapped content height is exact.
+    var content_height := maxf(
+        BATTLE_LOG_MIN_ENTRY_HEIGHT,
+        ceilf(label.get_content_height()),
+    )
+    root.custom_minimum_size.y = content_height
+    label.offset_bottom = content_height
+
+    var arrival := create_tween().set_parallel(true)
+    entry["arrival_tween"] = arrival
+    arrival.tween_property(
+        label, "position", Vector2.ZERO, BATTLE_LOG_APPEND_DURATION,
+    ).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+    arrival.tween_property(
+        root, "modulate", Color.WHITE, BATTLE_LOG_APPEND_DURATION,
+    ).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+    _schedule_battle_log_scroll()
+
+
+func _expire_battle_log_entry(entry_id: int) -> void:
+    var entry := _battle_log_entry(entry_id)
+    if entry.is_empty() or bool(entry.get("removing", false)):
+        return
+    var root: Control = entry["root"]
+    var label: RichTextLabel = entry["label"]
+    if not is_instance_valid(root) or not is_instance_valid(label):
+        _erase_battle_log_entry(entry_id, false)
+        return
+    entry["removing"] = true
+    _kill_battle_log_entry_tween(entry, "arrival_tween")
+    root.custom_minimum_size.y = maxf(
+        BATTLE_LOG_MIN_ENTRY_HEIGHT,
+        maxf(root.size.y, root.custom_minimum_size.y),
+    )
+
+    # Fade/slide the expired row while its height closes. VBoxContainer reflows
+    # on every tween frame, which is the requested smooth scroll-on-removal.
+    var exit := create_tween().set_parallel(true)
+    entry["exit_tween"] = exit
+    exit.tween_property(
+        root, "modulate:a", 0.0, BATTLE_LOG_EXIT_DURATION,
+    ).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+    exit.tween_property(
+        label, "position", BATTLE_LOG_EXIT_OFFSET, BATTLE_LOG_EXIT_DURATION,
+    ).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+    exit.tween_property(
+        root, "custom_minimum_size:y", 0.0, BATTLE_LOG_EXIT_DURATION,
+    ).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+    exit.chain().tween_callback(_finish_battle_log_entry_expiry.bind(entry_id))
+
+
+func _finish_battle_log_entry_expiry(entry_id: int) -> void:
+    var entry := _battle_log_entry(entry_id)
+    if entry.is_empty():
+        return
+    # Do not kill the tween from inside its own completion callback.
+    entry["exit_tween"] = null
+    _erase_battle_log_entry(entry_id, true)
+
+
+func _drop_oldest_battle_log_entry() -> void:
+    if _battle_log_entries.is_empty():
+        return
+    _erase_battle_log_entry(int(_battle_log_entries[0].get("id", -1)), true)
+
+
+func _erase_battle_log_entry(entry_id: int, schedule_scroll: bool) -> void:
+    var index := _battle_log_entry_index(entry_id)
+    if index < 0:
+        return
+    var entry: Dictionary = _battle_log_entries[index]
+    var timer: Timer = entry.get("timer") as Timer
+    if timer != null and is_instance_valid(timer):
+        timer.stop()
+    _kill_battle_log_entry_tween(entry, "arrival_tween")
+    _kill_battle_log_entry_tween(entry, "exit_tween")
+    var root: Control = entry.get("root") as Control
+    if root != null and is_instance_valid(root):
+        if root.get_parent() != null:
+            root.get_parent().remove_child(root)
+        root.queue_free()
+    _battle_log_entries.remove_at(index)
+    if schedule_scroll:
+        _schedule_battle_log_scroll()
+
+
+func _battle_log_entry(entry_id: int) -> Dictionary:
+    var index := _battle_log_entry_index(entry_id)
+    return _battle_log_entries[index] if index >= 0 else {}
+
+
+func _battle_log_entry_index(entry_id: int) -> int:
+    for index in range(_battle_log_entries.size()):
+        if int(_battle_log_entries[index].get("id", -1)) == entry_id:
+            return index
+    return -1
+
+
+func _kill_battle_log_entry_tween(entry: Dictionary, key: String) -> void:
+    var tween: Tween = entry.get(key) as Tween
+    if tween != null and tween.is_valid():
+        tween.kill()
+    entry[key] = null
+
+
+func _schedule_battle_log_scroll() -> void:
+    if _battle_log_scroll_queued:
+        return
+    _battle_log_scroll_queued = true
+    _scroll_battle_log_to_bottom.call_deferred()
+
+
+func _scroll_battle_log_to_bottom() -> void:
+    _battle_log_scroll_queued = false
+    if _log_scroll == null or not is_instance_valid(_log_scroll):
+        return
+    var scrollbar := _log_scroll.get_v_scroll_bar()
+    var target := maxf(0.0, scrollbar.max_value - scrollbar.page)
+    if target <= 0.5:
+        scrollbar.value = 0.0
+        return
+    if _battle_log_scroll_tween != null and _battle_log_scroll_tween.is_valid():
+        _battle_log_scroll_tween.kill()
+    _battle_log_scroll_tween = create_tween()
+    _battle_log_scroll_tween.tween_property(
+        scrollbar, "value", target, BATTLE_LOG_SCROLL_DURATION,
+    ).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+
+
+func _clear_battle_log_runtime() -> void:
+    _battle_log_scroll_queued = false
+    if _battle_log_scroll_tween != null and _battle_log_scroll_tween.is_valid():
+        _battle_log_scroll_tween.kill()
+    _battle_log_scroll_tween = null
+    for entry in _battle_log_entries:
+        var timer: Timer = entry.get("timer") as Timer
+        if timer != null and is_instance_valid(timer):
+            timer.stop()
+        _kill_battle_log_entry_tween(entry, "arrival_tween")
+        _kill_battle_log_entry_tween(entry, "exit_tween")
+    _battle_log_entries.clear()
+
+
+func _menu(
+    ids: Array[String],
+    labels: Array[String],
+    descs: Array[String] = [],
+    icon_sources: Array = [],
+) -> String:
     if _hint_label != null:
         _hint_label.visible = false
-    var panel_in: = create_tween()
-    panel_in.tween_property(_menu_panel, "modulate:a", 1.0, 0.16)
-    var count: int = maxi(labels.size(), 1)
-    var card_w: float = minf(60.0, (470.0 - float(maxi(count - 1, 0) * 8)) / float(count))
-    var total_w: float = card_w * float(count) + float(maxi(count - 1, 0) * 8)
-    _menu_row.position.x = maxf((470.0 - total_w) * 0.5, 0.0)
-    _menu_row.size.x = minf(total_w, 470.0)
-    for index in range(labels.size()):
-        var item: = _make_menu_card(labels[index], _menu_icon_path(ids[index], labels[index]), index, card_w)
-        _menu_row.add_child(item)
-        _menu_items.append(item)
-    _menu_cursor.visible = true
     _ui_mode = UiMode.MENU
-    _highlight_menu()
-    var picked: String = await _menu_picked
-    _menu_cursor.visible = false
-    _clear_menu()
+    var picked: String = await _command_menu.choose(ids, labels, descs, icon_sources)
     _ui_mode = UiMode.NONE
     return picked
-
-
-func _clear_menu() -> void :
-    for item in _menu_items:
-        item.queue_free()
-    _menu_items.clear()
-    _menu_ids.clear()
-    if _menu_cursor != null:
-        _menu_cursor.visible = false
-    if _menu_panel != null:
-        _menu_panel.visible = false
-    if _hint_label != null:
-        _hint_label.visible = false
-
-
-func _highlight_menu() -> void :
-    for index in range(_menu_items.size()):
-        var selected: bool = index == _menu_index
-        var item: = _menu_items[index]
-        _set_menu_card_selected(item, selected)
-        if selected:
-            var bump: = create_tween()
-            bump.tween_property(item, "position:y", -5.0, 0.08)
-            bump.tween_property(item, "position:y", 0.0, 0.12)
-    await get_tree().process_frame
-    if _menu_index < _menu_items.size():
-        _menu_cursor.visible = false
-
-
-## Icon-only square chip; the readout above the row carries name/description.
-func _make_menu_card(text: String, icon_path: String, index: int, width: float) -> Panel:
-    var side := width
-    var card := Panel.new()
-    card.custom_minimum_size = Vector2(side, side)
-    card.size = Vector2(side, side)
-    card.mouse_filter = Control.MOUSE_FILTER_STOP
-    if UiKit.kit_texture("card.png") != null:
-        card.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
-        var frame_normal := UiKit.make_ornate_frame(card.size, "card.png", 0.24, 14.0)
-        var frame_selected := UiKit.make_ornate_frame(card.size, "card_selected.png", 0.24, 14.0)
-        frame_selected.visible = false
-        card.add_child(frame_normal)
-        card.add_child(frame_selected)
-        card.set_meta("frame_normal", frame_normal)
-        card.set_meta("frame_selected", frame_selected)
-    else:
-        card.add_theme_stylebox_override("panel", _make_menu_card_style(false))
-    card.gui_input.connect(_on_menu_card_gui_input.bind(index))
-    card.set_meta("label_text", text)
-
-    var icon_node: CanvasItem
-    if not icon_path.is_empty():
-        var icon_size := side - 20.0
-        var icon := _add_texture(card, icon_path, Rect2((side - icon_size) * 0.5, (side - icon_size) * 0.5, icon_size, icon_size), 0.92)
-        icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-        icon.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-        icon_node = icon
-    else:
-        var icon := ColorRect.new()
-        icon.color = Color(0.95, 0.8, 0.48, 0.72)
-        icon.position = Vector2(side * 0.5 - 6, side * 0.5 - 6)
-        icon.size = Vector2(12, 12)
-        icon.rotation_degrees = 45
-        icon.pivot_offset = Vector2(6, 6)
-        card.add_child(icon)
-        icon_node = icon
-    card.set_meta("icon_node", icon_node)
-    return card
-
-
-## Fill the readout above the row from the selected entry.
-func _refresh_menu_info() -> void:
-    if _menu_info_name == null or _menu_index >= _menu_ids.size():
-        return
-    var id := _menu_ids[_menu_index]
-    var label_text := ""
-    if _menu_index < _menu_items.size() and _menu_items[_menu_index].has_meta("label_text"):
-        label_text = str(_menu_items[_menu_index].get_meta("label_text"))
-    var icon_path := _menu_icon_path(id, label_text)
-    var icon_texture: Texture2D = _load_png_texture(icon_path) if not icon_path.is_empty() else null
-    _menu_info_icon.texture = icon_texture
-    _menu_info_icon.visible = icon_texture != null
-    # In party battles the readout carries whose move this is: "ARLO · Attack".
-    _menu_info_name.text = ("%s · %s" % [_menu_actor_text, label_text]) if not _menu_actor_text.is_empty() else label_text
-    var desc := ""
-    if _menu_index < _menu_descs.size():
-        desc = _menu_descs[_menu_index].strip_edges()
-    _menu_info_desc.text = desc
-    _menu_info_desc.visible = not desc.is_empty()
-    _layout_menu_info(not desc.is_empty())
-
-
-func _layout_menu_info(has_desc: bool) -> void:
-    var name_h: = _wrapped_label_height(_menu_info_name, 22.0, 40.0)
-    _menu_info_name.size.y = name_h
-    if not has_desc:
-        _menu_info_name.position.y = 8.0 if name_h <= 24.0 else 2.0
-        _menu_info_desc.size.y = 0.0
-        return
-
-    var desc_h: = _wrapped_label_height(_menu_info_desc, 14.0, 36.0)
-    var gap: = 2.0
-    var row_top: = _menu_row.position.y if _menu_row != null else 56.0
-    var total_h: = name_h + gap + desc_h
-    var top: = minf(2.0, row_top - 4.0 - total_h)
-    top = maxf(-28.0, top)
-    _menu_info_name.position.y = top
-    _menu_info_desc.position.y = top + name_h + gap
-    _menu_info_desc.size.y = desc_h
-
-
-func _wrapped_label_height(label: Label, min_height: float, max_height: float) -> float:
-    var line_count: = maxi(label.get_line_count(), 1)
-    var line_height: = float(label.get_line_height())
-    if line_height <= 0.0:
-        line_height = float(label.get_theme_font_size("font_size")) + 2.0
-    return clampf(float(line_count) * line_height + 2.0, min_height, max_height)
-
-
-func _make_menu_card_style(selected: bool) -> StyleBox:
-    var texture: = UiKit.kit_texture("card_selected.png" if selected else "card.png")
-    if texture != null:
-
-
-        return UiKit.ninepatch_style(texture, minf(texture.get_width(), texture.get_height()) * 0.26, 6.0)
-    var style: = StyleBoxFlat.new()
-    style.bg_color = Color(0.03, 0.035, 0.045, 0.88) if not selected else Color(0.14, 0.1, 0.035, 0.95)
-    style.border_color = Color(0.6, 0.5, 0.34, 0.58) if not selected else Color(1.0, 0.78, 0.32, 0.96)
-    style.set_border_width_all(2)
-    style.set_corner_radius_all(3)
-    style.shadow_size = 6 if not selected else 16
-    style.shadow_color = Color(0, 0, 0, 0.35) if not selected else Color(1.0, 0.63, 0.18, 0.34)
-    return style
-
-
-func _set_menu_card_selected(card: Control, selected: bool) -> void :
-    if card.has_meta("frame_normal"):
-        (card.get_meta("frame_normal") as Control).visible = not selected
-        (card.get_meta("frame_selected") as Control).visible = selected
-    elif card is Panel:
-        (card as Panel).add_theme_stylebox_override("panel", _make_menu_card_style(selected))
-    if card.has_meta("label_node"):
-        var label: = card.get_meta("label_node") as Label
-        if label != null:
-            label.add_theme_color_override("font_color", COLOR_ACCENT if selected else COLOR_TEXT_DIM)
-    if card.has_meta("icon_node"):
-        var icon: = card.get_meta("icon_node") as CanvasItem
-        if icon is ColorRect:
-            icon.color = Color(1.0, 0.86, 0.4, 1.0) if selected else Color(0.95, 0.8, 0.48, 0.55)
-        elif icon != null:
-            icon.modulate = Color(1.18, 1.08, 0.82, 1.0) if selected else Color(0.82, 0.8, 0.74, 0.78)
-    if selected:
-        _refresh_menu_info()
-
-
-func _menu_icon_path(id: String, label: String) -> String:
-
-    var v3_path: = BATTLE_V3_DIR + "icon_%s.png" % id
-    if ResourceLoader.exists(v3_path):
-        return v3_path
-    match id:
-        "attack":
-            return TEX_B2_ICON_ATTACK
-        "skill":
-            return TEX_B2_ICON_SKILL
-        "probe":
-            return TEX_B2_ICON_PROBE
-        "item":
-            return TEX_B2_ICON_ITEM
-        "guard":
-            return TEX_B2_ICON_GUARD
-        "flee":
-            return TEX_B2_ICON_FLEE
-        "finisher":
-            return TEX_B2_ICON_FINISHER
-        "spare":
-            return TEX_B2_ICON_SPARE
-        "back":
-            return ""
-    var lower_label: = label.to_lower()
-    if id.is_valid_int():
-        if lower_label.contains("potion") or lower_label.contains("tonic") or lower_label.contains("elixir") or lower_label.contains("×"):
-            return TEX_B2_ICON_ITEM
-        return TEX_B2_ICON_SKILL
-    # Named skill entries (companion pool ids like "venom_fang") fall back to the
-    # generic skill glyph until a dedicated icon ships.
-    if id != "back" and not id.is_empty():
-        return TEX_B2_ICON_SKILL
-    return ""
-
-
-func _on_menu_card_gui_input(event: InputEvent, index: int) -> void :
-    if _ui_mode != UiMode.MENU or index < 0 or index >= _menu_ids.size():
-        return
-    if event is InputEventMouseMotion and _menu_index != index:
-        _menu_index = index
-        _highlight_menu()
-    elif event is InputEventMouseButton:
-        var mouse_event: = event as InputEventMouseButton
-        if mouse_event.button_index == MOUSE_BUTTON_LEFT and mouse_event.pressed:
-            _menu_index = index
-            _highlight_menu()
-            _menu_picked.emit(_menu_ids[_menu_index])
 
 
 func _process(delta: float) -> void :
     if _hint_label != null:
         _hint_label.visible = false
-    if _menu_panel != null and _ui_mode != UiMode.MENU and _menu_items.is_empty():
-        _menu_panel.visible = false
-
-    if _ui_mode == UiMode.TYPING:
-        _type_progress += TYPE_SPEED * delta
-        var total_chars: int = _log_label.get_total_character_count()
-        var visible_chars: int = mini(int(_type_progress), total_chars)
-        _log_label.visible_characters = visible_chars
-        if visible_chars >= total_chars:
-            _finish_typing()
 
     if _shake_time > 0.0:
         _shake_time -= delta
@@ -3792,27 +3862,19 @@ func _process(delta: float) -> void :
             _root.position = Vector2.ZERO
             _shake_strength = 0.0
 
-
-func _finish_typing() -> void :
-    _log_label.visible_characters = -1
-    _ui_mode = UiMode.NONE
-
-
 func _unhandled_input(event: InputEvent) -> void :
     if _battle_over:
+        if _ui_mode == UiMode.CONFIRM and event.is_action_pressed("ui_accept"):
+            if _finish_confirm_ready:
+                _finalize_finish()
+            get_viewport().set_input_as_handled()
+        return
+    if _ui_mode == UiMode.MENU:
+        if _command_menu.handle_input(event):
+            get_viewport().set_input_as_handled()
         return
     if event.is_action_pressed("ui_accept"):
         match _ui_mode:
-            UiMode.TYPING:
-                _finish_typing()
-                get_viewport().set_input_as_handled()
-            UiMode.CONFIRM:
-                _confirmed.emit()
-                get_viewport().set_input_as_handled()
-            UiMode.MENU:
-                if _menu_index < _menu_ids.size():
-                    _menu_picked.emit(_menu_ids[_menu_index])
-                get_viewport().set_input_as_handled()
             UiMode.TARGET:
                 if _target_pos < _target_candidates.size():
                     _target_picked.emit(_target_candidates[_target_pos])
@@ -3833,18 +3895,6 @@ func _unhandled_input(event: InputEvent) -> void :
                 _update_target_arrows()
             get_viewport().set_input_as_handled()
         return
-    if _ui_mode != UiMode.MENU:
-        return
-    var moved: = false
-    if event.is_action_pressed("ui_right") or event.is_action_pressed("ui_down"):
-        _menu_index = (_menu_index + 1) % _menu_ids.size()
-        moved = true
-    elif event.is_action_pressed("ui_left") or event.is_action_pressed("ui_up"):
-        _menu_index = (_menu_index - 1 + _menu_ids.size()) % _menu_ids.size()
-        moved = true
-    if moved:
-        _highlight_menu()
-        get_viewport().set_input_as_handled()
 
 
 

@@ -7,6 +7,7 @@ extends Node2D
 ## godot --headless --path . res://scenes/dev/PartyBattleSmoke.tscn --quit-after 4000
 
 const BattleSceneScript := preload("res://scripts/battle/BattleScene.gd")
+const EnemyIdentityPlateScript := preload("res://scripts/battle/EnemyIdentityPlate.gd")
 const MainScript := preload("res://scripts/world/Main.gd")
 
 var _frames: int = 0
@@ -58,8 +59,11 @@ func _ready() -> void:
 	_check(bool(_battle._foes[1]["synthetic"]), "echo must be synthetic")
 	_check(int(_battle._foes[1]["xp_reward"]) < int(_battle._foes[0]["xp_reward"]),
 		"echo XP must be reduced")
+	_assert_enemy_identity_layout()
 	_assert_visual_catalog()
 	_assert_boss_party_scaling(enemy_data)
+	_assert_sp_pip_fit()
+	_assert_item_effect_copy()
 
 	# Status engine sanity, straight on the live actors.
 	var foe: Dictionary = _battle._foes[1]
@@ -68,6 +72,7 @@ func _ready() -> void:
 	_battle._refresh_all_panels()
 	var foe_status_row: HBoxContainer = (_battle._foe_ui(foe) as Dictionary)["status_row"]
 	_check(foe_status_row.get_child_count() == 1, "foe status card should render the poison icon")
+	_check(foe_status_row.position.y < 0.0, "foe status metadata must float above the portrait")
 	if foe_status_row.get_child_count() > 0:
 		var poison_token: Control = foe_status_row.get_child(0)
 		_check(not str(poison_token.tooltip_text).is_empty(), "status icon should explain itself via tooltip")
@@ -89,6 +94,118 @@ func _ready() -> void:
 	leftover = _battle._absorb_with_shields(ally, 10)
 	_check(leftover == 7, "3 shield points remained, 7 damage should pass")
 	print("[PartySmoke] shape+status assertions OK — automating the battle")
+
+
+func _assert_enemy_identity_layout() -> void:
+	var absolute_nameplates: Array[Rect2] = []
+	for foe in _battle._foes:
+		var ui: Dictionary = _battle._foe_ui(foe)
+		var identity: Control = ui.get("identity_root") as Control
+		_check(identity != null, "every foe needs an identity component")
+		if identity == null:
+			continue
+		var level_label: Label = ui["level_label"]
+		_check(level_label.position.y < 0.0, "level must float above the portrait")
+		_check(level_label.text.begins_with("LV "), "level label must use the compact LV format")
+		var bounds: Rect2 = identity.nameplate_bounds()
+		var portrait_size: Vector2 = ui["size"]
+		_check(bounds.position.y >= portrait_size.y, "enemy name must remain below the portrait")
+		var hp_root: Control = ui["hp_root"]
+		_check(hp_root.position.y + hp_root.size.y <= bounds.position.y + 0.01,
+			"enemy HP must sit above the nameplate")
+		var target_visual: EnemyTargetHighlight = ui["target_visual"]
+		_check(target_visual != null, "every foe needs the modular target highlight")
+		if target_visual != null:
+			_check(target_visual.marker_bounds().end.y <= level_label.position.y - 4.0,
+				"target marker must remain clear of level/status metadata")
+			_check(not target_visual.is_selected(),
+				"target highlight must start hidden outside target mode")
+		_check(bounds.size.x <= portrait_size.x - 8.0 + 0.01, "nameplate must stay inside its foe slot")
+		absolute_nameplates.append(Rect2((ui["home"] as Vector2) + bounds.position, bounds.size))
+	for left_index in range(absolute_nameplates.size()):
+		for right_index in range(left_index + 1, absolute_nameplates.size()):
+			_check(
+				not absolute_nameplates[left_index].intersects(absolute_nameplates[right_index]),
+				"trio nameplates must not overlap",
+			)
+
+	var short_plate := EnemyIdentityPlateScript.new()
+	short_plate.setup("A", 3, 152.0, 162.0, 3)
+	var long_plate := EnemyIdentityPlateScript.new()
+	long_plate.setup("Kẻ Canh Giữ Hoàng Hôn Vĩnh Cửu", 18, 152.0, 162.0, 3)
+	_check(long_plate.nameplate_width > short_plate.nameplate_width,
+		"only the middle rail should grow for a longer localized name")
+	_check(long_plate.nameplate_width <= 144.01, "long trio names must respect the slot cap")
+	short_plate.free()
+	long_plate.free()
+
+	# Selection must transfer atomically and clear completely on cancel/resolve.
+	var qa_targets: Array[int] = [0, 1]
+	_battle._target_candidates = qa_targets
+	_battle._target_is_ally = false
+	_battle._target_pos = 0
+	_battle._update_target_arrows()
+	_check((_battle._foe_ui(_battle._foes[0])["target_visual"] as EnemyTargetHighlight).is_selected(),
+		"first target should own the highlight")
+	_check(not (_battle._foe_ui(_battle._foes[1])["target_visual"] as EnemyTargetHighlight).is_selected(),
+		"unfocused target must not retain the highlight")
+	_battle._target_pos = 1
+	_battle._update_target_arrows()
+	_check(not (_battle._foe_ui(_battle._foes[0])["target_visual"] as EnemyTargetHighlight).is_selected(),
+		"highlight must leave the previous target")
+	_check((_battle._foe_ui(_battle._foes[1])["target_visual"] as EnemyTargetHighlight).is_selected(),
+		"highlight must follow target navigation")
+	_battle._hide_target_arrows()
+	_check(not (_battle._foe_ui(_battle._foes[1])["target_visual"] as EnemyTargetHighlight).is_selected(),
+		"target highlight must clear after selection")
+	_battle._target_foe_index = 0
+	print("[PartySmoke] enemy identity layout OK — floating metadata + modular nameplate")
+
+
+func _assert_sp_pip_fit() -> void:
+	# Level 18 currently produces 13 SP: the regression case that previously
+	# extended 55px beyond a full ally card.
+	for sample in [
+		{"width": 182.0, "count": 13, "shrinks": true},
+		{"width": 220.0, "count": 13, "shrinks": true},
+		{"width": 182.0, "count": 9, "shrinks": false},
+		{"width": 220.0, "count": 11, "shrinks": false},
+		{"width": 182.0, "count": 1, "shrinks": false},
+		{"width": 182.0, "count": 0, "shrinks": false},
+	]:
+		var row := Control.new()
+		var available_width := float(sample["width"])
+		row.size = Vector2(available_width, 15.0)
+		var pips: Array = _battle._build_sp_pips_for(
+			row, int(sample["count"]), available_width)
+		var rendered_right := 0.0
+		for pip in pips:
+			var control := pip as Control
+			rendered_right = maxf(rendered_right, control.position.x + control.size.x)
+		_check(rendered_right <= available_width + 0.01,
+			"SP pips must stay inside the ally card")
+		if not pips.is_empty():
+			var first_side := (pips[0] as Control).size.x
+			_check(first_side < 15.0 if bool(sample["shrinks"]) else is_equal_approx(first_side, 15.0),
+				"SP pips must shrink only when their natural row is too wide")
+		row.free()
+	print("[PartySmoke] SP pip fit OK — full and compact cards remain bounded")
+
+
+func _assert_item_effect_copy() -> void:
+	var flavor := "A sentimental description that must never appear in battle."
+	var heal := {"kind": "heal", "power": 80, "description": flavor}
+	var energy := {"kind": "energy", "power": 3, "description": flavor}
+	var buff := {"kind": "buff", "power": 0, "description": flavor}
+	_check(_battle._item_battle_effect_text(heal) == "Restore 80 HP to one ally.",
+		"heal item menu copy must come from its gameplay power")
+	_check(_battle._item_battle_effect_text(energy) == "Restore 3 SP to one ally.",
+		"energy item menu copy must come from its gameplay power")
+	_check(_battle._item_battle_effect_text(buff).contains("double damage"),
+		"buff item menu copy must state its real combat effect")
+	_check(not _battle._item_battle_effect_text(heal).contains(flavor),
+		"battle item menu must not reuse flavor description")
+	print("[PartySmoke] item effect copy OK — mechanics replace flavor descriptions")
 
 
 func _capture_party_shot() -> void:
@@ -124,6 +241,10 @@ func _assert_visual_catalog() -> void:
 		var status_id := str(raw_id)
 		var path := "res://assets/ui/battle/status/%s.png" % status_id
 		_check(_battle._load_png_texture(path) != null, "missing status icon: %s" % status_id)
+	_check(
+		_battle._load_png_texture("res://assets/ui/enemy_identity_v1/exposed.png") != null,
+		"missing OpenAiExtension EXPOSED icon",
+	)
 	print("[PartySmoke] visual catalog OK — 31 skill FX + 18 status icons")
 
 

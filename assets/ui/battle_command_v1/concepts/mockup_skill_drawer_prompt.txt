@@ -1,0 +1,17 @@
+Create one polished 16:9 AAA fantasy JRPG battle UI mockup. Use the supplied current battle screenshot only as spatial context and the supplied existing UI sheet only as the established visual-language reference. Do not copy its oversized ornate frames literally. Redesign only the battle command-selection area in the lower center-right, while keeping a restrained crop of the battle scene and existing player HUD visible enough to judge fit.
+
+Art direction: sophisticated, simple, understated, world-class production UI. Near-black royal navy glass (#0A0E1B), subtle deep-blue translucency, very thin antique-gold edge work, warm ivory text, one restrained sapphire selection accent. Match the current dark fantasy navy-and-gold HUD, but reduce ornament density by roughly 60%. Crisp and readable at a 960x540 game design resolution. No steampunk, no sci-fi hologram, no mobile-game look, no oversized glow, no thick gold boxes, no excessive flourishes.
+
+Show the PLAYER SKILL state open:
+
+1. At the very bottom-right is a slim horizontal COMMAND RIBBON approximately 470 px wide. It contains eight fixed-size 48–52 px icon sockets that never shrink: Attack, Skill, Probe, Item, Guard, Flee, Finisher, Spare. Use icon-only sockets with clear silhouettes. Skill is selected. The selected socket rises only 3 px and gains a fine broken gold bracket, a tiny sapphire diamond, and a controlled cyan-gold underlight. Unselected sockets are quiet navy with only hairline gold corners. Do not put text under every command icon.
+
+2. Immediately above the ribbon, a compact SKILL DRAWER opens upward. It is a two-column by four-row grid for exactly eight player skills. Each fixed tile is about 210x46 px, with a 38–40 px icon at the left, a clean skill name in the middle, and 1–3 tiny diamond SP pips aligned on the right. The eight skill names are: Nhát Chém, Cường Kích, Tập Trung, Hỏa Trảm, Nghiền Nát, Hồi Phục, Bão Kiếm, Xuyên Phá. Select Hỏa Trảm. Include one disabled insufficient-SP tile, desaturated with restrained red-empty SP pips, not a giant padlock.
+
+3. Above the drawer is one minimal information strip: selected skill icon, title “HỎA TRẢM”, one short Vietnamese description “Chém một kẻ địch bằng lưỡi kiếm rực lửa.” and its 2-SP cost. Use Playfair Display-like serif only for the selected title; use a clean Be Vietnam Pro-like sans serif for functional text. Keep all text perfectly aligned and readable. Do not bake labels into reusable frames.
+
+4. Put a small separate Back control at the lower-left edge of the drawer, represented by a graceful hooked arrow glyph and the label “QUAY LẠI”.
+
+The drawer/ribbon construction must visibly feel modular: non-scaling left cap, repeatable clean center rails, non-scaling right cap, separate corner brackets, separate selection overlay. Do not stretch decorative motifs. The open drawer should not cover the player portrait and should occupy far less visual weight than the battle characters. Remove any speech bubble from the reference scene. Do not add unrelated HUD elements.
+
+Rendering quality: razor-sharp game UI, production-ready spacing, optical alignment, consistent 8 px rhythm, coherent icon family, realistic restrained glass/material treatment. This is a design mockup, not a labeled presentation board. Output a single clean widescreen mockup, no annotations, no arrows, no watermark.

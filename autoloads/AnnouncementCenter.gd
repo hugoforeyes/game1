@@ -1,12 +1,11 @@
 extends Node
-## AnnouncementCenter — the in-conversation reward ceremony.
+## AnnouncementCenter — the full-screen narrative/reward ceremony queue.
 ##
-## While the player is talking to an NPC, reward events (new quest / objective /
-## quest complete / hint / item / companion join) do NOT show as corner toasts.
-## They queue here; ChatBox hides the conversation, each announcement plays as a
-## full-screen ceremony one at a time, and the conversation then returns exactly
-## where it was. Outside conversations enqueue() refuses and every caller falls
-## back to its existing toast/popup behavior, so nothing changes in the open world.
+## New quest, objective and quest-complete updates ALWAYS queue here, including in
+## the open world. They are story beats and must use one consistent ceremony rather
+## than the old top-edge quest toast. Other rewards join this queue while a
+## conversation/ceremony owns the screen and retain their lightweight open-world
+## fallback. ChatBox hides while the queue plays, then returns to the same beat.
 
 const AnnouncementViewScript := preload("res://scripts/ui/AnnouncementView.gd")
 const ObjectInteractionViewScript := preload("res://scripts/ui/ObjectInteractionView.gd")
@@ -21,6 +20,13 @@ const KIND_PRIORITY := {
 	"hint": 4,
 	"companion": 5,
 }
+## These events never fall back to a corner/top toast. Keeping the policy here
+## makes it impossible for individual QuestManager call sites to drift apart.
+const ALWAYS_CEREMONY_KINDS := {
+	"new_quest": true,
+	"objective": true,
+	"quest_complete": true,
+}
 const MAX_ITEMS_PER_SCREEN := 4
 const BREATH_BETWEEN := 0.10
 
@@ -28,6 +34,7 @@ var conversation_active: bool = false
 var playing: bool = false
 var _queue: Array = []
 var _standalone_waiting: bool = false
+var _lifecycle_id: int = 0
 
 
 func _ready() -> void:
@@ -35,6 +42,7 @@ func _ready() -> void:
 
 
 func reset() -> void:
+	_lifecycle_id += 1
 	_queue.clear()
 	conversation_active = false
 	_standalone_waiting = false
@@ -45,20 +53,24 @@ func reset() -> void:
 ## standalone ceremony right after the chat disappears.
 func set_conversation_active(active: bool) -> void:
 	conversation_active = active
-	if not active and has_pending() and not playing and not _standalone_waiting:
-		_play_standalone()
+	if not active:
+		_request_standalone_playback()
 
 
-## Accepts the event only while a conversation (or a running ceremony) owns the
-## screen; returns false so the caller falls back to its toast/popup.
+## Quest-state updates are accepted everywhere. Other kinds are accepted only
+## while a conversation or ceremony owns the screen; false lets those callers use
+## their existing lightweight open-world presentation.
 func enqueue(kind: String, payload: Dictionary) -> bool:
-	if not conversation_active and not playing:
-		return false
 	if not KIND_PRIORITY.has(kind):
+		return false
+	var requires_ceremony := ALWAYS_CEREMONY_KINDS.has(kind)
+	if not requires_ceremony and not conversation_active and not playing:
 		return false
 	var entry := payload.duplicate(true)
 	entry["kind"] = kind
 	_queue.append(entry)
+	if requires_ceremony and not conversation_active and not playing:
+		_request_standalone_playback()
 	return true
 
 
@@ -112,18 +124,47 @@ func play_queue() -> void:
 	GameManager.ui_blocking_input = conversation_active
 
 
-func _play_standalone() -> void:
+func _request_standalone_playback() -> void:
+	if conversation_active or playing or not has_pending() or _standalone_waiting:
+		return
 	_standalone_waiting = true
-	while CutsceneDirector.has_pending_playback():
+	_play_standalone.call_deferred(_lifecycle_id)
+
+
+func _play_standalone(lifecycle_id: int) -> void:
+	# QuestManager mutates state before it emits quests_changed. Yielding one frame
+	# lets Main match and queue a cutscene for that same beat before the ceremony
+	# attempts to claim input, so the cinematic always plays first.
+	await get_tree().process_frame
+	while lifecycle_id == _lifecycle_id:
 		if conversation_active or not has_pending():
 			_standalone_waiting = false
 			return
+		if not _standalone_blocked():
+			break
 		await get_tree().process_frame
-	if conversation_active or not has_pending():
-		_standalone_waiting = false
+	if lifecycle_id != _lifecycle_id:
 		return
 	await play_queue()
+	if lifecycle_id != _lifecycle_id:
+		return
 	_standalone_waiting = false
+	# A payload can arrive on the exact frame playback drains. Make the hand-off
+	# idempotent instead of depending on process order.
+	_request_standalone_playback()
+
+
+func _standalone_blocked() -> bool:
+	if CutsceneDirector.has_pending_playback():
+		return true
+	# Conversations call play_queue themselves. For standalone playback, any other
+	# modal (journal, moral choice, inventory, chapter transition, etc.) keeps its
+	# ownership until it has finished.
+	if GameManager.ui_blocking_input:
+		return true
+	# Open-world item acquisition is the cause of many objective updates. Its item
+	# reveal stays first, then the objective ceremony takes the stage.
+	return InventoryManager.has_pending_item_notifications()
 
 
 ## Drain the queue into playback order: stable-sort by kind priority, then

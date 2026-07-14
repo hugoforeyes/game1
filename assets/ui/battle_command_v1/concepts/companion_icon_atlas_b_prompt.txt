@@ -1,0 +1,13 @@
+Using the exact icon language established by the battle command mockup in this conversation, create a clean 4-column by 3-row companion skill icon atlas on a perfectly flat solid chroma-green background (#00FF20). No frames, no labels, no letters, no numbers, no watermark. Every glyph is isolated and centered in an equal invisible square cell with generous green separation. Same optical size, line weight, straight-on 2D view, restrained light, and 72% safe-area fill for every icon.
+
+Style: elegant readable dark-fantasy JRPG glyphs for 40 px runtime display. One strong silhouette, antique gold plus warm ivory, at most one semantic accent. Minimal internal detail, no micro-filigree, no particle burst, no background medallion, no glow outside its cell.
+
+Exact row-major content:
+
+ROW 1: War Cry — fierce open helm with one red sound wave; Stone Ward — compact stone shield with a small earth rune; Quicksilver — swift winged droplet in silver-cyan; Purify — clean radiant water drop breaking a violet stain.
+
+ROW 2: Soothing Light — gentle cupped light with jade-cyan glow kept inside silhouette; Verdant Rain — three green leaves beneath two rain lines; Regrowth — fresh sprout encircling a small healed heart; Guiding Star — precise gold star above a short path arc.
+
+ROW 3: Taunt — bold beckoning gauntlet with one red attention mark; Iron Bastion — heavy square tower shield in steel blue; Shield Bash — shield driving into one compact impact star; leave the final fourth cell completely empty green.
+
+Make all eleven symbols unmistakably different at 40 px and visibly part of one international AAA icon family.

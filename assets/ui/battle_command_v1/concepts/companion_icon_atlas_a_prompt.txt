@@ -1,0 +1,13 @@
+Using the exact icon language established by the battle command mockup in this conversation, create a clean 4-column by 3-row companion skill icon atlas on a perfectly flat solid chroma-green background (#00FF20). No frames, no labels, no letters, no numbers, no watermark. Every glyph is isolated and centered in an equal invisible square cell with generous green separation. Same optical size, line weight, straight-on 2D view, restrained light, and 72% safe-area fill for every icon.
+
+Style: elegant readable dark-fantasy JRPG glyphs for 40 px runtime display. One strong silhouette, antique gold plus warm ivory, at most one semantic accent. Minimal internal detail, no micro-filigree, no particle burst, no background medallion, no glow outside its cell.
+
+Exact row-major content:
+
+ROW 1: Venom Fang — curved fang with one green venom drop; Flame Burst — compact orange flame bloom; Frost Lance — sharp cyan ice spear; Thunder Jolt — angular violet-blue lightning bolt.
+
+ROW 2: Shadow Drain — dark crescent pulling a small red mote inward; Wild Flurry — three fast claw slashes with green wind; Skull Crack — blunt impact splitting a tiny skull silhouette; Armor Break — cracked breastplate with one red fault line.
+
+ROW 3: Lullaby — crescent moon with two quiet notes; Blinding Dust — eye crossed by a small amber dust sweep; Silencing Seal — sealed lips/rune crossed by one violet bar; Slow Mire — boot sinking into dark purple mire.
+
+Make all twelve symbols unmistakably different at 40 px and visibly part of one international AAA icon family.

@@ -1,6 +1,6 @@
 extends Node
 ## Quest system runtime: state machine, event bus, and all quest UI
-## (HUD tracker, journal, toasts, moral-choice dialog).
+## (HUD tracker, journal, full-screen announcements, hint toasts, moral choices).
 ##
 ## Quests arrive compiled from the server (chapter_quests step): objectives are
 ## bound to real scene NPCs/enemies/zones with four trackable kinds —
@@ -217,8 +217,13 @@ func _activate_quest(quest: Dictionary) -> void:
 	state["state"] = "active"
 	if tracked_quest_id.is_empty():
 		tracked_quest_id = str(quest.get("id", ""))
-	_push_toast("new_quest", quest)
+	_queue_quest_announcement("new_quest", quest)
 	_skip_unavailable_objectives(quest)
+	# The first actionable objective deserves the same narrative hand-off as every
+	# later objective. If this beat immediately satisfies it, the collapse policy
+	# replaces it with the newest still-actionable objective before playback.
+	if not _current_objective(quest).is_empty():
+		_queue_quest_announcement("objective", quest)
 	_finish_quest_if_exhausted(quest)
 
 
@@ -823,7 +828,7 @@ func _complete_current_objective(quest: Dictionary) -> void:
 	if state["objective_index"] >= objectives.size():
 		_finish_quest(quest)
 	else:
-		_push_toast("objective", quest)
+		_queue_quest_announcement("objective", quest)
 		print("[Quest] %s objective %d/%d" % [quest.get("id"), state["objective_index"], objectives.size()])
 
 
@@ -1080,7 +1085,11 @@ func _finish_quest(quest: Dictionary) -> void:
 	InventoryManager.grant_linked_items(
 		"quest_reward", "", current_zone_id, str(quest.get("id", "")),
 	)
-	_push_toast("quest_complete", quest)
+	# If the newly announced objective was satisfied synchronously in the same
+	# gameplay beat, it is no longer actionable. Do not make the player dismiss a
+	# stale objective card immediately before the completion ceremony.
+	_drop_pending_objective_notifications(str(quest.get("id", "")))
+	_queue_quest_announcement("quest_complete", quest)
 	print("[Quest] completed %s (+%d XP)" % [quest.get("id"), xp])
 
 
@@ -1111,7 +1120,8 @@ func _ensure_ui() -> void:
 	_tracker_view.visible = false
 	_tracker_layer.add_child(_tracker_view)
 
-	# Toast host (top-center; the layer runs at scale 2 → design width = vp/2)
+	# Lightweight hint host (top-center). Quest/objective state changes never use
+	# this layer; AnnouncementCenter owns their full-screen ceremony everywhere.
 	_toast_host = Control.new()
 	_toast_host.position = Vector2(get_viewport().get_visible_rect().size.x / 4.0, 0)
 	_ui.add_child(_toast_host)
@@ -1142,8 +1152,7 @@ func _process(_delta: float) -> void:
 	var cutscene_has_priority := CutsceneDirector.has_pending_playback()
 	var item_has_priority := InventoryManager.has_pending_item_notifications()
 	# ObjectInteractionView is modal while it reveals a silently granted item.
-	# Holding quest toasts behind every blocking modal also prevents objectives
-	# from drawing over dialogue, choices, inventory, or chapter transitions.
+	# Hold lightweight hint notices behind story ceremonies and other modals.
 	var modal_has_priority := GameManager.ui_blocking_input
 	var ceremony_has_priority := AnnouncementCenter.conversation_active \
 			or AnnouncementCenter.playing or AnnouncementCenter.has_pending()
@@ -1203,7 +1212,10 @@ func _refresh_tracker() -> void:
 	})
 
 
-func _push_toast(kind: String, quest: Dictionary) -> void:
+func _queue_quest_announcement(kind: String, quest: Dictionary) -> void:
+	if kind not in ["new_quest", "objective", "quest_complete"]:
+		push_error("[Quest] unsupported quest announcement kind: %s" % kind)
+		return
 	var payload := {"kind": kind, "quest": quest.duplicate(true)}
 	if kind == "objective":
 		payload["objective"] = _current_objective(quest).duplicate(true)
@@ -1211,31 +1223,20 @@ func _push_toast(kind: String, quest: Dictionary) -> void:
 		# One beat can advance a quest through several objectives at once (a talk
 		# objective completing, then its next collect objective being granted and
 		# settled), queuing a notice per step. Collapse them so only the newest
-		# objective of this quest shows: drop any still-pending objective notice
-		# for it from whichever queue is holding it.
+		# objective of this quest shows: drop any still-pending objective ceremony.
 		_drop_pending_objective_notifications(str(quest.get("id", "")))
-	# During a conversation the event becomes a full-screen ceremony instead of
-	# a corner toast (AnnouncementCenter refuses outside conversations).
-	if AnnouncementCenter.enqueue(kind, payload):
-		return
-	_toast_queue.append(payload)
+	# Quest-state changes are mandatory full-screen ceremonies in every gameplay
+	# context. Never fall back to the small top notification.
+	if not AnnouncementCenter.enqueue(kind, payload):
+		push_error("[Quest] AnnouncementCenter rejected mandatory '%s' ceremony" % kind)
 
 
-## Remove not-yet-shown objective notifications for one quest from both the
-## in-conversation ceremony queue and the open-world toast queue. Only pending
-## entries are touched; a toast already animating on screen is left alone.
+## Remove not-yet-shown objective ceremonies for one quest. Only pending entries
+## are touched; an announcement already on screen completes normally.
 func _drop_pending_objective_notifications(quest_id: String) -> void:
 	if quest_id.is_empty():
 		return
 	AnnouncementCenter.drop_pending_objectives(quest_id)
-	var kept: Array = []
-	for payload in _toast_queue:
-		if payload is Dictionary \
-				and str((payload as Dictionary).get("kind", "")) == "objective" \
-				and str(((payload as Dictionary).get("quest", {}) as Dictionary).get("id", "")) == quest_id:
-			continue
-		kept.append(payload)
-	_toast_queue = kept
 
 
 func _show_next_toast() -> void:
@@ -1263,14 +1264,16 @@ func _show_next_toast() -> void:
 
 
 func yield_notifications_to_cutscene() -> void:
-	## Main calls this synchronously when it queues a cutscene, eliminating even a
-	## one-frame overlap before _process observes the shared priority barrier.
+	## Main calls this synchronously when it queues a cutscene. Mandatory quest
+	## ceremonies wait in AnnouncementCenter; only an active lightweight hint needs
+	## to be returned to its queue here.
 	if _toast_busy:
 		_defer_active_toast()
 
 
 func yield_notifications_to_item() -> void:
-	## Item acquisition is shown before the quest/objective updates it causes.
+	## Item acquisition is shown before the updates it causes. AnnouncementCenter
+	## handles ceremony ordering; this interrupts only an active lightweight hint.
 	if _toast_busy:
 		_defer_active_toast()
 
@@ -1301,40 +1304,14 @@ func _finish_active_toast() -> void:
 
 
 func _notification_display_data(item: Dictionary) -> Dictionary:
-	var kind := str(item.get("kind", "objective"))
-	var quest: Dictionary = item.get("quest", {}) as Dictionary
-	match kind:
-		"new_quest":
-			return {
-				"palette": "gold", "icon": "new_quest", "header": "NHIỆM VỤ MỚI",
-				"title": str(quest.get("title", "Nhiệm vụ mới")),
-				"subtitle": "Một hành trình mới đã bắt đầu",
-			}
-		"quest_complete":
-			return {
-				"palette": "gold", "icon": "new_quest", "header": "HOÀN THÀNH NHIỆM VỤ",
-				"title": str(quest.get("title", "Nhiệm vụ")),
-				"subtitle": "+%d XP" % int((quest.get("reward", {}) as Dictionary).get("xp", 0)),
-				"title_font_size": 7,
-			}
-		"hint":
-			var hint: Dictionary = item.get("hint", {}) as Dictionary
-			return {
-				"palette": "cyan", "icon": "new_objective", "header": "GỢI Ý MỚI",
-				"title": "Từ %s" % str(hint.get("npc_name", "NPC")),
-				"subtitle": "Đã cập nhật bảng gợi ý",
-			}
-		_:
-			var objective: Dictionary = item.get("objective", {}) as Dictionary
-			var subtitle := ""
-			if objective.has("count"):
-				subtitle = "%d / %d" % [int(item.get("progress", 0)), maxi(1, int(objective.get("count", 1)))]
-			return {
-				"palette": "cyan", "icon": "new_objective", "header": "MỤC TIÊU MỚI",
-				"title": str(objective.get("description", "Mục tiêu mới")),
-				"subtitle": subtitle,
-				"title_font_size": 6,
-			}
+	# Only hints retain the lightweight top-edge treatment. Quest, objective and
+	# completion updates are structurally unable to reach this renderer.
+	var hint: Dictionary = item.get("hint", {}) as Dictionary
+	return {
+		"palette": "cyan", "icon": "new_objective", "header": "GỢI Ý MỚI",
+		"title": "Từ %s" % str(hint.get("npc_name", "NPC")),
+		"subtitle": "Đã cập nhật bảng gợi ý",
+	}
 
 
 # ── journal ───────────────────────────────────────────────────────────────────

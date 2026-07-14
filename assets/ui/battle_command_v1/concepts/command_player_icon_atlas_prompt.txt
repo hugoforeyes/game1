@@ -1,0 +1,17 @@
+Using the exact icon language established by the battle command mockup in this conversation, create a clean 4-column by 5-row icon atlas on a perfectly flat solid chroma-green background (#00FF20). No frames, no labels, no letters, no numbers, no watermark. Every glyph is isolated, centered in an equal invisible square cell, with generous green separation for clean cutting. All icons share exactly the same optical size, line weight, camera angle, lighting, and 72% safe-area fill. Straight-on 2D game icons, not 3D objects.
+
+Style: elegant readable dark-fantasy JRPG glyphs for 40–48 px runtime display. One strong silhouette, antique gold plus warm ivory, and at most one restrained semantic accent. Minimal internal detail, no tiny filigree, no particle explosions, no circular background medallions, no glow extending outside the cell.
+
+Exact row-major content:
+
+ROW 1: Attack — decisive diagonal sword slash, red-orange accent; Skill — four-point arcane star with a short energy arc, sapphire/cyan accent; Probe — observant eye with a tiny lens glint, violet accent; Item — elegant potion vial with stopper, amber accent.
+
+ROW 2: Guard — compact heater shield, steel-blue accent; Flee — swift wing and trailing step, silver accent; Finisher — radiant downward blade with a small crown flare, white-gold accent; Spare — open hand with a small olive leaf, jade accent.
+
+ROW 3: Back — graceful hooked return arrow; Strike — single forward sword edge; Power Strike — heavy sword with one impact notch; Focus — calm centered eye within a restrained focus reticle.
+
+ROW 4: Ember Slash — curved flaming blade; Crush — compact war hammer impact; Mend — gentle mending hand with one jade spark; Tempest — crossed wind blades in a small cyclone.
+
+ROW 5: Pierce — narrow spear tip breaking one thin guard line; leave the remaining three cells completely empty green.
+
+Make each symbol unmistakably different even when viewed at 40 px. The atlas must look like one unified international AAA icon family, understated and precise.

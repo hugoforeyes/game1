@@ -1,5 +1,8 @@
 extends Node
-## Runtime QA for sequential notification playback and HUD suppression.
+## Runtime QA for mandatory quest ceremonies, narrative lead-in projection,
+## rapid-objective collapse, and standalone modal/cutscene/item priority.
+
+const AnnouncementViewScript := preload("res://scripts/ui/AnnouncementView.gd")
 
 var pending_narrative := false
 
@@ -10,115 +13,230 @@ func has_pending_narrative_playback() -> bool:
 
 func _ready() -> void:
 	add_to_group("narrative_playback_owner")
-	GameManager.ui_blocking_input = false
 	QuestManager.set_process(false)
 	InventoryManager.set_process(false)
 	InventoryManager._toast_queue.clear()
 	InventoryManager._toast_busy = false
+	GameManager.ui_blocking_input = true
+	AnnouncementCenter.reset()
 	QuestManager.reset()
-	QuestManager.load_chapter_quests([
-		{
-			"id": "quest_notification_test",
-			"title": "Cánh Hoa Cuối Mùa",
-			"type": "main",
-			"giver": {"mode": "npc", "zone_id": "zone_01", "npc_id": "arlo"},
-			"objectives": [
-				{
-					"id": "o1", "kind": "collect", "zone_id": "zone_01",
-					"description": "Thu thập 3 Cánh Hoa Xám", "count": 3,
-				},
-			],
-			"reward": {"xp": 80},
-		},
-	])
-	QuestManager.notify_zone_entered("zone_01")
-	QuestManager.quest_states["quest_notification_test"] = {
-		"state": "active", "objective_index": 0, "progress": 0, "choices": {},
-	}
-	QuestManager._toast_queue.clear()
-	var quest: Dictionary = QuestManager.quests[0] as Dictionary
-	QuestManager._push_toast("new_quest", quest)
-	QuestManager._push_toast("objective", quest)
-	var objective_item: Dictionary = QuestManager._toast_queue[1] as Dictionary
-	var objective_snapshot: Dictionary = objective_item.get("objective", {}) as Dictionary
-	assert(str(objective_snapshot.get("description", "")) == "Thu thập 3 Cánh Hoa Xám")
+	QuestManager.load_chapter_quests([_quest_fixture()])
 
-	# Item acquisition is presented before the objective update it produces.
-	InventoryManager._push_item_toast({"id": "item_test", "name": "Cánh Hoa Xám"}, 1)
-	QuestManager._process(0.0)
-	assert(not QuestManager._toast_busy)
-	assert(QuestManager._toast_queue.size() == 2)
+	_test_mandatory_queue_and_content()
+	_test_rapid_objective_collapse()
+	_test_instant_completion_drops_stale_objective()
+	await _test_standalone_priority_barriers()
+
+	QuestManager.set_process(true)
+	InventoryManager.set_process(true)
+	print("[NotificationQueueTest] mandatory ceremony, narrative lead-in, collapse, and priority barriers passed")
+	get_tree().quit()
+
+
+func _test_mandatory_queue_and_content() -> void:
+	var quest: Dictionary = QuestManager.quests[0] as Dictionary
+	QuestManager._activate_quest(quest)
+
+	# Even outside a conversation, quest + first objective go exclusively to the
+	# full-screen ceremony queue. The old top-edge queue remains hint-only/empty.
+	assert(QuestManager._toast_queue.is_empty())
+	assert(AnnouncementCenter._queue.size() == 2)
+	assert(str((AnnouncementCenter._queue[0] as Dictionary).get("kind", "")) == "new_quest")
+	var objective_entry: Dictionary = AnnouncementCenter._queue[1] as Dictionary
+	assert(str(objective_entry.get("kind", "")) == "objective")
+	var objective_snapshot: Dictionary = objective_entry.get("objective", {}) as Dictionary
+	assert(str(objective_snapshot.get("id", "")) == "o1")
+	assert(str(objective_snapshot.get("narrative_lead_in", "")) == "Arlo's warning points toward the mist gate.")
+
+	var presentation: CanvasLayer = AnnouncementViewScript.new()
+	var content: Dictionary = presentation._content_for("objective", objective_entry)
+	assert(str(content.get("title", "")) == "Reach the mist gate")
+	assert(str(content.get("subtitle", "")) == "Arlo's warning points toward the mist gate.")
+	assert(not str(content.get("subtitle", "")).contains("Ceremony Contract"),
+		"objective subtitle must never fall back to the quest name")
+
+	# A cutscene-delivered objective still receives its ceremony and its authored
+	# lead-in. Missing legacy content uses a short, non-empty hand-off instead.
+	var cutscene_content: Dictionary = presentation._content_for("objective", {
+		"quest": {"title": "Ceremony Contract"},
+		"objective": {
+			"description": "Inspect the fallen seal",
+			"delivery_mode": "cutscene",
+			"narrative_lead_in": "The shattered seal exposes a path beneath the keep.",
+		},
+	})
+	assert(str(cutscene_content.get("subtitle", "")) == "The shattered seal exposes a path beneath the keep.")
+	var fallback: Dictionary = presentation._content_for("objective", {
+		"quest": {"title": "Ceremony Contract"},
+		"objective": {"description": "Inspect the fallen seal", "delivery_mode": "cutscene"},
+	})
+	assert(not str(fallback.get("subtitle", "")).strip_edges().is_empty())
+	assert(not str(fallback.get("subtitle", "")).contains("Ceremony Contract"))
+
+	# Stress the backend contract near its 320-character ceiling. The full string
+	# must fit the subtitle box in at most four lines; ellipsis is only a defensive
+	# fallback for malformed content beyond the contract.
+	var long_lead_in := _long_narrative_lead_in()
+	assert(long_lead_in.length() >= 310 and long_lead_in.length() <= 320)
+	var fitted_size: int = int(presentation._fit_subtitle_font(long_lead_in))
+	var body_font: Font = UiKit.body_font()
+	if body_font == null:
+		body_font = ThemeDB.fallback_font
+	var measured: Vector2 = presentation._measure_subtitle(body_font, long_lead_in, fitted_size)
+	assert(measured.x <= presentation.SUBTITLE_SIZE.x + 0.5)
+	assert(measured.y <= presentation.SUBTITLE_SIZE.y + 0.5)
+	assert(measured.y <= body_font.get_height(fitted_size) * 4.0 + 0.5)
+	presentation.free()
+
+
+func _test_rapid_objective_collapse() -> void:
+	var quest: Dictionary = QuestManager.quests[0] as Dictionary
+	var state: Dictionary = QuestManager.quest_states["quest_ceremony_contract"] as Dictionary
+	state["objective_index"] = 1
+	QuestManager._queue_quest_announcement("objective", quest)
+	state["objective_index"] = 2
+	QuestManager._queue_quest_announcement("objective", quest)
+
+	var objective_entries: Array = AnnouncementCenter._queue.filter(func(entry: Variant) -> bool:
+		return entry is Dictionary and str((entry as Dictionary).get("kind", "")) == "objective"
+	)
+	assert(objective_entries.size() == 1, "rapid advances must collapse to one actionable objective")
+	var latest: Dictionary = (objective_entries[0] as Dictionary).get("objective", {}) as Dictionary
+	assert(str(latest.get("id", "")) == "o3")
+	assert(str(latest.get("narrative_lead_in", "")) == "The shattered seal exposes a path beneath the keep.")
+
+	QuestManager._queue_quest_announcement("quest_complete", quest)
+	var ordered := AnnouncementCenter._flush_sorted()
+	assert(str((ordered[0] as Dictionary).get("kind", "")) == "new_quest")
+	assert(str((ordered[1] as Dictionary).get("kind", "")) == "objective")
+	assert(str((ordered[2] as Dictionary).get("kind", "")) == "quest_complete")
+	AnnouncementCenter.reset()
+
+
+func _test_instant_completion_drops_stale_objective() -> void:
+	# A one-step quest queues its initial objective, then completes in the same
+	# synchronous beat. Completion must remove that now-stale objective ceremony.
+	QuestManager.reset()
+	AnnouncementCenter.reset()
+	QuestManager.load_chapter_quests([{
+		"id": "quest_instant",
+		"title": "One Breath",
+		"type": "main",
+		"giver": {"mode": "auto", "zone_id": "zone_here"},
+		"objectives": [{
+			"id": "o1", "kind": "reach", "zone_id": "zone_here",
+			"description": "Arrive", "narrative_lead_in": "The road ends here.",
+		}],
+		"reward": {"xp": 0},
+	}])
+	QuestManager.notify_zone_entered("zone_here")
+	var kinds: Array[String] = []
+	for entry in AnnouncementCenter._queue:
+		kinds.append(str((entry as Dictionary).get("kind", "")))
+	assert(kinds == ["new_quest", "quest_complete"],
+		"an objective completed in its activation beat must not leave a stale card")
+	assert(QuestManager._toast_queue.is_empty())
+	AnnouncementCenter.reset()
+
+
+func _test_standalone_priority_barriers() -> void:
+	var payload := {
+		"quest": {"id": "quest_barrier", "title": "Barrier"},
+		"objective": {
+			"id": "o1", "description": "Continue after every higher-priority beat",
+			"narrative_lead_in": "The path opens only after the commotion settles.",
+		},
+	}
+
+	# The outside-conversation event is accepted immediately, but a cutscene owns
+	# the stage first.
+	GameManager.ui_blocking_input = false
+	pending_narrative = true
+	assert(AnnouncementCenter.enqueue("objective", payload))
+	await get_tree().process_frame
+	await get_tree().process_frame
+	assert(not AnnouncementCenter.playing)
+	assert(AnnouncementCenter.has_pending())
+
+	# When the cutscene clears, an already-open modal still owns input. This must
+	# hold without mistaking AnnouncementCenter's eventual own blocking flag for an
+	# external modal (which would deadlock playback).
+	pending_narrative = false
+	GameManager.ui_blocking_input = true
+	await get_tree().process_frame
+	await get_tree().process_frame
+	assert(not AnnouncementCenter.playing)
+	assert(AnnouncementCenter.has_pending())
+
+	# Open-world item presentation also precedes the resulting objective update.
+	InventoryManager._toast_queue.append({"kind": "item", "name": "Test item", "count": 1})
+	GameManager.ui_blocking_input = false
+	await get_tree().process_frame
+	await get_tree().process_frame
+	assert(not AnnouncementCenter.playing)
+	assert(AnnouncementCenter.has_pending())
 	InventoryManager._toast_queue.clear()
 
-	# World-object item reveals are modal. Their silent inventory grant may update
-	# a quest synchronously, but the objective toast must wait until the reveal closes.
-	GameManager.ui_blocking_input = true
-	QuestManager._process(0.0)
-	assert(not QuestManager._toast_busy)
-	assert(QuestManager._toast_queue.size() == 2)
-	GameManager.ui_blocking_input = false
+	var view: Node = await _wait_for_announcement(3.0)
+	assert(view != null, "ceremony must start once every external barrier clears")
+	assert(AnnouncementCenter.playing)
+	assert(GameManager.ui_blocking_input)
+	await get_tree().create_timer(0.55).timeout
+	view.call("_dismiss")
+	assert(await _wait_until(func() -> bool:
+		return not AnnouncementCenter.playing and not AnnouncementCenter.has_pending()
+	, 3.0))
+	assert(not GameManager.ui_blocking_input)
 
-	# A queued cutscene owns the stage before any quest notification starts.
-	pending_narrative = true
-	QuestManager._process(0.0)
-	assert(not QuestManager._toast_busy)
-	assert(QuestManager._toast_queue.size() == 2)
-	assert(QuestManager._toast_host.get_child_count() == 0)
 
-	pending_narrative = false
-	QuestManager._process(0.0)
-	assert(QuestManager._toast_busy)
-	assert(QuestManager._toast_queue.size() == 1)
-	assert(QuestManager._toast_host.get_child_count() == 1)
-	assert(not QuestManager._tracker_view.visible)
+func _wait_for_announcement(timeout: float) -> Node:
+	var deadline := Time.get_ticks_msec() + int(timeout * 1000.0)
+	while Time.get_ticks_msec() < deadline:
+		for child in get_tree().root.get_children():
+			if child.get_script() == AnnouncementViewScript:
+				return child
+		await get_tree().process_frame
+	return null
 
-	# An item arriving just after a quest toast starts immediately requeues that
-	# quest toast; it will restart only after the item notification is finished.
-	InventoryManager._push_item_toast({"id": "item_test", "name": "Cánh Hoa Xám"}, 1)
-	assert(not QuestManager._toast_busy)
-	assert(QuestManager._toast_queue.size() == 2)
-	await get_tree().process_frame
-	assert(QuestManager._toast_host.get_child_count() == 0)
-	InventoryManager._process(0.0)
-	assert(InventoryManager._toast_busy)
-	assert(InventoryManager._toast_host.get_child_count() == 1)
-	QuestManager._process(0.0)
-	assert(not QuestManager._toast_busy)
-	await get_tree().create_timer(1.8).timeout
-	await get_tree().process_frame
-	assert(not InventoryManager._toast_busy)
-	assert(InventoryManager._toast_host.get_child_count() == 0)
-	QuestManager._process(0.0)
-	assert(QuestManager._toast_busy)
-	assert(QuestManager._toast_queue.size() == 1)
 
-	# If a cutscene arrives just after a toast starts, restart that toast after the
-	# cutscene instead of letting it overlap or silently consuming it.
-	pending_narrative = true
-	QuestManager._process(0.0)
-	assert(not QuestManager._toast_busy)
-	assert(QuestManager._toast_queue.size() == 2)
-	await get_tree().process_frame
-	assert(QuestManager._toast_host.get_child_count() == 0)
+func _wait_until(predicate: Callable, timeout: float) -> bool:
+	var deadline := Time.get_ticks_msec() + int(timeout * 1000.0)
+	while Time.get_ticks_msec() < deadline:
+		if predicate.call():
+			return true
+		await get_tree().process_frame
+	return bool(predicate.call())
 
-	pending_narrative = false
-	QuestManager._process(0.0)
-	assert(QuestManager._toast_busy)
-	assert(QuestManager._toast_queue.size() == 1)
 
-	await get_tree().create_timer(3.2).timeout
-	await get_tree().process_frame
-	assert(not QuestManager._toast_busy)
-	QuestManager._process(0.0)
-	assert(QuestManager._toast_busy)
-	assert(QuestManager._toast_queue.is_empty())
-	assert(QuestManager._toast_host.get_child_count() == 1)
+func _quest_fixture() -> Dictionary:
+	return {
+		"id": "quest_ceremony_contract",
+		"title": "Ceremony Contract",
+		"type": "main",
+		"giver": {"mode": "npc", "zone_id": "zone_01", "npc_id": "arlo"},
+		"objectives": [
+			{
+				"id": "o1", "kind": "reach", "zone_id": "zone_02",
+				"description": "Reach the mist gate",
+				"narrative_lead_in": "Arlo's warning points toward the mist gate.",
+				"delivery_mode": "narration",
+			},
+			{
+				"id": "o2", "kind": "talk", "zone_id": "zone_02", "target_npc_id": "mira",
+				"description": "Question Mira",
+				"narrative_lead_in": "Fresh tracks lead from the gate to Mira's watch post.",
+				"delivery_mode": "narration",
+			},
+			{
+				"id": "o3", "kind": "reach", "zone_id": "zone_03",
+				"description": "Inspect the fallen seal",
+				"narrative_lead_in": "The shattered seal exposes a path beneath the keep.",
+				"delivery_mode": "cutscene",
+			},
+		],
+		"reward": {"xp": 0},
+	}
 
-	await get_tree().create_timer(3.2).timeout
-	await get_tree().process_frame
-	assert(not QuestManager._toast_busy)
-	assert(QuestManager._toast_host.get_child_count() == 0)
-	QuestManager._process(0.0)
-	assert(QuestManager._tracker_view.visible)
-	print("[NotificationQueueTest] sequential playback and HUD suppression passed")
-	get_tree().quit()
+
+func _long_narrative_lead_in() -> String:
+	return "Vết sáng trên phiến lá hé lộ rằng những cánh hoa chỉ nở nơi sương đêm còn đọng lại, nhưng dấu chân mới bên bờ suối cho thấy ai đó đã hái chúng trước bình minh. Lumi phải lần theo mùi hương còn sót lại qua Cánh Đồng Sương, tìm người giữ chiếc giỏ bạc và khám phá vì sao khu rừng đang dần mất đi ánh trăng trước đêm nay."

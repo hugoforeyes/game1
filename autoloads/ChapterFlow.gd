@@ -253,6 +253,13 @@ func begin_current_chapter() -> Error:
 	pending_intro = {}
 	pending_cutscene_actions = []
 	pending_play_opening = false
+	# Planned-cutscene ids repeat across chapters (every chapter's opening is
+	# `cs_opening_main`, ending `cs_ending_main`, etc.). The played set is per-run,
+	# so without clearing it here a later chapter's opening/ending would be treated
+	# as "already played" and silently skipped. begin_current_chapter only fires at
+	# a chapter boundary (world-map travel or forward advance), never zone-to-zone,
+	# so this never suppresses a cutscene within a chapter.
+	CutsceneDirector.reset()
 	await _load_chapter_content(chapter)
 
 	loading_status.emit("Fetching chapter intro...")

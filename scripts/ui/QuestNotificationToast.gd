@@ -1,10 +1,10 @@
 class_name QuestNotificationToast
 extends Control
-## Quest/objective notification toast — aaa_kit_v1 ornate plaque with a crest
-## medallion on the left and a three-line text block (header / title /
-## subtitle). Lives on QuestManager's scale-2 layer, so all coordinates here
-## are design units (x2 on screen). API kept from v1: setup(data) +
-## animate_effects(); the host reads `size` for centering/slide tweens.
+## Lightweight hint notification — aaa_kit_v1 ornate plaque with a crest
+## medallion on the left and a three-line text block (header / title / subtitle).
+## Quest/objective/completion updates no longer use this component; they are
+## mandatory full-screen AnnouncementView ceremonies. The legacy class name stays
+## resource-compatible. Coordinates are design units (x2 on screen).
 
 const PANEL_SIZE := Vector2(216, 46)
 const MEDALLION_SIZE := 36.0
@@ -63,7 +63,7 @@ func _build_content(data: Dictionary) -> void:
 	# Crest medallion, vertically centered on the plaque's left.
 	var crest_texture := UiKit.kit_texture("crest_%s.png" % palette)
 	if crest_texture == null:
-		var icon_name := str(data.get("icon", "new_quest"))
+		var icon_name := str(data.get("icon", "new_objective"))
 		var legacy_path := "res://assets/ui/notification_v1/components/icon_%s.png" % icon_name
 		if ResourceLoader.exists(legacy_path):
 			crest_texture = load(legacy_path)
@@ -82,30 +82,35 @@ func _build_content(data: Dictionary) -> void:
 	var accent := UiKit.COLOR_ACCENT if palette == "gold" else UiKit.COLOR_CYAN
 	var text_w := PANEL_SIZE.x - TEXT_X - TEXT_RIGHT_PAD
 
-	# Two lines inside the plaque band. Line 1 is an HBox — header caps on the
-	# left, dim subtitle filling the rest — so long subtitles shrink/clip
-	# inside the band instead of spilling past the plaque.
+	# Two lines inside the plaque band. Header and subtitle get explicit,
+	# non-overlapping rectangles: Label's content minimum size can force children
+	# of a narrow HBox through each other for Vietnamese strings.
 	var header_text := str(data.get("header", ""))
 	var subtitle_text := str(data.get("subtitle", "")).strip_edges()
-	var top_line := HBoxContainer.new()
-	top_line.position = Vector2(TEXT_X, 9)
-	top_line.size = Vector2(text_w, 9)
-	top_line.add_theme_constant_override("separation", 8)
-	top_line.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(top_line)
-
 	header_label = UiKit.make_label_strong(header_text, 6, accent)
+	var header_font: Font = UiKit.body_semibold_font()
+	if header_font == null:
+		header_font = ThemeDB.fallback_font
+	var header_w := clampf(ceilf(header_font.get_string_size(
+		header_text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, 6
+	).x) + 2.0, 34.0, text_w * 0.48)
 	header_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	top_line.add_child(header_label)
+	header_label.clip_text = true
+	header_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	header_label.position = Vector2(TEXT_X, 9)
+	header_label.size = Vector2(header_w, 9)
+	add_child(header_label)
 
 	subtitle_label = UiKit.make_label(subtitle_text, 6, UiKit.COLOR_TEXT_DIM)
 	if not subtitle_text.is_empty():
+		var subtitle_x := TEXT_X + header_w + 6.0
 		subtitle_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		subtitle_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		subtitle_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		subtitle_label.clip_text = true
 		subtitle_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		top_line.add_child(subtitle_label)
+		subtitle_label.position = Vector2(subtitle_x, 9)
+		subtitle_label.size = Vector2(maxf(0.0, TEXT_X + text_w - subtitle_x), 9)
+		add_child(subtitle_label)
 
 	title_label = UiKit.make_title(str(data.get("title", "")), int(data.get("title_font_size", 10)), UiKit.COLOR_TEXT)
 	title_label.position = Vector2(TEXT_X, 18)

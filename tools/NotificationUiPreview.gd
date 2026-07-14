@@ -1,7 +1,9 @@
 extends Node
-## Renders both notification variants at production scale for visual QA.
+## Renders the remaining lightweight top-edge notification at production scale.
+## Quest/objective/completion updates intentionally do not appear here: they use
+## AnnouncementView's full-screen ceremony in every gameplay context.
 
-const ToastScript = preload("res://scripts/ui/QuestNotificationToast.gd")
+const ToastScript := preload("res://scripts/ui/QuestNotificationToast.gd")
 
 
 func _ready() -> void:
@@ -21,40 +23,29 @@ func _ready() -> void:
 	ui.transform = Transform2D.IDENTITY.scaled(Vector2(2, 2))
 	add_child(ui)
 
-	var quest_toast = ToastScript.new()
-	quest_toast.setup({
-		"palette": "gold",
-		"icon": "new_quest",
-		"header": "NHIỆM VỤ MỚI",
-		"title": "Cánh Hoa Cuối Mùa",
-		"subtitle": "Một hành trình mới đã bắt đầu",
-	})
-	quest_toast.position = Vector2(132, 14)
-	ui.add_child(quest_toast)
-
-	var objective_toast = ToastScript.new()
-	objective_toast.setup({
+	var hint_toast = ToastScript.new()
+	hint_toast.setup({
 		"palette": "cyan",
 		"icon": "new_objective",
-		"header": "MỤC TIÊU MỚI",
-		"title": "Thu thập 3 Cánh Hoa Xám",
-		"subtitle": "0 / 3",
-		"title_font_size": 6,
+		"header": "GỢI Ý MỚI",
+		"title": "Từ Bà Miên",
+		"subtitle": "Đã cập nhật bảng gợi ý",
 	})
-	objective_toast.position = Vector2(132, 74)
-	ui.add_child(objective_toast)
+	hint_toast.position = Vector2(132, 14)
+	ui.add_child(hint_toast)
 
 	await get_tree().process_frame
 	await get_tree().process_frame
 	await get_tree().process_frame
-	assert(quest_toast.size == Vector2(216, 46))
-	assert(objective_toast.size == Vector2(216, 46))
-	assert(quest_toast.title_label.get_line_count() == 1)
-	assert(objective_toast.title_label.get_line_count() <= 2)
-	assert(quest_toast.header_label.text == "NHIỆM VỤ MỚI")
-	assert(objective_toast.header_label.text == "MỤC TIÊU MỚI")
+	assert(hint_toast.size == Vector2(216, 46))
+	assert(hint_toast.title_label.get_line_count() == 1)
+	assert(hint_toast.header_label.text == "GỢI Ý MỚI")
+	assert(hint_toast.header_label.position.x + hint_toast.header_label.size.x \
+		<= hint_toast.subtitle_label.position.x,
+		"hint header and subtitle rectangles must never overlap")
+	assert(hint_toast.subtitle_label.size.x > 0.0)
 
 	var output := "res://assets/ui/notification_v1/preview.png"
 	get_viewport().get_texture().get_image().save_png(ProjectSettings.globalize_path(output))
-	print("[NotificationUiPreview] wrote %s" % output)
+	print("[NotificationUiPreview] wrote hint-only %s" % output)
 	get_tree().quit()

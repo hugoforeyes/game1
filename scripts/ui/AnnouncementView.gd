@@ -1,6 +1,6 @@
 extends CanvasLayer
-## Full-screen reward announcement — the ceremony that replaces corner toasts
-## while a conversation owns the screen. One announcement per view: a gold
+## Full-screen narrative/reward announcement. Quest-state updates use this
+## ceremony everywhere; conversation rewards join the same queue. One view: a gold
 ## ribbon header, a filigree medallion (emblem or NPC portrait), radiating
 ## light, a big serif title, a gem divider, a subtitle and an "Enter — Tiếp tục"
 ## chip, per the announce_v1 mockup. Kinds: new_quest / objective /
@@ -14,6 +14,9 @@ signal dismissed
 
 const KIT_DIR := "res://assets/ui/announce_v1/"
 const INPUT_GRACE := 0.45
+const SUBTITLE_SIZE := Vector2(660.0, 62.0)
+const SUBTITLE_MAX_FONT := 14
+const SUBTITLE_MIN_FONT := 9
 
 const HEADERS := {
 	"new_quest": "NHIỆM VỤ MỚI",
@@ -110,7 +113,7 @@ func _content_for(kind: String, payload: Dictionary) -> Dictionary:
 				meta = "%d / %d" % [int(payload.get("progress", 0)), maxi(1, int(objective.get("count", 1)))]
 			return {
 				"title": str(objective.get("description", "Mục tiêu mới")),
-				"subtitle": "Nhiệm vụ: %s" % str(quest.get("title", "")),
+				"subtitle": _objective_narrative_lead_in(payload, objective),
 				"meta": meta,
 			}
 		"quest_complete":
@@ -137,6 +140,59 @@ func _content_for(kind: String, payload: Dictionary) -> Dictionary:
 				"meta": "",
 				"portrait": payload.get("portrait"),
 			}
+
+
+func _objective_narrative_lead_in(payload: Dictionary, objective: Dictionary) -> String:
+	# `narrative_lead_in` is the authored connective tissue leading into THIS
+	# objective. Legacy aliases make old/imported runs degrade gracefully without
+	# ever restoring the quest-name subtitle the new contract replaces.
+	var candidates: Array = [
+		objective.get("narrative_lead_in", ""),
+		payload.get("narrative_lead_in", ""),
+		objective.get("lead_in", ""),
+	]
+	for candidate in candidates:
+		var text := str(candidate).strip_edges()
+		if not text.is_empty():
+			return text
+
+	# Compatibility fallback for content produced before narrative_lead_in existed.
+	# A cutscene already supplied the dramatic context, so its fallback is a short
+	# hand-off rather than a second recap; the objective ceremony itself still plays.
+	var delivery_mode := str(objective.get(
+		"delivery_mode", payload.get("delivery_mode", "narration")
+	)).strip_edges().to_lower()
+	if delivery_mode == "cutscene":
+		return "Sau diễn biến vừa rồi, bước tiếp theo đã trở nên rõ ràng."
+	return "Một hướng đi mới vừa mở ra trên hành trình."
+
+
+func _fit_subtitle_font(text: String) -> int:
+	if text.strip_edges().is_empty():
+		return SUBTITLE_MAX_FONT
+	var font: Font = UiKit.body_font()
+	if font == null:
+		font = ThemeDB.fallback_font
+	for candidate in range(SUBTITLE_MAX_FONT, SUBTITLE_MIN_FONT - 1, -1):
+		var measured := _measure_subtitle(font, text, candidate)
+		var four_line_height := font.get_height(candidate) * 4.0
+		if measured.x <= SUBTITLE_SIZE.x + 0.5 \
+				and measured.y <= minf(SUBTITLE_SIZE.y, four_line_height + 0.5):
+			return candidate
+	return SUBTITLE_MIN_FONT
+
+
+func _measure_subtitle(font: Font, text: String, font_size: int) -> Vector2:
+	return font.get_multiline_string_size(
+		text,
+		HORIZONTAL_ALIGNMENT_CENTER,
+		SUBTITLE_SIZE.x,
+		font_size,
+		-1,
+		TextServer.BREAK_MANDATORY \
+			| TextServer.BREAK_WORD_BOUND \
+			| TextServer.BREAK_GRAPHEME_BOUND,
+	)
 
 
 # ── construction ────────────────────────────────────────────────────────────────
@@ -186,15 +242,17 @@ func _build(kind: String, payload: Dictionary) -> void:
 
 	_build_divider(Vector2(cx, 412.0))
 
-	# ── subtitle (up to 3 centered wrapped lines) ──
-	_subtitle_label = UiKit.make_label(str(content.get("subtitle", "")), 14, Color(0.93, 0.89, 0.78, 0.88))
+	# ── subtitle (authored narrative lead-in, up to four fitted lines) ──
+	var subtitle_text := str(content.get("subtitle", ""))
+	var subtitle_font_size := _fit_subtitle_font(subtitle_text)
+	_subtitle_label = UiKit.make_label(subtitle_text, subtitle_font_size, Color(0.93, 0.89, 0.78, 0.88))
 	_subtitle_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_subtitle_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	_subtitle_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_subtitle_label.position = Vector2(cx - 330.0, 428.0)
-	_subtitle_label.size = Vector2(660.0, 62.0)
-	_subtitle_label.max_lines_visible = 3
-	_subtitle_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_subtitle_label.size = SUBTITLE_SIZE
+	_subtitle_label.max_lines_visible = 4
+	_subtitle_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_WORD_ELLIPSIS
 	_root.add_child(_subtitle_label)
 
 	# ── meta chip line (quest type / +XP / progress / hint level) ──

@@ -18,7 +18,12 @@ func _ready() -> void:
 		{
 			"kind": "objective",
 			"quest": {"title": "Tiếng Gọi Rừng Thẳm"},
-			"objective": {"description": "Thu thập cánh hoa nguyệt quang ở Cánh Đồng Sương", "count": 3},
+			"objective": {
+				"description": "Thu thập cánh hoa nguyệt quang ở Cánh Đồng Sương",
+				"narrative_lead_in": "Vết sáng trên phiến lá hé lộ rằng những cánh hoa chỉ nở nơi sương đêm còn đọng lại, nhưng dấu chân mới bên bờ suối cho thấy ai đó đã hái chúng trước bình minh. Lumi phải lần theo mùi hương còn sót lại qua Cánh Đồng Sương, tìm người giữ chiếc giỏ bạc và khám phá vì sao khu rừng đang dần mất đi ánh trăng trước đêm nay.",
+				"delivery_mode": "narration",
+				"count": 3,
+			},
 			"progress": 0,
 		},
 		{"kind": "quest_complete", "quest": {"title": "Tiếng Gọi Rừng Thẳm", "reward": {"xp": 150}}},

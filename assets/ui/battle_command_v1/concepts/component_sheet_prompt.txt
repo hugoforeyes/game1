@@ -1,0 +1,17 @@
+Using the exact visual language of the battle command mockup in this conversation, create a production-oriented modular UI component sprite sheet on a perfectly flat solid chroma-green background (#00FF20). Landscape sheet, evenly spaced isolated components, no shadows touching adjacent pieces, no labels, no letters, no numbers, no icons inside the empty frames, no watermark.
+
+The component family must be restrained dark-fantasy AAA UI: near-black navy glass, hairline antique-gold metal, one tiny sapphire jewel accent, warm ivory only where needed. Keep ornament minimal and preserve crisp readability at 960x540. All decorative end pieces remain fixed-size; only clean center fills or straight rails are intended to repeat.
+
+Lay out these reusable parts in clean rows with generous cutting space:
+
+ROW 1 — COMMAND RIBBON construction: non-scaling left end cap, long repeatable seamless center rail sample, non-scaling right end cap, a separate thin top hairline, a separate thin bottom hairline.
+
+ROW 2 — SQUARE COMMAND SOCKETS, all the exact same outer size and empty: normal, hover/focus, selected with broken gold bracket plus tiny sapphire diamond and subtle underlight, disabled/desaturated, pressed. Keep overlays separable in appearance.
+
+ROW 3 — SKILL TILE construction: fixed left cap containing an empty 40 px icon socket, clean repeatable center fill, fixed right cap containing space for 1–3 SP diamonds; then complete empty examples of normal, selected, and insufficient-SP tile states.
+
+ROW 4 — DRAWER construction: four separate minimal corners, clean repeatable top/bottom/left/right edge strips, clean navy center fill tile, subtle inner divider, selection overlay, disabled haze overlay.
+
+ROW 5 — SMALL PARTS: sapphire selection diamond, filled gold SP diamond, empty dark SP diamond, red insufficient-SP diamond, hooked Back arrow glyph, slim scroll chevron left and right, tiny page dot inactive and active, compact quantity badge, compact cooldown badge.
+
+No fixed-size full menu variants. No portrait frames. No giant panels. No complex filigree. No text. Every part must be straight-on orthographic 2D game UI, centered in its own clear green cutting area, at consistent pixel density and with alpha-like clean edges against the green background.
