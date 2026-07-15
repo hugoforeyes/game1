@@ -5,7 +5,8 @@ extends RefCounted
 
 const FULL_CARD_H := 112.0
 const COMPACT_CARD_H := 74.0
-const CARD_W := 312.0
+const FULL_CARD_W := 312.0
+const COMPACT_CARD_W := 288.0
 const CARD_X := 2.0
 const CARD_GAP := 6.0
 const STACK_BOTTOM := 538.0
@@ -99,13 +100,13 @@ func target_rects(
 		return rects
 	requested_focus = clampi(requested_focus, 0, _allies.size() - 1)
 	var full_y := STACK_BOTTOM - FULL_CARD_H
-	rects[requested_focus] = Rect2(CARD_X, full_y, CARD_W, FULL_CARD_H)
+	rects[requested_focus] = Rect2(CARD_X, full_y, FULL_CARD_W, FULL_CARD_H)
 	var upcoming := upcoming_indices(requested_focus, round_queue, queue_pos)
 	for rank in range(upcoming.size()):
 		var index := upcoming[rank]
 		var y := full_y - CARD_GAP - COMPACT_CARD_H \
 			- float(rank) * (COMPACT_CARD_H + CARD_GAP)
-		rects[index] = Rect2(CARD_X, y, CARD_W, COMPACT_CARD_H)
+		rects[index] = Rect2(CARD_X, y, COMPACT_CARD_W, COMPACT_CARD_H)
 	return rects
 
 
@@ -133,7 +134,7 @@ func set_active(
 
 
 func right_edge() -> float:
-	return CARD_X + CARD_W
+	return CARD_X + FULL_CARD_W
 
 
 func bottom_edge() -> float:
@@ -195,12 +196,14 @@ func _rebuild(
 			new_root.modulate = target_color
 			continue
 		var old_rect: Rect2 = old_card.get("rect", target_rect)
+		var old_width := maxf(old_rect.size.x, 1.0)
+		var new_width := maxf(target_rect.size.x, 1.0)
 		var old_height := maxf(old_rect.size.y, 1.0)
 		var new_height := maxf(target_rect.size.y, 1.0)
 
 		new_root.pivot_offset = Vector2(0.0, new_height)
 		new_root.position = Vector2(old_rect.position.x, old_rect.end.y - new_height)
-		new_root.scale = Vector2(1.0, old_height / new_height)
+		new_root.scale = Vector2(old_width / new_width, old_height / new_height)
 		new_root.modulate = Color(target_color.r, target_color.g, target_color.b, 0.0)
 		var incoming := _host.create_tween().set_parallel(true)
 		incoming.tween_property(
@@ -216,7 +219,8 @@ func _rebuild(
 		old_root.pivot_offset = Vector2(0.0, old_height)
 		var old_target_position := Vector2(
 			target_rect.position.x, target_rect.end.y - old_height)
-		var old_target_scale := Vector2(1.0, new_height / old_height)
+		var old_target_scale := Vector2(
+			new_width / old_width, new_height / old_height)
 		var old_color := old_root.modulate
 		var outgoing := _host.create_tween().set_parallel(true)
 		outgoing.tween_property(

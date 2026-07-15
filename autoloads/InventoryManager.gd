@@ -282,7 +282,7 @@ func remove_item(item_id: String, amount: int = 1) -> bool:
 	return true
 
 
-func roll_battle_drop(enemy_rank: String) -> String:
+func roll_battle_drop(enemy_rank: String, silent_notification: bool = false) -> String:
 	if randf() > float(drop_chance.get(enemy_rank, 0.4)):
 		return ""
 	var pool: Array[String] = []
@@ -292,7 +292,7 @@ func roll_battle_drop(enemy_rank: String) -> String:
 	if pool.is_empty():
 		return ""
 	var item_id: String = pool[randi() % pool.size()]
-	add_item(item_id)
+	add_item(item_id, 1, silent_notification)
 	return item_id
 
 
@@ -302,6 +302,7 @@ func grant_linked_items(
 		zone_id: String,
 		quest_id: String = "",
 		objective_id: String = "",
+		silent_notification: bool = false,
 	) -> Array[String]:
 	## Execute chapter-authored acquisition links. The concrete runtime instance ID
 	## may have a `__02` suffix while the rule targets its shared template ID.
@@ -337,9 +338,50 @@ func grant_linked_items(
 				continue
 			acquisition_claims[claim_key] = true
 			var item_id := str(item.get("id", ""))
-			add_item(item_id, maxi(1, int(rule.get("count", 1))))
+			add_item(
+				item_id,
+				maxi(1, int(rule.get("count", 1))),
+				silent_notification,
+			)
 			granted.append(item_id)
 	return granted
+
+
+func grant_linked_item_rewards_silent(
+		mode: String,
+		source_entity_id: String,
+		zone_id: String,
+		quest_id: String = "",
+		objective_id: String = "",
+	) -> Array[Dictionary]:
+	## BattleScene needs both authored quantities and display names before it opens
+	## the shared item-reveal ceremony. Measure inventory deltas around the existing
+	## idempotent acquisition path instead of duplicating its matching rules.
+	var counts_before: Dictionary = {}
+	for raw_item in catalog:
+		if raw_item is Dictionary:
+			var item_id := str((raw_item as Dictionary).get("id", ""))
+			if not item_id.is_empty():
+				counts_before[item_id] = count_of(item_id)
+	var granted_ids := grant_linked_items(
+		mode, source_entity_id, zone_id, quest_id, objective_id, true,
+	)
+	var rewards: Array[Dictionary] = []
+	var included: Dictionary = {}
+	for item_id in granted_ids:
+		if included.has(item_id):
+			continue
+		included[item_id] = true
+		var gained := count_of(item_id) - int(counts_before.get(item_id, 0))
+		if gained <= 0:
+			continue
+		var definition := item_def(item_id)
+		rewards.append({
+			"item_id": item_id,
+			"name": str(definition.get("name", item_id)),
+			"count": gained,
+		})
+	return rewards
 
 
 func grant_linked_item_for_objective(

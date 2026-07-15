@@ -4,7 +4,7 @@ extends Node2D
 ## grows reinforcement echoes to match the party), asserts the group shapes,
 ## then drives deterministic Attack input so the whole round loop — target selection included — runs
 ## without a human. Run headless:
-## godot --headless --path . res://scenes/dev/PartyBattleSmoke.tscn --quit-after 4000
+## godot --headless --path . res://scenes/dev/PartyBattleSmoke.tscn --quit-after 10000
 
 const BattleSceneScript := preload("res://scripts/battle/BattleScene.gd")
 const EnemyIdentityPlateScript := preload("res://scripts/battle/EnemyIdentityPlate.gd")
@@ -13,6 +13,7 @@ const MainScript := preload("res://scripts/world/Main.gd")
 var _frames: int = 0
 var _battle: CanvasLayer = null
 var _failures: int = 0
+const MAX_AUTOMATION_FRAMES := 9000
 
 
 func _check(condition: bool, message: String) -> void:
@@ -63,6 +64,8 @@ func _ready() -> void:
 	_assert_visual_catalog()
 	_assert_boss_party_scaling(enemy_data)
 	_assert_sp_pip_fit()
+	_assert_ally_card_hierarchy()
+	_assert_companion_command_access()
 	_assert_item_effect_copy()
 
 	# Status engine sanity, straight on the live actors.
@@ -87,8 +90,16 @@ func _ready() -> void:
 	var ally: Dictionary = _battle._allies[1]
 	_battle._apply_status(ally, "shield", 12.0)
 	_battle._refresh_all_panels()
+	var compact_ally_card: Dictionary = _battle._ally_cards[1]
+	_check(compact_ally_card.get("status_row") == null,
+		"waiting ally must omit status metadata from the compact presentation")
+	# Promote the shielded companion without animation so the same stored status
+	# can be verified in the full card, then restore the initial player focus.
+	_battle._ally_stack._rebuild(1, _battle._round_queue, _battle._queue_pos, false)
 	var ally_status_row: HBoxContainer = (_battle._ally_cards[1] as Dictionary)["status_row"]
-	_check(ally_status_row.get_child_count() == 1, "ally status card should render the shield icon")
+	_check(ally_status_row != null and ally_status_row.get_child_count() == 1,
+		"focused ally card should render the stored shield icon")
+	_battle._ally_stack._rebuild(0, _battle._round_queue, _battle._queue_pos, false)
 	var leftover: int = _battle._absorb_with_shields(ally, 9)
 	_check(leftover == 0, "shield should eat a 9-damage hit fully")
 	leftover = _battle._absorb_with_shields(ally, 10)
@@ -190,6 +201,116 @@ func _assert_sp_pip_fit() -> void:
 				"SP pips must shrink only when their natural row is too wide")
 		row.free()
 	print("[PartySmoke] SP pip fit OK — full and compact cards remain bounded")
+
+
+func _assert_ally_card_hierarchy() -> void:
+	var player_focus: Array[Rect2] = _battle._ally_stack.target_rects(
+		0, _battle._round_queue, _battle._queue_pos)
+	_check(player_focus.size() == _battle._allies.size(),
+		"ally stack must return one card rect per party member")
+	if player_focus.size() >= 2:
+		_check(player_focus[0].size.x > player_focus[1].size.x,
+			"focused ally card must be wider than waiting cards")
+		_check(is_equal_approx(player_focus[0].position.x, player_focus[1].position.x),
+			"full and compact ally cards must keep the same left edge")
+		_check(player_focus[0].size.x - player_focus[1].size.x >= 20.0,
+			"compact width reduction must remain visually legible")
+
+		var companion_focus: Array[Rect2] = _battle._ally_stack.target_rects(
+			1, _battle._round_queue, _battle._queue_pos)
+		_check(companion_focus[1].size.x > companion_focus[0].size.x,
+			"width hierarchy must follow whichever ally is controlled")
+
+		var full_card: Dictionary = _battle._ally_cards[0]
+		var compact_card: Dictionary = _battle._ally_cards[1]
+		_check(str((full_card["root"] as Control).get_meta("ally_card_form", "")) == "full",
+			"controlled ally must retain the ornate full-card form")
+		_check(str((compact_card["root"] as Control).get_meta("ally_card_form", "")) == "compact",
+			"waiting ally must use the borderless compact form")
+		_check(compact_card.get("name_label") == null,
+			"waiting ally must not render a name")
+		_check(compact_card.get("lv_label") == null,
+			"waiting ally must not render a level chip")
+		_check(compact_card.get("status_row") == null,
+			"waiting ally must not render statuses")
+		_check(compact_card.get("xp_bar") == null and compact_card.get("xp_text") == null,
+			"waiting ally must not render XP")
+		_check(compact_card.get("portrait") != null
+			and compact_card.get("hp_bar") != null
+			and compact_card.get("sp_row") != null,
+			"waiting ally must retain portrait, HP and SP")
+		var compact_root: Panel = compact_card["root"] as Panel
+		var compact_style: StyleBox = compact_root.get_theme_stylebox("panel")
+		_check(compact_style is StyleBoxEmpty,
+			"waiting ally root must not draw any rectangular card surface")
+		var compact_scrim: TextureRect = compact_card.get("compact_scrim") as TextureRect
+		_check(compact_scrim != null and compact_scrim.texture is GradientTexture2D,
+			"waiting ally must reuse the command-readout radial scrim")
+		if compact_scrim != null and compact_scrim.texture is GradientTexture2D:
+			var gradient_texture := compact_scrim.texture as GradientTexture2D
+			_check(gradient_texture.fill == GradientTexture2D.FILL_RADIAL,
+				"waiting ally scrim must dissolve radially into the battle art")
+			_check(gradient_texture.fill_from.is_equal_approx(Vector2(0.5, 0.5))
+				and gradient_texture.fill_to.is_equal_approx(Vector2(0.5, 0.0)),
+				"waiting ally scrim must match the command-readout focus point")
+			var gradient := gradient_texture.gradient
+			_check(gradient != null and gradient.colors.size() == 3,
+				"waiting ally scrim must keep the shared three-stop falloff")
+			if gradient != null and gradient.colors.size() == 3:
+				_check(is_equal_approx(gradient.colors[0].a, 0.72)
+					and is_equal_approx(gradient.colors[1].a, 0.50)
+					and is_zero_approx(gradient.colors[2].a),
+					"waiting ally scrim must fade from dark focus to transparent edges")
+	print("[PartySmoke] ally card hierarchy OK — waiting cards remain compact")
+
+
+func _assert_companion_command_access() -> void:
+	var companion: Dictionary = _battle._allies[1]
+	var companion_ids: Array[String] = []
+	for command in _battle._ally_action_commands(companion):
+		companion_ids.append(str(command.get("id", "")))
+	_check(companion_ids == ["attack", "skill", "item", "guard", "flee"],
+		"companions must receive Item and Flee without protagonist-only commands")
+	_check(not companion_ids.has("probe") and not companion_ids.has("finisher"),
+		"Probe and Resolve Strike must remain protagonist-only")
+
+	var primary: Dictionary = _battle._foes[0]
+	var old_hp := int(primary.get("hp", 1))
+	var old_can_spare := bool(_battle.enemy.get("can_spare", false))
+	var old_exposed: int = int(_battle.exposed_turns)
+	var old_finisher: bool = bool(_battle.finisher_used)
+	primary["hp"] = maxi(1, int(primary.get("max_hp", 1)) * 3 / 10)
+	_battle.enemy["can_spare"] = true
+	_battle.exposed_turns = 1
+	_battle.finisher_used = false
+	companion_ids.clear()
+	for command in _battle._ally_action_commands(companion):
+		companion_ids.append(str(command.get("id", "")))
+	_check(companion_ids.has("spare"), "an eligible companion must be able to Spare")
+	_check(not companion_ids.has("finisher"),
+		"an exposed foe must not give a companion the protagonist's finisher")
+	var player_ids: Array[String] = []
+	for command in _battle._ally_action_commands(_battle._allies[0]):
+		player_ids.append(str(command.get("id", "")))
+	_check(player_ids.has("finisher") and player_ids.has("spare"),
+		"protagonist finisher/spare behavior must remain intact")
+	primary["hp"] = old_hp
+	_battle.enemy["can_spare"] = old_can_spare
+	_battle.exposed_turns = old_exposed
+	_battle.finisher_used = old_finisher
+
+	var old_speed := int(companion.get("speed", 0))
+	var old_failures: int = int(_battle.flee_failed_count)
+	_battle.flee_failed_count = 0
+	companion["speed"] = 2
+	var slow_chance: float = float(_battle._flee_chance(companion))
+	companion["speed"] = 18
+	var fast_chance: float = float(_battle._flee_chance(companion))
+	_check(fast_chance > slow_chance,
+		"companion flee chance must use the acting companion's effective speed")
+	companion["speed"] = old_speed
+	_battle.flee_failed_count = old_failures
+	print("[PartySmoke] companion Item/Flee/Spare command access OK")
 
 
 func _assert_item_effect_copy() -> void:
@@ -315,7 +436,7 @@ func _process(_delta: float) -> void:
 		var image: Image = get_viewport().get_texture().get_image()
 		if image != null:
 			image.save_png("/tmp/party_battle_shot_%03d.png" % (_frames / 30))
-	if _frames >= 3900:
+	if _frames >= MAX_AUTOMATION_FRAMES:
 		_check(false, "battle timed out before emitting battle_finished")
 		get_tree().quit(_failures)
 		return

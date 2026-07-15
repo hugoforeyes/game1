@@ -26,10 +26,11 @@ func _ready() -> void:
 	_test_rapid_objective_collapse()
 	_test_instant_completion_drops_stale_objective()
 	await _test_standalone_priority_barriers()
+	_test_battle_reward_quest_handoff()
 
 	QuestManager.set_process(true)
 	InventoryManager.set_process(true)
-	print("[NotificationQueueTest] mandatory ceremony, narrative lead-in, collapse, and priority barriers passed")
+	print("[NotificationQueueTest] ceremony, collapse, priority, and battle-reward handoff passed")
 	get_tree().quit()
 
 
@@ -187,6 +188,76 @@ func _test_standalone_priority_barriers() -> void:
 		return not AnnouncementCenter.playing and not AnnouncementCenter.has_pending()
 	, 3.0))
 	assert(not GameManager.ui_blocking_input)
+
+
+func _test_battle_reward_quest_handoff() -> void:
+	# BattleScene grants enemy-linked items before Main advances the defeat beat so
+	# it can reveal them on the battle backdrop. The explicit post-defeat inventory
+	# settle must still complete a collect objective unlocked by that same kill.
+	AnnouncementCenter.reset()
+	QuestManager.reset()
+	InventoryManager.reset()
+	InventoryManager.load_chapter_catalog({
+		"items": [{
+			"id": "item_battle_seal",
+			"name": "Battle Seal",
+			"kind": "quest",
+			"icon_index": 0,
+			"acquisition": [{
+				"mode": "enemy_drop",
+				"source_entity_id": "enemy_gatekeeper",
+				"zone_id": "zone_gate",
+				"chance": 1.0,
+				"count": 2,
+			}],
+		}],
+		"icon_grid": 3,
+		"icon_cell_px": 48,
+	}, load("res://assets/ui/inventory/sample_icon_sheet.png"))
+	QuestManager.load_chapter_quests([{
+		"id": "quest_battle_handoff",
+		"title": "The Gatekeeper's Seal",
+		"type": "main",
+		"giver": {"mode": "auto", "zone_id": "zone_gate"},
+		"objectives": [
+			{
+				"id": "defeat_gatekeeper",
+				"kind": "defeat",
+				"zone_id": "zone_gate",
+				"target_enemy_id": "enemy_gatekeeper",
+				"description": "Defeat the gatekeeper",
+			},
+			{
+				"id": "collect_seal",
+				"kind": "collect",
+				"zone_id": "zone_gate",
+				"item_id": "item_battle_seal",
+				"count": 2,
+				"description": "Recover the broken seal",
+			},
+		],
+		"reward": {"xp": 0},
+	}])
+	QuestManager.notify_zone_entered("zone_gate")
+	AnnouncementCenter.reset()
+
+	var rewards := InventoryManager.grant_linked_item_rewards_silent(
+		"enemy_drop", "enemy_gatekeeper", "zone_gate",
+	)
+	assert(rewards.size() == 1)
+	assert(int(rewards[0].get("count", 0)) == 2)
+	assert(InventoryManager._toast_queue.is_empty(),
+		"battle ceremony rewards must not enqueue the compact toast")
+	assert(int((QuestManager.quest_states["quest_battle_handoff"] as Dictionary).get(
+		"objective_index", -1)) == 0,
+		"receiving loot before the defeat beat must not skip the defeat objective")
+
+	QuestManager.notify_enemy_defeated("enemy_gatekeeper")
+	QuestManager.notify_items_changed()
+	assert(str((QuestManager.quest_states["quest_battle_handoff"] as Dictionary).get(
+		"state", "")) == "completed",
+		"post-defeat inventory settle must consume the already-granted battle loot")
+	AnnouncementCenter.reset()
 
 
 func _wait_for_announcement(timeout: float) -> Node:

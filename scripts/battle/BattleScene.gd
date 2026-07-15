@@ -17,6 +17,7 @@ const EnemyIdentityPlateScript := preload("res://scripts/battle/EnemyIdentityPla
 const EnemyTargetHighlightScript := preload("res://scripts/battle/EnemyTargetHighlight.gd")
 const BattleCommandMenuScript := preload("res://scripts/battle/BattleCommandMenu.gd")
 const BattleAllyCardStackScript := preload("res://scripts/battle/BattleAllyCardStack.gd")
+const ObjectInteractionViewScript := preload("res://scripts/ui/ObjectInteractionView.gd")
 
 signal battle_finished(result: String, enemy_id: String)
 
@@ -182,6 +183,12 @@ const PORTRAIT_HOME: = Vector2(350, 48)
 const PORTRAIT_SIZE: = Vector2(280, 290)
 const PLAYER_FX_CENTER: = Vector2(124, 454)
 const SCREEN_CENTER: = Vector2(480, 270)
+const VICTORY_BANNER_CENTER: = Vector2(480, 145)
+const VICTORY_TITLE_RECT: = Rect2(-160, -36, 320, 48)
+const VICTORY_ORNAMENT_WIDTH: = 240.0
+const VICTORY_ORNAMENT_TOP: = 18.0
+const VICTORY_REWARD_REVEAL_DELAY: = 0.60
+const MAX_BATTLE_REWARDS_PER_SCREEN: = 4
 
 
 func open(enemy_data: Dictionary) -> void :
@@ -1578,6 +1585,7 @@ const HP_TEXT_Y_OFFSET: = -4.0
 const SP_PIP_SIDE := 15.0
 const SP_PIP_GAP := 5.0
 const SP_ROW_HEIGHT := 15.0
+const COMPACT_ALLY_SCRIM_OVERSCAN := Vector2(18.0, 10.0)
 
 
 func _build_ally_stack() -> void:
@@ -1595,7 +1603,23 @@ func _build_ally_stack() -> void:
 
 
 func _build_ally_card(ally: Dictionary, rect: Rect2, is_full: bool) -> Dictionary:
-    var panel: = _make_panel_node(rect)
+    var panel: Panel
+    var compact_scrim: TextureRect = null
+    if is_full:
+        panel = _make_panel_node(rect)
+    else:
+        # Match the selected-command readout: a radial dark haze that dissolves
+        # into the battle art instead of reading as a rectangular card.
+        panel = Panel.new()
+        panel.position = rect.position
+        panel.size = rect.size
+        panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+        panel.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
+        compact_scrim = BattleCommandMenuScript.make_soft_info_scrim(
+            rect.size + COMPACT_ALLY_SCRIM_OVERSCAN * 2.0)
+        compact_scrim.position = -COMPACT_ALLY_SCRIM_OVERSCAN
+        panel.add_child(compact_scrim)
+    panel.set_meta("ally_card_form", "full" if is_full else "compact")
     _design.add_child(panel)
     # Runtime card swaps happen after the FX layer exists. Keep cards below it
     # just like the initial stack so hit/heal effects remain visible.
@@ -1614,23 +1638,25 @@ func _build_ally_card(ally: Dictionary, rect: Rect2, is_full: bool) -> Dictionar
     picture.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
     picture.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED if texture != null and texture.get_width() > 200 else TextureRect.STRETCH_KEEP_ASPECT_CENTERED
     picture.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR if texture != null and texture.get_width() > 200 else CanvasItem.TEXTURE_FILTER_NEAREST
-    var portrait_inset := 0.0 if is_full else 4.0
-    picture.position = Vector2(portrait_inset, portrait_inset)
-    picture.size = holder.size - Vector2.ONE * portrait_inset * 2.0
+    picture.position = Vector2.ZERO
+    picture.size = holder.size
     picture.mouse_filter = Control.MOUSE_FILTER_IGNORE
     holder.add_child(picture)
-    holder.add_child(UiKit.make_ornate_frame(holder.size, "slot.png", 0.2, 12.0, false))
 
     var left: = 20.0 + portrait_side
-    var name_label: = _make_display_label(str(ally.get("name")), 18 if is_full else 15, COLOR_ACCENT)
-    name_label.position = Vector2(left, 8)
-    name_label.size = Vector2(rect.size.x - left - 74, 22)
-    name_label.clip_text = true
-    panel.add_child(name_label)
+    var name_label: Label = null
+    var lv_label: Label = null
+    if is_full:
+        name_label = _make_display_label(str(ally.get("name")), 18, COLOR_ACCENT)
+        name_label.position = Vector2(left, 8)
+        name_label.size = Vector2(rect.size.x - left - 74, 22)
+        name_label.clip_text = true
+        panel.add_child(name_label)
 
-    var chip: = _make_chip(Rect2(rect.size.x - 70, 10, 56, 19))
-    (chip["label"] as Label).add_theme_font_size_override("font_size", 11)
-    panel.add_child(chip["root"])
+        var chip: = _make_chip(Rect2(rect.size.x - 70, 10, 56, 19))
+        lv_label = chip["label"] as Label
+        lv_label.add_theme_font_size_override("font_size", 11)
+        panel.add_child(chip["root"])
 
     var bar_w: = rect.size.x - left - 18.0
     var hp_y: = 34.0 if is_full else 30.0
@@ -1655,8 +1681,10 @@ func _build_ally_card(ally: Dictionary, rect: Rect2, is_full: bool) -> Dictionar
     var sp_pips: Array = _build_sp_pips_for(
         sp_row, int(ally.get("sp_max", 3)), bar_w)
 
-    var status_row: = _make_status_row(
-        panel, Rect2(left, hp_y + 34, bar_w, 15), BoxContainer.ALIGNMENT_BEGIN, 14)
+    var status_row: HBoxContainer = null
+    if is_full:
+        status_row = _make_status_row(
+            panel, Rect2(left, hp_y + 34, bar_w, 15), BoxContainer.ALIGNMENT_BEGIN, 14)
 
     var xp_bar: Control = null
     var xp_text: Label = null
@@ -1685,7 +1713,7 @@ func _build_ally_card(ally: Dictionary, rect: Rect2, is_full: bool) -> Dictionar
         "rect": rect,
         "is_full": is_full,
         "name_label": name_label,
-        "lv_label": chip["label"],
+        "lv_label": lv_label,
         "hp_bar": bar["fill"],
         "hp_ghost": bar["ghost"],
         "hp_text": hp_text,
@@ -1694,6 +1722,7 @@ func _build_ally_card(ally: Dictionary, rect: Rect2, is_full: bool) -> Dictionar
         "status_row": status_row,
         "xp_bar": xp_bar,
         "xp_text": xp_text,
+        "compact_scrim": compact_scrim,
         "bar_w": bar_w,
         "arrow": arrow,
         "fx_center": rect.position + rect.size * 0.5,
@@ -2387,36 +2416,14 @@ func _ally_turn(ally: Dictionary) -> void :
 func _ally_action_menu(ally: Dictionary) -> void :
     if _battle_over:
         return
-    var is_player: = str(ally.get("kind")) == "player"
-    var ids: Array[String] = ["attack", "skill"]
-    var labels: Array[String] = ["Attack", "Skill"]
-    var descs: Array[String] = [
-        "A precise strike with your blade." if is_player else "%s attacks a foe." % str(ally.get("name")),
-        "Channel a special technique.",
-    ]
-    if is_player:
-        ids.append("probe")
-        labels.append("Probe")
-        descs.append("Study the enemy for a weakness.")
-        ids.append("item")
-        labels.append("Item")
-        descs.append("Use something from your pack.")
-    ids.append("guard")
-    labels.append("Guard")
-    descs.append("Brace yourself and recover 1 SP.")
-    if is_player:
-        ids.append("flee")
-        labels.append("Flee")
-        descs.append("Attempt to escape the battle.")
-        if exposed_turns > 0 and not finisher_used:
-            ids.insert(0, "finisher")
-            labels.insert(0, "Resolve Strike!")
-            descs.insert(0, "Exploit the opening — a decisive blow.")
-        var primary: Dictionary = _foes[0]
-        if bool(enemy.get("can_spare", false)) and int(primary.get("hp", 1)) <= int(int(primary.get("max_hp", 1)) * 0.3) and not _actor_down(primary, false):
-            ids.append("spare")
-            labels.append("Spare")
-            descs.append("Show mercy and end the fight.")
+    var commands := _ally_action_commands(ally)
+    var ids: Array[String] = []
+    var labels: Array[String] = []
+    var descs: Array[String] = []
+    for command in commands:
+        ids.append(str(command.get("id", "")))
+        labels.append(str(command.get("label", "")))
+        descs.append(str(command.get("description", "")))
 
     var choice: String = await _menu(ids, labels, descs)
     match choice:
@@ -2455,9 +2462,68 @@ func _ally_action_menu(ally: Dictionary) -> void :
             _spawn_particles(_actor_fx_center(ally, true), Color(0.6, 0.75, 1.0), 10)
             await _say("%s braces and watches carefully. (+1 SP)" % str(ally.get("name")))
         "flee":
-            await _try_flee()
+            await _try_flee(ally)
         "spare":
-            await _spare_enemy()
+            await _spare_enemy(ally)
+
+
+## Pure command specification shared by the live menu and regression tests.
+## Probe/finisher remain protagonist story abilities; inventory and encounter-wide
+## decisions belong to whichever living party member currently owns the turn.
+func _ally_action_commands(ally: Dictionary) -> Array[Dictionary]:
+    var is_player: = str(ally.get("kind")) == "player"
+    var commands: Array[Dictionary] = [
+        {
+            "id": "attack",
+            "label": "Attack",
+            "description": "A precise strike with your blade." if is_player else "%s attacks a foe." % str(ally.get("name")),
+        },
+        {"id": "skill", "label": "Skill", "description": "Channel a special technique."},
+    ]
+    if is_player:
+        commands.append({
+            "id": "probe",
+            "label": "Probe",
+            "description": "Study the enemy for a weakness.",
+        })
+    commands.append({
+        "id": "item",
+        "label": "Item",
+        "description": "Use something from your pack.",
+    })
+    commands.append({
+        "id": "guard",
+        "label": "Guard",
+        "description": "Brace yourself and recover 1 SP.",
+    })
+    commands.append({
+        "id": "flee",
+        "label": "Flee",
+        "description": "Attempt to escape the battle.",
+    })
+    if is_player:
+        if exposed_turns > 0 and not finisher_used:
+            commands.insert(0, {
+                "id": "finisher",
+                "label": "Resolve Strike!",
+                "description": "Exploit the opening — a decisive blow.",
+            })
+    if _can_spare_primary_foe():
+        commands.append({
+            "id": "spare",
+            "label": "Spare",
+            "description": "Show mercy and end the fight.",
+        })
+    return commands
+
+
+func _can_spare_primary_foe() -> bool:
+    if _foes.is_empty():
+        return false
+    var primary: Dictionary = _foes[0]
+    return bool(enemy.get("can_spare", false)) \
+        and int(primary.get("hp", 1)) <= int(int(primary.get("max_hp", 1)) * 0.3) \
+        and not _actor_down(primary, false)
 
 
 func _skill_menu(ally: Dictionary) -> void :
@@ -3065,23 +3131,33 @@ func _pick_foe_intent(foe: Dictionary) -> void :
     _refresh_target_readout()
 
 
-func _try_flee() -> void :
-    var primary: Dictionary = _foes[0]
-    var chance: float = clampf(
-        0.5 + 0.05 * float(int(player_stats.get("speed", 9)) - int(primary.get("speed", 6))) + 0.15 * flee_failed_count,
+func _flee_chance(ally: Dictionary) -> float:
+    var fastest_foe_speed := 0
+    for foe_index in _living_foes():
+        fastest_foe_speed = maxi(fastest_foe_speed, _effective_speed(_foes[foe_index]))
+    return clampf(
+        0.5 + 0.05 * float(_effective_speed(ally) - fastest_foe_speed) \
+            + 0.15 * flee_failed_count,
         0.25,
         0.95,
     )
+
+
+func _try_flee(ally: Dictionary) -> void :
+    var chance := _flee_chance(ally)
     if randf() < chance:
         await _say("Your party slips away from the fight.")
         _finish("fled")
     else:
         flee_failed_count += 1
         _shake(2.0, 0.2)
-        await _say("You can't get away!")
+        if str(ally.get("kind", "")) == "player":
+            await _say("You can't get away!")
+        else:
+            await _say("%s can't find a way out!" % str(ally.get("name", "Companion")))
 
 
-func _spare_enemy() -> void :
+func _spare_enemy(ally: Dictionary) -> void :
     for line in _dialogue("spare"):
         if not _foes.is_empty():
             _enemy_say(_foes[0], str(line))
@@ -3091,7 +3167,10 @@ func _spare_enemy() -> void :
             var fade: = create_tween()
             fade.tween_property(ui["holder"], "modulate", Color(1, 1, 1, 0.35), 1.0)
     var xp: int = _scaled_battle_xp(int(int(enemy.get("xp_reward", 20)) * 0.6), int(_foes[0].get("level", 1)))
-    await _grant_xp(xp, "You lower your weapon. +%d XP." % xp)
+    var message := "You lower your weapon. +%d XP." % xp
+    if str(ally.get("kind", "")) != "player":
+        message = "%s lowers their weapon. +%d XP." % [str(ally.get("name", "Companion")), xp]
+    await _grant_xp(xp, message)
     _finish("spared")
 
 
@@ -3123,33 +3202,111 @@ func _victory() -> void :
             _set_ally_hp(ally, recover)
     _refresh_all_panels()
 
-    var dropped: String = InventoryManager.roll_battle_drop(str(enemy.get("rank", "minion")))
-    if not dropped.is_empty():
+    var item_rewards := _collect_victory_item_rewards()
+    if not item_rewards.is_empty():
         _spawn_particles(SCREEN_CENTER, COLOR_ACCENT, 12)
-        await _say("It left something behind: %s." % InventoryManager.item_def(dropped).get("name", dropped))
+        if item_rewards.size() == 1:
+            await _say("It left something behind: %s." % str(item_rewards[0].get("name", "Item")))
+        else:
+            await _say("The defeated foes left battle spoils behind.")
+        # Battle-log and XP updates are intentionally non-blocking. Hold only for
+        # the banner's 0.45 s pop plus a short visual breath, then reveal loot.
+        await get_tree().create_timer(VICTORY_REWARD_REVEAL_DELAY).timeout
+        await _show_battle_item_rewards(item_rewards)
     _finish("victory")
 
 
-func _show_victory_banner() -> void :
+func _collect_victory_item_rewards() -> Array[Dictionary]:
+    var rewards: Array[Dictionary] = []
+    var dropped := InventoryManager.roll_battle_drop(
+        str(enemy.get("rank", "minion")), true,
+    )
+    if not dropped.is_empty():
+        var definition := InventoryManager.item_def(dropped)
+        _merge_item_reward(rewards, {
+            "item_id": dropped,
+            "name": str(definition.get("name", dropped)),
+            "count": 1,
+        })
+
+    var linked_rewards := InventoryManager.grant_linked_item_rewards_silent(
+        "enemy_drop",
+        enemy_id,
+        str(GameManager.get_scene_context().get("zone_id", "")),
+    )
+    for reward in linked_rewards:
+        _merge_item_reward(rewards, reward)
+    return rewards
+
+
+func _merge_item_reward(rewards: Array[Dictionary], reward: Dictionary) -> void:
+    var item_id := str(reward.get("item_id", ""))
+    if item_id.is_empty():
+        return
+    for existing in rewards:
+        if str(existing.get("item_id", "")) == item_id:
+            existing["count"] = int(existing.get("count", 1)) + maxi(1, int(reward.get("count", 1)))
+            return
+    rewards.append({
+        "item_id": item_id,
+        "name": str(reward.get("name", item_id)),
+        "count": maxi(1, int(reward.get("count", 1))),
+    })
+
+
+func _show_battle_item_rewards(items: Array[Dictionary]) -> void:
+    if items.is_empty():
+        return
+    # Match AnnouncementCenter's established four-card capacity. Large authored
+    # hauls become consecutive pages instead of squeezing or spilling the panel.
+    for start in range(0, items.size(), MAX_BATTLE_REWARDS_PER_SCREEN):
+        var page: Array[Dictionary] = []
+        var end := mini(start + MAX_BATTLE_REWARDS_PER_SCREEN, items.size())
+        for index in range(start, end):
+            page.append(items[index])
+        var item_view := _open_battle_item_reward_view(page)
+        await item_view.tree_exited
+
+
+func _open_battle_item_reward_view(items: Array[Dictionary]) -> CanvasLayer:
+    # Reuse the exact full item-reveal ceremony from conversations and world
+    # objects, but place it one layer above BattleScene so the battle backdrop is
+    # retained beneath its dimmer while the terminal battle state stays paused.
+    var item_view: CanvasLayer = ObjectInteractionViewScript.new()
+    item_view.name = "BattleItemRewards"
+    get_tree().root.add_child(item_view)
+    item_view.layer = layer + 10
+    item_view.open_item_announcement(items)
+    return item_view
+
+
+func _show_victory_banner() -> Control :
     var banner_root: = Control.new()
-    banner_root.position = Vector2(480, 180)
+    banner_root.name = "VictoryBanner"
+    banner_root.position = VICTORY_BANNER_CENTER
+    banner_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
     _fx_layer.add_child(banner_root)
 
     if _banner_texture != null:
         var ornament: = TextureRect.new()
+        ornament.name = "Ornament"
         ornament.texture = _banner_texture
         ornament.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-        var w: float = 360.0
+        var w: float = VICTORY_ORNAMENT_WIDTH
         var h: float = w * float(_banner_texture.get_height()) / float(_banner_texture.get_width())
         ornament.size = Vector2(w, h)
         ornament.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-        ornament.position = Vector2( - w / 2.0, - h / 2.0)
+        ornament.position = Vector2(-w / 2.0, VICTORY_ORNAMENT_TOP)
+        ornament.mouse_filter = Control.MOUSE_FILTER_IGNORE
         banner_root.add_child(ornament)
 
     var text: = _make_display_label("VICTORY", 34, COLOR_ACCENT)
+    text.name = "Title"
     text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-    text.position = Vector2(-140, -22)
-    text.size = Vector2(280, 44)
+    text.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    text.position = VICTORY_TITLE_RECT.position
+    text.size = VICTORY_TITLE_RECT.size
+    text.mouse_filter = Control.MOUSE_FILTER_IGNORE
     banner_root.add_child(text)
 
     banner_root.scale = Vector2(0.2, 0.2)
@@ -3160,6 +3317,7 @@ func _show_victory_banner() -> void :
     pop.parallel().tween_property(banner_root, "modulate:a", 1.0, 0.3)
     for index in range(5):
         _spawn_particles(Vector2(randf_range(300, 660), randf_range(110, 230)), COLOR_ACCENT, 12)
+    return banner_root
 
 
 ## Passive healer-regen from the party bonus, applied on the protagonist's turn
@@ -3472,8 +3630,12 @@ func _refresh_foe_overlay(foe: Dictionary) -> void :
 
 
 func _refresh_ally_card(ally: Dictionary, card: Dictionary) -> void :
-    (card["name_label"] as Label).text = str(ally.get("name"))
-    (card["lv_label"] as Label).text = "Lv.%d" % int(ally.get("level", 1))
+    var name_label: Label = card.get("name_label") as Label
+    if name_label != null:
+        name_label.text = str(ally.get("name"))
+    var lv_label: Label = card.get("lv_label") as Label
+    if lv_label != null:
+        lv_label.text = "Lv.%d" % int(ally.get("level", 1))
     var max_hp: int = int(ally.get("max_hp", 1))
     var hp: int = _ally_hp(ally)
     (card["hp_text"] as Label).text = "%d / %d" % [hp, max_hp]
@@ -3486,7 +3648,9 @@ func _refresh_ally_card(ally: Dictionary, card: Dictionary) -> void :
         status_extra.append({"id": "focus", "label": "FOC", "count": 0, "tooltip": "Focus · next attack deals double damage"})
     if bool(ally.get("guarding", false)):
         status_extra.append({"id": "guard", "label": "GRD", "count": 0, "tooltip": "Guard · incoming damage is halved"})
-    _refresh_status_row(card["status_row"] as HBoxContainer, ally, status_extra)
+    var status_row: HBoxContainer = card.get("status_row") as HBoxContainer
+    if status_row != null:
+        _refresh_status_row(status_row, ally, status_extra)
     (card["root"] as Control).modulate.a = 0.55 if (bool(ally.get("downed", false)) or hp <= 0) else 1.0
     if card.get("xp_text") != null:
         var current_xp: int

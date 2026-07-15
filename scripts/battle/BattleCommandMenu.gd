@@ -62,8 +62,12 @@ func setup(panel_size: Vector2 = DEFAULT_SIZE) -> void:
 	_build_ui()
 
 
-func _build_ui() -> void:
-	var info_scrim := TextureRect.new()
+## Shared soft-focus backdrop used behind command information and lightweight
+## battle HUD groups. Its radial falloff has no readable panel boundary.
+static func make_soft_info_scrim(
+	display_size: Vector2,
+	texture_size: Vector2i = Vector2i.ZERO,
+) -> TextureRect:
 	var info_gradient := Gradient.new()
 	info_gradient.offsets = PackedFloat32Array([0.0, 0.55, 1.0])
 	info_gradient.colors = PackedColorArray([
@@ -76,15 +80,24 @@ func _build_ui() -> void:
 	info_texture.fill = GradientTexture2D.FILL_RADIAL
 	info_texture.fill_from = Vector2(0.5, 0.5)
 	info_texture.fill_to = Vector2(0.5, 0.0)
-	var scrim_width := minf(size.x, 560.0)
-	info_texture.width = int(scrim_width)
-	info_texture.height = 86
+	info_texture.width = maxi(
+		1, texture_size.x if texture_size.x > 0 else roundi(display_size.x))
+	info_texture.height = maxi(
+		1, texture_size.y if texture_size.y > 0 else roundi(display_size.y))
+	var info_scrim := TextureRect.new()
 	info_scrim.texture = info_texture
 	info_scrim.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	info_scrim.stretch_mode = TextureRect.STRETCH_SCALE
-	info_scrim.position = Vector2((size.x - scrim_width) * 0.5, -34)
-	info_scrim.size = Vector2(scrim_width, 104)
+	info_scrim.size = display_size
 	info_scrim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return info_scrim
+
+
+func _build_ui() -> void:
+	var scrim_width := minf(size.x, 560.0)
+	var info_scrim := make_soft_info_scrim(
+		Vector2(scrim_width, 104), Vector2i(int(scrim_width), 86))
+	info_scrim.position = Vector2((size.x - scrim_width) * 0.5, -34)
 	add_child(info_scrim)
 
 	_info_icon = TextureRect.new()

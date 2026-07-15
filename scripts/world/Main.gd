@@ -1195,11 +1195,13 @@ func _on_battle_finished(result: String, enemy_id: String, enemy: Node) -> void:
 		"victory":
 			GameManager.mark_enemy_defeated(enemy_id)
 			QuestManager.notify_enemy_defeated(enemy_id)
+			# Enemy-linked loot is granted inside BattleScene so it can be revealed
+			# over that backdrop. Re-settle inventory objectives after the defeat beat
+			# advances, preserving the old defeat -> collect quest ordering.
+			QuestManager.notify_items_changed()
 			PartyManager.notify_enemy_defeated(enemy_id)
-			InventoryManager.grant_linked_items(
-				"enemy_drop", enemy_id,
-				str(GameManager.get_scene_context().get("zone_id", "")),
-			)
+			# BattleScene has already granted and revealed every enemy-linked drop on
+			# the battle backdrop, immediately after the victory presentation.
 			if is_instance_valid(enemy):
 				enemy.queue_free()
 			_try_trigger_cutscene("enemy_defeated", {"enemy_id": enemy_id})

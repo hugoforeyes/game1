@@ -31,9 +31,11 @@ func _ready() -> void:
 	InventoryManager.load_chapter_catalog({
 		"items": [
 			{"id": "sandbox_potion", "name": "Potion", "kind": "heal", "power": 80,
-				"desc": "Restore HP to an ally.", "icon_index": 0},
+				"desc": "Restore HP to an ally.", "icon_index": 0, "droppable": true},
 			{"id": "sandbox_ether", "name": "Ether", "kind": "energy", "power": 3,
-				"desc": "Restore SP to an ally.", "icon_index": 1},
+				"desc": "Restore SP to an ally.", "icon_index": 1,
+				"acquisition": [{"mode": "enemy_drop", "source_entity_id": "sandbox_echo",
+					"chance": 1.0, "count": 2}]},
 			{"id": "sandbox_tonic", "name": "Focus Tonic", "kind": "buff", "power": 0,
 				"desc": "Empower the next attack.", "icon_index": 2},
 		],
@@ -45,7 +47,11 @@ func _ready() -> void:
 	InventoryManager.add_item("sandbox_tonic", 5, true)
 
 	_open_battle()
-	if OS.get_environment("BATTLE_SANDBOX_FX_QA") == "1":
+	if OS.get_environment("BATTLE_SANDBOX_REWARD_QA") == "1":
+		_capture_battle_reward_ceremony.call_deferred()
+	elif OS.get_environment("BATTLE_SANDBOX_VICTORY_QA") == "1":
+		_capture_victory_layout.call_deferred()
+	elif OS.get_environment("BATTLE_SANDBOX_FX_QA") == "1":
 		_capture_attack_fx.call_deferred()
 	elif OS.get_environment("BATTLE_SANDBOX_LAYOUT_QA") == "1":
 		_capture_command_layout.call_deferred()
@@ -62,7 +68,7 @@ func _open_battle() -> void:
 	add_child(_battle)
 	_battle.battle_finished.connect(_on_battle_finished)
 	_battle.open(enemy_data)
-	print("[BattleSandbox] Ready. Test Attack, Skill, Probe, Item, Guard and companion skills.")
+	print("[BattleSandbox] Ready. Every ally can test Item/Flee/Spare; Probe and Resolve Strike remain hero-only.")
 
 
 func _on_battle_finished(_result: String, _enemy_id: String) -> void:
@@ -143,6 +149,77 @@ func _capture_attack_fx() -> void:
 	_battle.queue_free()
 	await get_tree().process_frame
 	get_tree().quit()
+
+
+## The title and laurel are intentionally separate vertical bands. Besides the
+## screenshot, assert their authored rectangles never overlap so later tweaks do
+## not reintroduce the old gem/title collision.
+func _capture_victory_layout() -> void:
+	if not await _wait_for_ui_mode(3): # BattleScene.UiMode.MENU
+		push_error("[BattleSandbox] initial command menu did not open")
+		get_tree().quit(1)
+		return
+	_battle._shutdown_enemy_barks()
+	var banner: Control = _battle._show_victory_banner()
+	await get_tree().create_timer(0.55).timeout
+	var ornament := banner.get_node_or_null("Ornament") as Control
+	var title := banner.get_node_or_null("Title") as Control
+	assert(ornament != null and title != null, "victory composition needs title and ornament")
+	var ornament_rect := Rect2(ornament.position, ornament.size)
+	var title_rect := Rect2(title.position, title.size)
+	assert(not ornament_rect.intersects(title_rect),
+		"victory title and ornament must occupy separate vertical bands")
+	_save_viewport("/tmp/battle_victory_layout.png")
+	print("[BattleSandbox] Victory layout QA captured title=%s ornament=%s" % [
+		title_rect, ornament_rect,
+	])
+	_battle.queue_free()
+	await get_tree().process_frame
+	get_tree().quit()
+
+
+## Production-path QA for the victory haul: random and authored enemy drops are
+## granted silently, then rendered through the same full ceremony used by chat
+## rewards and world-object interactions, above the still-visible battle scene.
+func _capture_battle_reward_ceremony() -> void:
+	if not await _wait_for_ui_mode(3): # BattleScene.UiMode.MENU
+		push_error("[BattleSandbox] initial command menu did not open")
+		get_tree().quit(1)
+		return
+	_battle._shutdown_enemy_barks()
+	InventoryManager.drop_chance["elite"] = 1.0
+	var rewards: Array[Dictionary] = _battle._collect_victory_item_rewards()
+	assert(rewards.size() == 2, "sandbox victory should combine random and authored drops")
+	assert(InventoryManager._toast_queue.is_empty(),
+		"battle rewards must not also enqueue the compact top toast")
+	_battle._show_victory_banner()
+	await get_tree().create_timer(0.55).timeout
+	var item_view: CanvasLayer = _battle._open_battle_item_reward_view(rewards)
+	assert(item_view.layer > _battle.layer, "item ceremony must render above BattleScene")
+	await get_tree().create_timer(0.45).timeout
+	var header := item_view.get("_header") as Label
+	var reveal_box := item_view.get("_reveal_box") as HBoxContainer
+	assert(header != null and header.text == "VẬT PHẨM MỚI")
+	assert(reveal_box != null and reveal_box.get_child_count() == 2)
+	assert(_contains_catalog_icon(reveal_box), "reward ceremony must show real item icons")
+	_save_viewport("/tmp/battle_reward_ceremony.png")
+	print("[BattleSandbox] Battle reward ceremony QA captured rewards=%s layer=%d" % [
+		rewards, item_view.layer,
+	])
+	item_view.call("_close")
+	await item_view.tree_exited
+	_battle.queue_free()
+	await get_tree().process_frame
+	get_tree().quit()
+
+
+func _contains_catalog_icon(node: Node) -> bool:
+	for child in node.get_children():
+		if child is TextureRect and (child as TextureRect).texture is AtlasTexture:
+			return true
+		if _contains_catalog_icon(child):
+			return true
+	return false
 
 
 func _wait_for_ui_mode(expected_mode: int, timeout_ms: int = 5000) -> bool:
