@@ -8,7 +8,7 @@ const CHASE_SPEED := 128.0
 const WANDER_SPEED := 44.0
 const AGGRO_COOLDOWN_SECONDS := 4.0
 
-enum State { IDLE, WANDER, CHASE, COOLDOWN, PASSIVE, RETURN_HOME }
+enum State { IDLE, WANDER, CHASE, COOLDOWN, PASSIVE, RETURN_HOME, LIVE_ACTION }
 
 @onready var anim_sprite: AnimatedSprite2D = $AnimatedSprite2D
 @onready var shadow: Polygon2D = $Shadow
@@ -35,6 +35,15 @@ var _return_retry_timer: float = 0.0
 var _return_resume_state: State = State.WANDER
 var _return_home_suspended: bool = false
 var _cutscene_control_active: bool = false
+# Real-time ambient live action (LiveActionDirector): this enemy hunts a zone NPC
+# instead of wandering, while gameplay continues. Deliberate player contact still
+# starts a battle (the intervention path); catching the victim is judged by the
+# director, which owns hold/cower beats via live_action_hold().
+var _live_action_active: bool = false
+var _live_action_target: Node2D = null
+var _live_action_speed: float = 0.0
+var _live_action_hold_timer: float = 0.0
+var _live_action_contact_cooldown: float = 0.0
 
 func setup(data: Dictionary, world_context: Dictionary) -> void:
 	enemy_data = data
@@ -87,6 +96,8 @@ func _physics_process(delta: float) -> void:
 				_engage_from_return_home()
 			else:
 				_return_home_step(delta)
+		State.LIVE_ACTION:
+			_live_action_step(delta)
 
 	move_and_slide()
 	_update_animation()
@@ -110,10 +121,89 @@ func become_passive() -> void:
 	alert_label.visible = false
 	modulate = Color(1.0, 1.0, 1.0, 0.85)
 
+# ── real-time ambient live action (LiveActionDirector) ─────────────────────────
+
+
+func begin_live_action_chase(target: Node2D, tiles_per_sec: float) -> void:
+	if not visible or is_queued_for_deletion():
+		return
+	_return_home_active = false
+	_return_home_suspended = false
+	_return_path.clear()
+	_live_action_active = true
+	_live_action_target = target
+	_live_action_speed = maxf(tiles_per_sec, 0.5) * float(GameManager.TILE_SIZE)
+	_battle_pending = false
+	alert_label.visible = true
+	state = State.LIVE_ACTION
+
+
+func live_action_hold(seconds: float) -> void:
+	if not _live_action_active:
+		return
+	_live_action_hold_timer = maxf(seconds, 0.0)
+	velocity = Vector2.ZERO
+
+
+func set_live_action_contact_cooldown(seconds: float) -> void:
+	## After a fled/lost battle the pursuer resumes the show, but must not chain
+	## straight into another battle off the player still standing next to it.
+	_live_action_contact_cooldown = maxf(seconds, 0.0)
+
+
+func is_in_live_action() -> bool:
+	return _live_action_active
+
+
+func is_live_action_engaged() -> bool:
+	## False when a battle cooldown/passivation stole the state machine — the
+	## director re-asserts (or drops this pursuer) on its next tick.
+	return _live_action_active and state == State.LIVE_ACTION
+
+
+func end_live_action() -> void:
+	_live_action_active = false
+	_live_action_target = null
+	_live_action_hold_timer = 0.0
+	_live_action_contact_cooldown = 0.0
+	alert_label.visible = false
+	if state == State.LIVE_ACTION:
+		state = State.WANDER
+		_pick_wander_target()
+
+
+func _live_action_step(delta: float) -> void:
+	if _live_action_contact_cooldown > 0.0:
+		_live_action_contact_cooldown -= delta
+	if _live_action_hold_timer > 0.0:
+		_live_action_hold_timer -= delta
+		velocity = Vector2.ZERO
+		return
+	# Deliberate player contact still opens the battle — walking into the hunter
+	# IS how the player breaks the chase up by force.
+	if _player != null and is_instance_valid(_player) and _live_action_contact_cooldown <= 0.0:
+		var player_distance_tiles: float = global_position.distance_to(_player.global_position) / GameManager.TILE_SIZE
+		if player_distance_tiles <= CONTACT_DISTANCE_TILES and not _battle_pending:
+			_battle_pending = true
+			velocity = Vector2.ZERO
+			battle_requested.emit(self)
+			return
+	if _live_action_target == null or not is_instance_valid(_live_action_target):
+		velocity = Vector2.ZERO
+		return
+	var to_target: Vector2 = _live_action_target.global_position - global_position
+	if to_target.length() <= 2.0:
+		velocity = Vector2.ZERO
+		return
+	velocity = to_target.normalized() * _live_action_speed
+
+
 func return_home_to(world_position: Vector2) -> void:
 	## Post-cutscene movement is gameplay-owned. EnemyController follows a grid
 	## path with its normal collision/speed instead of being snapped by cutscene UI.
 	_cutscene_control_active = false
+	_live_action_active = false
+	_live_action_target = null
 	if not visible or is_queued_for_deletion():
 		return
 	if not _return_home_active and not _return_home_suspended:

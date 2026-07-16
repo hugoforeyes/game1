@@ -99,6 +99,11 @@ var spared_enemy_ids: Dictionary = {}
 # — so this index is a stable identity across reloads). Checked before spawning so a
 # picked-up item never respawns just by leaving and re-entering the zone.
 var collected_item_pickup_ids: Dictionary = {}
+# live_action_id -> true once that zone's ambient live action has resolved (its
+# pursuers were defeated, the gating objective completed, or the player broke it
+# up by talking to the victim). Checked by LiveActionDirector before starting so
+# a finished show never replays just by re-entering the zone.
+var ended_live_action_ids: Dictionary = {}
 # String(chapter_number) -> true once that chapter's story is done (all main
 # quests completed + its boss zone reached — see ChapterFlow._check_chapter_
 # completion). Unlocks the NEXT chapter on the world map; the player travels
@@ -757,6 +762,15 @@ func mark_item_pickup_collected(pickup_id: String) -> void:
 func is_item_pickup_collected(pickup_id: String) -> bool:
 	return collected_item_pickup_ids.has(pickup_id)
 
+func mark_live_action_ended(live_action_id: String) -> void:
+	if live_action_id.is_empty():
+		return
+	ended_live_action_ids[live_action_id] = true
+	_autosave()
+
+func is_live_action_ended(live_action_id: String) -> bool:
+	return ended_live_action_ids.has(live_action_id)
+
 func mark_chapter_completed(chapter_number: int) -> void:
 	completed_chapter_numbers[str(chapter_number)] = true
 	_autosave()
@@ -773,6 +787,7 @@ func reset_combat_progress() -> void:
 	companion_progress.clear()
 	talk_log.clear()
 	collected_item_pickup_ids.clear()
+	ended_live_action_ids.clear()
 	completed_chapter_numbers.clear()
 
 # ── serialization (consumed by SaveManager) ────────────────────────────────────
@@ -787,6 +802,7 @@ func serialize_progress() -> Dictionary:
 		"companion_progress": companion_progress.duplicate(true),
 		"talk_log": talk_log.duplicate(true),
 		"collected_item_pickup_ids": collected_item_pickup_ids.duplicate(true),
+		"ended_live_action_ids": ended_live_action_ids.duplicate(true),
 		"completed_chapter_numbers": completed_chapter_numbers.duplicate(true),
 	}
 
@@ -799,6 +815,7 @@ func apply_progress(data: Dictionary) -> void:
 	companion_progress = (data.get("companion_progress", {}) as Dictionary).duplicate(true)
 	talk_log = (data.get("talk_log", {}) as Dictionary).duplicate(true)
 	collected_item_pickup_ids = (data.get("collected_item_pickup_ids", {}) as Dictionary).duplicate(true)
+	ended_live_action_ids = (data.get("ended_live_action_ids", {}) as Dictionary).duplicate(true)
 	completed_chapter_numbers = (data.get("completed_chapter_numbers", {}) as Dictionary).duplicate(true)
 	player_stats_changed.emit()
 

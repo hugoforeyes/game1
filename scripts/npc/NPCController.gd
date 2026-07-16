@@ -19,6 +19,7 @@ enum State {
 	CHOOSING_TARGET,
 	MOVING,
 	BLOCKED,
+	LIVE_ACTION,
 }
 
 @onready var anim_sprite: AnimatedSprite2D = $AnimatedSprite2D
@@ -73,6 +74,10 @@ var _return_home_active: bool = false
 var _return_home_tile := Vector2i.ZERO
 var _return_home_position := Vector2.ZERO
 var _cutscene_control_active: bool = false
+# Real-time ambient live action (LiveActionDirector): the show overrides normal
+# wander while gameplay continues — never a cutscene, never ui_blocking.
+var _live_action_active: bool = false
+var _live_action_speed: float = 0.0
 
 func setup(data: Dictionary, world_context: Dictionary) -> void:
 	npc_data = data
@@ -181,11 +186,19 @@ func _apply_normal_actor_state() -> void:
 		set_physics_process(true)
 		_resume_return_home()
 		return
+	if _live_action_active:
+		# Same rule for a running ambient live action: the director owns movement
+		# until the show resolves; a narrative refresh must not restart wandering.
+		_set_actor_collision_enabled(true)
+		set_physics_process(true)
+		state = State.LIVE_ACTION
+		return
 	_set_actor_collision_enabled(true)
 	_start_behavior()
 
 func _apply_hidden_actor_state() -> void:
 	_cancel_return_home()
+	_live_action_active = false
 	visible = false
 	velocity = Vector2.ZERO
 	set_physics_process(false)
@@ -194,6 +207,7 @@ func _apply_hidden_actor_state() -> void:
 
 func _apply_corpse_actor_state() -> void:
 	_cancel_return_home()
+	_live_action_active = false
 	visible = true
 	velocity = Vector2.ZERO
 	state = State.IDLE
@@ -210,6 +224,7 @@ func _apply_corpse_actor_state() -> void:
 
 func _apply_inactive_actor_state() -> void:
 	_cancel_return_home()
+	_live_action_active = false
 	visible = true
 	velocity = Vector2.ZERO
 	state = State.IDLE
@@ -288,6 +303,8 @@ func _physics_process(delta: float) -> void:
 			_choose_next_target()
 		State.MOVING:
 			_move_to_target()
+		State.LIVE_ACTION:
+			_live_action_step()
 		_:
 			velocity = Vector2.ZERO
 
@@ -297,10 +314,113 @@ func _physics_process(delta: float) -> void:
 	_update_bubble_alpha(delta)
 
 
+# ── real-time ambient live action (LiveActionDirector) ─────────────────────────
+# The director overrides normal wander while the player keeps playing: the NPC
+# keeps its body, collision, animation, bubble and interaction — only WHERE it
+# moves is scripted. Waypoints come from the director; this node only walks them
+# with its ordinary A* pathing so it can never phase through walls.
+
+
+func begin_live_action(tiles_per_sec: float) -> void:
+	if not can_return_home():
+		return
+	_cancel_return_home()
+	_live_action_active = true
+	_live_action_speed = maxf(tiles_per_sec, 0.5) * float(GameManager.TILE_SIZE)
+	current_tile = _pixel_to_tile(global_position)
+	velocity = Vector2.ZERO
+	active_path.clear()
+	state = State.LIVE_ACTION
+
+
+func live_action_move_to(tile: Vector2i) -> bool:
+	## Directed waypoint. Returns false when the tile is unreachable so the
+	## director can pick another one.
+	if not _live_action_active:
+		return false
+	current_tile = _pixel_to_tile(global_position)
+	if tile == current_tile:
+		return false
+	var path := _find_path(current_tile, tile)
+	if path.is_empty():
+		return false
+	active_path = path
+	active_path_index = 0
+	desired_tile = tile
+	_set_next_path_target()
+	previous_position = global_position
+	stuck_timer = 0.0
+	state = State.LIVE_ACTION
+	return true
+
+
+func live_action_hold() -> void:
+	if not _live_action_active:
+		return
+	active_path.clear()
+	velocity = Vector2.ZERO
+
+
+func live_action_idle() -> bool:
+	## True when the NPC finished (or lost) its current waypoint and awaits the next.
+	return _live_action_active and (active_path.is_empty() or active_path_index >= active_path.size())
+
+
+func is_in_live_action() -> bool:
+	return _live_action_active
+
+
+func is_live_action_engaged() -> bool:
+	## False when something else (interaction freeze, a cutscene release) stole the
+	## state machine — the director re-asserts on its next tick.
+	return _live_action_active and state == State.LIVE_ACTION
+
+
+func is_player_engaged() -> bool:
+	return _in_interaction_range
+
+
+func end_live_action() -> void:
+	if not _live_action_active:
+		return
+	_live_action_active = false
+	_live_action_speed = 0.0
+	active_path.clear()
+	velocity = Vector2.ZERO
+	if state == State.LIVE_ACTION:
+		state = State.IDLE
+
+
+func _live_action_step() -> void:
+	if active_path.is_empty() or active_path_index >= active_path.size():
+		velocity = Vector2.ZERO
+		return
+	var distance: float = global_position.distance_to(target_position)
+	if distance <= ARRIVE_DISTANCE:
+		global_position = target_position
+		current_tile = target_tile
+		active_path_index += 1
+		if active_path_index >= active_path.size():
+			velocity = Vector2.ZERO
+			active_path.clear()
+			return
+		_set_next_path_target()
+		return
+	velocity = global_position.direction_to(target_position) * _live_action_speed
+	move_and_slide()
+	_update_stuck_timer()
+	if get_slide_collision_count() > 0 or stuck_timer >= STUCK_TIME_LIMIT:
+		# Blocked mid-run (a body crossed the route): drop the waypoint and let the
+		# director issue a fresh one instead of waiting out a BLOCKED timer.
+		active_path.clear()
+		velocity = Vector2.ZERO
+
+
 func return_home_to(world_position: Vector2) -> void:
 	## Gameplay-owned post-cutscene return. The NPC keeps its ordinary physics,
 	## collision, animation and interaction while navigating back to this point.
 	_cutscene_control_active = false
+	_live_action_active = false
 	if not can_return_home():
 		return
 	_return_home_active = true
@@ -453,6 +573,10 @@ func _update_interaction() -> void:
 		_in_interaction_range = false
 		if _return_home_active:
 			_resume_return_home()
+		elif _live_action_active:
+			# The interaction freeze paused the show; hand the state machine back to
+			# the director (it re-issues the next waypoint on its own tick).
+			state = State.LIVE_ACTION
 		else:
 			state = State.CHOOSING_TARGET
 	if _in_interaction_range:
