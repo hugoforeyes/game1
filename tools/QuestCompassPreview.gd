@@ -2,7 +2,7 @@ extends Node2D
 ## Scripted QA for QuestCompassView: drives the REAL QuestManager hint-reveal
 ## flow (production code) plus a fake "Main" stub exposing the same
 ## lookup methods Main.gd provides, so the compass's own logic (intent
-## resolution, hint-gating, dynamic enemy targeting, edge-clamp math, and
+## resolution without hint-gating, dynamic enemy targeting, edge-clamp math, and
 ## persistent exact-target pointing) is exercised
 ## for real while the entity-position source is fully controlled.
 
@@ -47,31 +47,66 @@ func _ready() -> void:
 	add_child(_compass)
 	_compass.setup(_fake_main, player)
 
+	# ── NO ACTIVE QUEST: point to the next MAIN quest giver ────────────────────
+	_setup_unaccepted_quests()
+	GameManager.imported_scene_context = {"zone_id": "zone_03"}
+	QuestManager.quests_changed.emit()
+	await get_tree().process_frame
+	assert(QuestManager.tracked_quest_and_objective().is_empty(), "sanity: no quest should be active before talking to a giver")
+	assert(str(_compass._intent.get("purpose", "")) == "main_quest_giver", "no active quest: compass must fall back to a main quest giver")
+	assert(str(_compass._intent.get("entity_id", "")) == "npc_main_giver", "no active quest: side quest giver must not take priority")
+	assert(str(_compass._intent.get("zone_id", "")) == "zone_03", "no active quest: compass must retain the main giver's zone")
+	print("[QuestCompassPreview] OK: no active quest points to main quest giver -> ", _compass._intent)
+	assert(str(_compass._side_offer_intent.get("purpose", "")) == "side_quest_giver", "same-zone side quest offer must get its own pointer")
+	assert(str(_compass._side_offer_intent.get("entity_id", "")) == "npc_side_giver", "secondary pointer must target the side quest giver")
+	assert(_compass._side_arrow.material is ShaderMaterial, "side quest pointer must use its dedicated color material")
+	var side_tint := (_compass._side_arrow.material as ShaderMaterial).get_shader_parameter("tint_color") as Color
+	assert(side_tint.is_equal_approx(_compass.SIDE_QUEST_COLOR), "side quest pointer must use the configured light-blue tint")
+	_compass._update_pointer_for(
+		_target_world_pos, _compass._side_offer_intent, _compass._side_arrow, _compass._side_badge,
+		_compass.SIDE_EDGE_MARGIN, _compass.SIDE_TARGET_POINTER_GAP,
+	)
+	assert(_compass._side_badge.texture != null, "side quest pointer must load its dedicated quest-offer badge")
+	assert(_compass._side_badge.texture.resource_path.ends_with("quest_offer_side.png"), "side quest pointer must not reuse the generic NPC badge")
+	print("[QuestCompassPreview] OK: same-zone side quest uses a distinct secondary pointer -> ", _compass._side_offer_intent)
+
+	# The same offer in another zone must keep its target zone so normal compass
+	# resolution points to the correct exit leading toward that giver.
+	GameManager.imported_scene_context = {"zone_id": "zone_01"}
+	QuestManager.quests_changed.emit()
+	await get_tree().process_frame
+	assert(str(_compass._intent.get("zone_id", "")) == "zone_03", "cross-zone main quest offer must still target the giver's zone")
+	assert(_compass._resolve_target_position() == _target_world_pos, "cross-zone main quest offer must resolve through the exit lookup")
+	assert(_compass._side_offer_intent.is_empty(), "side quest pointer must not advertise an offer in another zone")
+	print("[QuestCompassPreview] OK: cross-zone no-quest fallback points toward giver zone")
+
 	_setup_quest()
 
-	# ── SAME-ZONE case: hint-gated ──────────────────────────────────────────────
-	# Player is standing in the objective's own zone (zone_03) -> precise pointing
-	# must wait for all 3 hint levels.
+	# ── SAME-ZONE case: ALWAYS shown ────────────────────────────────────────────
+	# Player is standing in the objective's own zone (zone_03). Precise pointing
+	# is available immediately, before any of the 3 optional hints are heard.
 	GameManager.imported_scene_context = {"zone_id": "zone_03"}
 	QuestManager.tracked_quest_id = "quest_02"
 	QuestManager.quests_changed.emit()
 	await get_tree().process_frame
+	assert(_compass._side_offer_intent.is_empty(), "accepted/active side quests must no longer show an offer pointer")
 
-	assert(_compass._intent.is_empty(), "same-zone: compass must stay hidden before all 3 hints are heard")
-	print("[QuestCompassPreview] OK: same-zone hidden before hints")
+	assert(not QuestManager.is_objective_fully_hinted("quest_02", "o2"), "sanity: no hints should be revealed yet")
+	assert(not _compass._intent.is_empty(), "same-zone: compass must resolve an intent before any hints are heard")
+	print("[QuestCompassPreview] OK: same-zone intent shown before hints -> ", _compass._intent)
 
 	QuestManager.reveal_hint("Maelis", {"quest_id": "quest_02", "objective_id": "o2", "level": 1}, "Gợi ý mức 1")
 	await get_tree().process_frame
-	assert(_compass._intent.is_empty(), "same-zone: must still be hidden after only 1/3 hints")
+	assert(not _compass._intent.is_empty(), "same-zone: compass must remain shown after only 1/3 hints")
 	QuestManager.reveal_hint("Maelis", {"quest_id": "quest_02", "objective_id": "o2", "level": 2}, "Gợi ý mức 2")
 	await get_tree().process_frame
-	assert(_compass._intent.is_empty(), "same-zone: must still be hidden after only 2/3 hints")
+	assert(not _compass._intent.is_empty(), "same-zone: compass must remain shown after only 2/3 hints")
 	QuestManager.reveal_hint("Maelis", {"quest_id": "quest_02", "objective_id": "o2", "level": 3}, "Gợi ý mức 3")
 	await get_tree().process_frame
 
 	assert(QuestManager.is_objective_fully_hinted("quest_02", "o2"), "should be fully hinted now")
-	assert(not _compass._intent.is_empty(), "same-zone: compass must resolve an intent once fully hinted")
-	print("[QuestCompassPreview] OK: same-zone intent resolved after 3/3 hints -> ", _compass._intent)
+	assert(not _compass._intent.is_empty(), "same-zone: compass must remain shown after all hints")
+	print("[QuestCompassPreview] OK: same-zone intent remains shown after 3/3 hints -> ", _compass._intent)
 
 	# ── CROSS-ZONE case: ALWAYS shown, hint level irrelevant ───────────────────
 	# A second quest whose objective's zone the player has NOT reached yet, and
@@ -181,6 +216,24 @@ func _test_real_main_nearest_hostile_lookup() -> void:
 	characters.free()
 	main.free()
 	print("[QuestCompassPreview] OK: Main skips enemies that are no longer hostile")
+
+
+func _setup_unaccepted_quests() -> void:
+	var side_quest := {
+		"id": "quest_side_offer",
+		"title": "Việc vặt ven đường",
+		"type": "side",
+		"giver": {"mode": "npc", "zone_id": "zone_03", "npc_id": "npc_side_giver"},
+		"objectives": [{"kind": "talk", "zone_id": "zone_03", "target_npc_id": "npc_side_giver", "id": "o1"}],
+	}
+	var main_quest := {
+		"id": "quest_main_offer",
+		"title": "Lời gọi đầu tiên",
+		"type": "main",
+		"giver": {"mode": "npc", "zone_id": "zone_03", "npc_id": "npc_main_giver"},
+		"objectives": [{"kind": "talk", "zone_id": "zone_03", "target_npc_id": "npc_main_giver", "id": "o1"}],
+	}
+	QuestManager.load_chapter_quests([side_quest, main_quest])
 
 
 func _setup_quest() -> void:

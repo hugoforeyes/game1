@@ -12,8 +12,8 @@ signal quests_changed
 ## Emitted whenever the player talks to an NPC (the quest "talk" beat). Used by the
 ## CutsceneDirector to fire npc_talked-triggered cutscenes.
 signal npc_talked(npc_id: String)
-## Emitted the moment a player has now heard all 3 hint levels for one objective —
-## QuestCompassView listens for this to start pointing toward the exact target.
+## Emitted the moment a player has heard all 3 narrative hint levels for one
+## objective. Wayfinding does not depend on this milestone.
 signal objective_fully_hinted(quest_id: String, objective_id: String)
 ## Emitted after a moral choice resolves, carrying the applied-consequence
 ## summary ({option_id, option_label, consequence_text, npc_reaction, chips})
@@ -171,6 +171,7 @@ func load_chapter_quests(chapter_quests: Array) -> void:
 	revealed_hints = {}
 	tracked_quest_id = ""
 	visited_zones = {}
+	choice_illustrations = {}
 	for quest in chapter_quests:
 		if not (quest is Dictionary):
 			continue
@@ -206,6 +207,7 @@ func notify_zone_entered(zone_id: String) -> void:
 			_activate_quest(quest)
 	_progress_reach_objectives()
 	_settle_collect_objectives()
+	_settle_defeat_objectives()
 	quests_changed.emit()
 	_refresh_tracker()
 
@@ -272,6 +274,7 @@ func notify_npc_talked(npc_id: String) -> void:
 				_try_deliver(quest, objective)
 	_grant_current_npc_collect_objectives(npc_id)
 	_settle_collect_objectives()
+	_settle_defeat_objectives()
 	# Emit only after every synchronous talk/choice/collect mutation above. Planned
 	# cutscenes use connects.from as a prerequisite, so observers must see the
 	# objective that this conversation just completed. Keep this before
@@ -403,6 +406,37 @@ func _settle_collect_objectives() -> bool:
 			var state: Dictionary = _state_of(quest)
 			state["progress"] = owned
 			if owned >= int(objective.get("count", 1)):
+				_complete_current_objective(quest)
+				changed = true
+			else:
+				break
+	return changed
+
+
+## Re-evaluate every active quest's CURRENT objective against the enemies the
+## player has ALREADY defeated or spared. notify_enemy_defeated() only fires at the
+## instant a foe dies, so an enemy slain BEFORE its defeat objective became active
+## (e.g. clearing the Ash Forest trail before the quest reaches "defeat the beasts")
+## would otherwise never register — and since defeated enemies never respawn
+## (Main._spawn_enemies skips defeated_enemy_ids), the objective could never be
+## completed and the quest would soft-lock. Calling this whenever an objective
+## advances / a zone is entered makes a target-id defeat order-independent, the exact
+## mirror of _settle_collect_objectives for collect steps. Count-based defeats carry
+## no single id to look up, so they stay handled by Main's zone-cleared safety net.
+func _settle_defeat_objectives() -> bool:
+	var changed := false
+	for quest in quests:
+		var guard := 0
+		while guard < 12:
+			guard += 1
+			var objective: Dictionary = _current_objective(quest)
+			if objective.is_empty() or str(objective.get("kind")) != "defeat":
+				break
+			var target: String = str(objective.get("target_enemy_id", ""))
+			if target.is_empty():
+				break
+			if GameManager.defeated_enemy_ids.has(target) \
+					or GameManager.spared_enemy_ids.has(target):
 				_complete_current_objective(quest)
 				changed = true
 			else:
@@ -644,7 +678,7 @@ func reveal_hint(
 
 func is_objective_fully_hinted(quest_id: String, objective_id: String) -> bool:
 	## True once the player has heard all 3 hint levels (L1 vague -> L3 exact) for
-	## this objective — QuestCompassView's gate for showing a precise pointer.
+	## this objective. Used for hint progress; the quest compass is always available.
 	var key := "%s:%s" % [quest_id, objective_id]
 	return (revealed_hints.get(key, {}) as Dictionary).size() >= 3
 
@@ -676,6 +710,48 @@ func tracked_quest_and_objective() -> Dictionary:
 	if display_quest.is_empty():
 		return {}
 	return {"quest": display_quest, "objective": _current_objective(display_quest)}
+
+
+func main_quest_to_receive() -> Dictionary:
+	## The next inactive main quest that can be accepted from an NPC. This is the
+	## compass fallback when the player has no active quest objective yet.
+	for quest in quests:
+		if str(quest.get("type", "main")) != "main":
+			continue
+		if str(_state_of(quest).get("state", "inactive")) != "inactive":
+			continue
+		var npc_id := _quest_giver_npc(quest)
+		if npc_id.is_empty():
+			continue
+		return {
+			"quest": quest,
+			"npc_id": npc_id,
+			"zone_id": _quest_giver_zone(quest),
+		}
+	return {}
+
+
+func side_quest_offers_in_zone(zone_id: String) -> Array[Dictionary]:
+	## Inactive side quests offered by NPCs in this exact zone. The zone match is
+	## deliberate: the secondary compass must never lead through an exit merely
+	## to advertise optional content somewhere else.
+	var offers: Array[Dictionary] = []
+	if zone_id.is_empty():
+		return offers
+	for quest in quests:
+		if str(quest.get("type", "main")) != "side":
+			continue
+		if str(_state_of(quest).get("state", "inactive")) != "inactive":
+			continue
+		var npc_id := _quest_giver_npc(quest)
+		if npc_id.is_empty() or _quest_giver_zone(quest) != zone_id:
+			continue
+		offers.append({
+			"quest": quest,
+			"npc_id": npc_id,
+			"zone_id": zone_id,
+		})
+	return offers
 
 
 func is_tracked_objective_active(quest_id: String, objective_id: String) -> bool:
@@ -811,6 +887,15 @@ func _progress_reach_objectives() -> void:
 			var objective: Dictionary = _current_objective(quest)
 			if objective.is_empty() or str(objective.get("kind")) != "reach":
 				continue
+			# An escort must arrive WITH the player after its objective begins. A
+			# historical visit to the destination cannot auto-complete it at the
+			# source and skip the whole follow/protection sequence.
+			var escort_value: Variant = objective.get("escort", {})
+			if escort_value is Dictionary and not (escort_value as Dictionary).is_empty():
+				if current_zone_id == str(objective.get("zone_id", "")):
+					_complete_current_objective(quest)
+					advanced = true
+				continue
 			# Completes only once the player has genuinely set foot in the target zone
 			# (exact match against visited zones), never via a play-order shortcut.
 			if visited_zones.has(str(objective.get("zone_id"))):
@@ -830,6 +915,23 @@ func _complete_current_objective(quest: Dictionary) -> void:
 	else:
 		_queue_quest_announcement("objective", quest)
 		print("[Quest] %s objective %d/%d" % [quest.get("id"), state["objective_index"], objectives.size()])
+
+
+## Card illustrations for the chapter's moral choice, keyed by option id —
+## prefetched by ChapterFlow at chapter load (from each option's
+## illustration_url, painted by the zone-level scene_choice_illustrations
+## step), consumed by MoralChoiceView. Cleared with each chapter's quests.
+var choice_illustrations: Dictionary = {}
+
+
+func set_choice_illustration(option_id: String, texture: Texture2D) -> void:
+	if option_id.is_empty() or texture == null:
+		return
+	choice_illustrations[option_id] = texture
+
+
+func choice_illustration(option_id: String) -> Texture2D:
+	return choice_illustrations.get(option_id) as Texture2D
 
 
 ## The {quest, objective} payload for a quest whose CURRENT objective is an

@@ -44,6 +44,8 @@ func _ready() -> void:
 	InventoryManager.item_obtained.connect(_on_item_obtained_cutscene)
 	PartyManager.member_joined.connect(_on_party_member_joined)
 	PartyManager.member_left.connect(_on_party_member_left)
+	PartyManager.escort_joined.connect(_on_escort_joined)
+	PartyManager.escort_left.connect(_on_escort_left)
 	NarrativeState.narrative_changed.connect(_on_narrative_changed)
 	if GameManager.has_scene_package():
 		_build_imported_world()
@@ -140,9 +142,11 @@ func _build_imported_world() -> void:
 			var npc_id: String = str(npc_data.get("id", "")).strip_edges()
 			if NarrativeState.should_hide_actor(npc_id):
 				continue
-			# A companion who has joined the party travels as a FOLLOWER, not as a
-			# stationary NPC — skip their authored NPC so there aren't two of them.
-			if PartyManager.is_member(npc_id):
+			# Travelling actors use a follower in source/intermediate zones. An escort's
+			# destination is the exception: build its authored stationary NPC there so
+			# completing the reach objective cannot create a missing/duplicate frame.
+			var world_zone_id := str(GameManager.get_scene_context().get("zone_id", ""))
+			if PartyManager.should_follow_in_zone(npc_id, world_zone_id):
 				continue
 			var authored_tile := _read_tile_position(npc_data)
 			var resolved_tile := authored_tile
@@ -227,9 +231,10 @@ func _mount_party_hud() -> void:
 
 
 func _mount_quest_compass() -> void:
-	# Screen-edge pointer toward the tracked objective's exact target, once fully
-	# hinted. Needs Main's live entity lookups + the player node, unlike the
-	# self-contained HUD views above.
+	# Screen-edge pointer toward the tracked objective, or toward the next main
+	# quest giver before any quest is active. A separate light-blue pointer advertises
+	# an unaccepted side quest in this zone only. Needs Main's live entity lookups
+	# + the player node, unlike the self-contained HUD views above.
 	var compass: QuestCompassView = QuestCompassViewScript.new()
 	compass.name = "QuestCompass"
 	add_child(compass)
@@ -237,24 +242,30 @@ func _mount_quest_compass() -> void:
 
 
 func _spawn_party_followers() -> void:
-	for npc_id in PartyManager.active_member_ids():
+	var zone_id := str(GameManager.get_scene_context().get("zone_id", ""))
+	for npc_id in PartyManager.follower_ids_for_zone(zone_id):
 		_spawn_follower(str(npc_id))
 
 func _spawn_follower(npc_id: String) -> void:
 	if NarrativeState.should_hide_actor(npc_id):
+		return
+	var zone_id := str(GameManager.get_scene_context().get("zone_id", ""))
+	if not PartyManager.should_follow_in_zone(npc_id, zone_id):
 		return
 	if _follower_for(npc_id) != null:
 		return
 	var follower: Node2D = PartyFollowerScript.new() as Node2D
 	follower.name = "Follower_%s" % npc_id
 	generated_characters.add_child(follower)
-	# stagger lag per member so multiple companions form a line
-	var lag: int = 26 + PartyManager.active_member_ids().find(npc_id) * 16
-	follower.setup(npc_id, PartyManager.companion_texture(npc_id), player, maxi(26, lag))
+	# Stable formation: companions first, protected escorts behind them.
+	var ordered: Array = PartyManager.follower_ids_for_zone(zone_id)
+	var lag: int = 26 + maxi(0, ordered.find(npc_id)) * 16
+	follower.setup(npc_id, PartyManager.travelling_texture(npc_id), player, lag)
 
 func _follower_for(npc_id: String) -> Node2D:
 	for child in generated_characters.get_children():
-		if child is Node2D and str((child as Node2D).get("npc_id")) == npc_id:
+		if child is Node2D and child.is_in_group("party_follower") \
+				and str((child as Node2D).get("npc_id")) == npc_id:
 			return child as Node2D
 	return null
 
@@ -269,12 +280,90 @@ func _on_party_member_left(npc_id: String) -> void:
 	var follower := _follower_for(npc_id)
 	if follower != null:
 		follower.queue_free()
+	_materialize_authored_npc.call_deferred(npc_id)
+
+
+func _on_escort_joined(npc_id: String) -> void:
+	var zone_id := str(GameManager.get_scene_context().get("zone_id", ""))
+	if not PartyManager.should_follow_in_zone(npc_id, zone_id):
+		return
+	_despawn_npc(npc_id)
+	if not NarrativeState.should_hide_actor(npc_id):
+		_spawn_follower(npc_id)
+
+
+func _on_escort_left(npc_id: String) -> void:
+	var follower := _follower_for(npc_id)
+	if follower != null:
+		follower.queue_free()
+	# Usually the destination NPC was already built while the escort objective was
+	# still current. This fallback covers manual release/cancellation in another
+	# authored zone without ever duplicating that existing stationary actor.
+	_materialize_authored_npc.call_deferred(npc_id)
 
 func _despawn_npc(npc_id: String) -> void:
 	for child in generated_characters.get_children():
+		if child.is_in_group("party_follower"):
+			continue
 		var data: Variant = child.get("npc_data")
 		if data is Dictionary and str((data as Dictionary).get("id", "")) == npc_id:
 			child.queue_free()
+
+
+func _stationary_npc_for(npc_id: String) -> Node2D:
+	for child in generated_characters.get_children():
+		if not (child is Node2D) or child.is_in_group("party_follower") \
+				or child.is_queued_for_deletion():
+			continue
+		var data: Variant = child.get("npc_data")
+		if data is Dictionary and str((data as Dictionary).get("id", "")) == npc_id:
+			return child as Node2D
+	return null
+
+
+func _materialize_authored_npc(npc_id: String) -> void:
+	if not GameManager.has_scene_package() or generated_characters == null \
+			or _stationary_npc_for(npc_id) != null \
+			or NarrativeState.should_hide_actor(npc_id):
+		return
+	var zone_id := str(GameManager.get_scene_context().get("zone_id", ""))
+	if PartyManager.should_follow_in_zone(npc_id, zone_id):
+		return
+	var package_data: Dictionary = GameManager.get_scene_package()
+	var authored: Dictionary = {}
+	for raw_npc in ((package_data.get("characters", {}) as Dictionary).get("npcs", []) as Array):
+		if raw_npc is Dictionary and str((raw_npc as Dictionary).get("id", "")) == npc_id:
+			authored = (raw_npc as Dictionary).duplicate(true)
+			break
+	if authored.is_empty():
+		return
+
+	var tile_context: Dictionary = _build_tile_context(package_data, background.texture)
+	var map_size: Vector2i = tile_context.get("map_tile_size", Vector2i.ZERO) as Vector2i
+	var occupied: Dictionary = {}
+	var blocked: Dictionary = (tile_context.get("blocked_tiles", {}) as Dictionary).duplicate()
+	blocked[_tile_key(Vector2i(player.global_position / GameManager.TILE_SIZE))] = true
+	for child in generated_characters.get_children():
+		if not (child is Node2D) or child.is_in_group("party_follower") \
+				or child.is_queued_for_deletion():
+			continue
+		var data: Variant = child.get("npc_data")
+		if not (data is Dictionary):
+			continue
+		var tile := Vector2i((child as Node2D).global_position / GameManager.TILE_SIZE)
+		occupied[_tile_key(tile)] = true
+		blocked[_tile_key(tile)] = true
+	var authored_tile := _read_tile_position(authored)
+	var resolved_tile := _nearest_open_tile(authored_tile, map_size, blocked)
+	if resolved_tile != authored_tile:
+		authored["position_tile"] = {"x": resolved_tile.x, "y": resolved_tile.y}
+		var movement: Dictionary = (authored.get("movement", {}) as Dictionary).duplicate(true)
+		var anchor_raw: Dictionary = movement.get("anchor_tile", {}) as Dictionary
+		var anchor := Vector2i(int(anchor_raw.get("x", 0)), int(anchor_raw.get("y", 0)))
+		if anchor == authored_tile:
+			movement["anchor_tile"] = {"x": resolved_tile.x, "y": resolved_tile.y}
+			authored["movement"] = movement
+	_spawn_npc(authored, tile_context, occupied)
 
 func _on_narrative_changed() -> void:
 	_apply_actor_states_to_spawned_characters()
@@ -1223,9 +1312,17 @@ func _on_battle_finished(result: String, enemy_id: String, enemy: Node) -> void:
 				enemy.start_battle_cooldown()
 		"defeat":
 			player.global_position = _tile_to_pixel_center(_player_spawn_tile)
+			_reseed_followers_after_player_teleport()
 			if is_instance_valid(enemy):
 				enemy.global_position = enemy._tile_to_pixel_center(enemy.spawn_tile)
 				enemy.start_battle_cooldown()
+
+
+func _reseed_followers_after_player_teleport() -> void:
+	for child in generated_characters.get_children():
+		if child.is_in_group("party_follower") \
+				and child.has_method("reseed_after_player_teleport"):
+			child.call("reseed_after_player_teleport")
 
 func _spawn_item_pickups(tile_context: Dictionary) -> void:
 	if InventoryManager.catalog.is_empty():
@@ -1396,7 +1493,8 @@ func _play_triggered_cutscene(cutscene: Dictionary) -> void:
 			# after the cutscene UI and letterbox have fully left the stage.
 			AnnouncementCenter.set_conversation_active(false)
 		)
-	cutscene_player.play(actions, self, player, generated_characters, start_tiles)
+	cutscene_player.play(actions, self, player, generated_characters, start_tiles,
+			cutscene.get("ghost_actors", []) as Array)
 
 func _remaining_hostile_count() -> int:
 	var count := 0

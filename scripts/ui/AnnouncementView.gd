@@ -4,7 +4,7 @@ extends CanvasLayer
 ## ribbon header, a filigree medallion (emblem or NPC portrait), radiating
 ## light, a big serif title, a gem divider, a subtitle and an "Enter — Tiếp tục"
 ## chip, per the announce_v1 mockup. Kinds: new_quest / objective /
-## quest_complete / hint / companion.
+## quest_complete / hint / companion / escort.
 ##
 ## Authored crisp in native 1024x576 (unscaled layer). present(payload) plays
 ## the entrance; Enter/Space/click (after a short grace) fades out and emits
@@ -24,6 +24,7 @@ const HEADERS := {
 	"quest_complete": "HOÀN THÀNH NHIỆM VỤ",
 	"hint": "GỢI Ý MỚI",
 	"companion": "ĐỒNG ĐỘI MỚI",
+	"escort": "NHÂN VẬT HỘ TỐNG",
 }
 const EMBLEMS := {
 	"new_quest": "emblem_scroll.png",
@@ -31,6 +32,7 @@ const EMBLEMS := {
 	"quest_complete": "emblem_laurel.png",
 	"hint": "emblem_lantern.png",
 	"companion": "emblem_star.png",
+	"escort": "emblem_star.png",
 }
 
 var _root: Control
@@ -131,6 +133,13 @@ func _content_for(kind: String, payload: Dictionary) -> Dictionary:
 				"subtitle": str(hint.get("text", "")),
 				"meta": "Gợi ý %s / III" % ["I", "II", "III"][level - 1],
 				"portrait": hint.get("portrait"),
+			}
+		"escort":
+			return {
+				"title": str(payload.get("name", "")),
+				"subtitle": "đã đi cùng nhóm · không thể chiến đấu",
+				"meta": "Bảo vệ đến điểm đến",
+				"portrait": payload.get("portrait"),
 			}
 		_:  # companion
 			var role := str(payload.get("role", "")).strip_edges()

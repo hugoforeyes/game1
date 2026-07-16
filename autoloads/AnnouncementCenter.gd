@@ -11,7 +11,7 @@ const AnnouncementViewScript := preload("res://scripts/ui/AnnouncementView.gd")
 const ObjectInteractionViewScript := preload("res://scripts/ui/ObjectInteractionView.gd")
 
 ## Narrative playback order (stable within a kind): acquired items are revealed
-## before their resulting quest/objective updates; companion remains the finale.
+## before their resulting quest/objective updates; companion/escort remain finale.
 const KIND_PRIORITY := {
 	"item": 0,
 	"new_quest": 1,
@@ -19,6 +19,7 @@ const KIND_PRIORITY := {
 	"quest_complete": 3,
 	"hint": 4,
 	"companion": 5,
+	"escort": 5,
 }
 ## These events never fall back to a corner/top toast. Keeping the policy here
 ## makes it impossible for individual QuestManager call sites to drift apart.

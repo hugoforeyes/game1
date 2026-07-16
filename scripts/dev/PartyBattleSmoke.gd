@@ -48,6 +48,15 @@ func _ready() -> void:
 		"smoke_enemy", "Smoke Echo", "minion", 2, true, Vector2i(3, 3)
 	)
 	main_helper.free()
+	# Exercise the CATALOG enemy-skill system end-to-end: the primary foe carries
+	# a real backend-shaped loadout (frost_grasp is hard-CC so the echo-stripping
+	# rule is also observable) and the automated battle drives the new dispatch.
+	enemy_data["skill_loadout"] = {
+		"skill_ids": ["venom_spit", "bone_ward", "frost_grasp"],
+		"telegraphs": {"venom_spit": "Nọc độc sủi bọt giữa hai hàm răng..."},
+		"source": "llm",
+	}
+	await _assert_escort_battle_contract(enemy_data)
 	_battle = BattleSceneScript.new()
 	add_child(_battle)
 	_battle.battle_finished.connect(_on_finished)
@@ -62,8 +71,10 @@ func _ready() -> void:
 		"echo XP must be reduced")
 	_assert_enemy_identity_layout()
 	_assert_visual_catalog()
+	_assert_enemy_skill_system()
 	_assert_boss_party_scaling(enemy_data)
 	_assert_sp_pip_fit()
+	_assert_starting_sp_policy()
 	_assert_ally_card_hierarchy()
 	_assert_companion_command_access()
 	_assert_item_effect_copy()
@@ -201,6 +212,59 @@ func _assert_sp_pip_fit() -> void:
 				"SP pips must shrink only when their natural row is too wide")
 		row.free()
 	print("[PartySmoke] SP pip fit OK — full and compact cards remain bounded")
+
+
+func _assert_starting_sp_policy() -> void:
+	for sample in [
+		{"max": 0, "rank": "minion", "expected": 0},
+		{"max": 1, "rank": "minion", "expected": 1},
+		{"max": 2, "rank": "minion", "expected": 2},
+		{"max": 3, "rank": "minion", "expected": 2},
+		{"max": 6, "rank": "minion", "expected": 3},
+		{"max": 12, "rank": "minion", "expected": 6},
+		{"max": 13, "rank": "minion", "expected": 7},
+		{"max": 6, "rank": "elite", "expected": 4},
+		{"max": 12, "rank": "elite", "expected": 8},
+		{"max": 13, "rank": "elite", "expected": 9},
+		{"max": 6, "rank": "boss", "expected": 5},
+		{"max": 12, "rank": "boss", "expected": 9},
+		{"max": 13, "rank": "boss", "expected": 10},
+		{"max": 6, "rank": "unknown", "expected": 3},
+	]:
+		var actual: int = _battle._starting_sp_for(
+			int(sample["max"]), str(sample["rank"]))
+		_check(actual == int(sample["expected"]),
+			"starting SP formula mismatch for %s" % sample)
+
+	var encounter_rank := str(_battle.enemy.get("rank", "minion"))
+	for index in range(_battle._allies.size()):
+		var ally: Dictionary = _battle._allies[index]
+		var sp_max := int(ally.get("sp_max", 0))
+		var expected: int = int(_battle._starting_sp_for(sp_max, encounter_rank))
+		_check(int(ally.get("sp", -1)) == expected,
+			"every ally must use the shared rank-aware opening SP policy")
+		_check(expected >= 0 and expected <= sp_max,
+			"opening SP must remain within the actor's pool")
+		if encounter_rank == "minion" and sp_max > 2:
+			_check(expected < sp_max,
+				"normal encounters must not refill a nontrivial SP pool")
+
+		# The HUD must immediately represent the partial reserve, not briefly draw
+		# a full row until the first action refreshes the card.
+		var card: Dictionary = _battle._ally_cards[index]
+		var rendered_filled := 0
+		var textured_pips := true
+		for raw_pip in card.get("sp_pips", []) as Array:
+			if not (raw_pip is TextureRect):
+				textured_pips = false
+				break
+			var pip := raw_pip as TextureRect
+			if pip.texture == pip.get_meta("filled_texture"):
+				rendered_filled += 1
+		if textured_pips:
+			_check(rendered_filled == expected,
+				"SP gems must match the partial opening reserve on the first frame")
+	print("[PartySmoke] opening SP policy OK — normal/elite/boss reserves calibrated")
 
 
 func _assert_ally_card_hierarchy() -> void:
@@ -367,6 +431,214 @@ func _assert_visual_catalog() -> void:
 		"missing OpenAiExtension EXPOSED icon",
 	)
 	print("[PartySmoke] visual catalog OK — 31 skill FX + 18 status icons")
+
+
+func _assert_enemy_skill_system() -> void:
+	# Catalog integrity: 29 enemy skills, ids disjoint from the 31 hero/companion
+	# ids, each with its own 4-frame FX strip.
+	_check(GameManager.ENEMY_SKILL_POOL.size() == 29,
+		"enemy skill pool must hold the 29-skill catalog")
+	for raw_id in GameManager.ENEMY_SKILL_POOL.keys():
+		var skill_id := str(raw_id)
+		_check(not GameManager.COMPANION_SKILL_POOL.has(skill_id),
+			"enemy skill id collides with companion pool: %s" % skill_id)
+		var def: Dictionary = GameManager.enemy_skill_def(skill_id)
+		var status_id := str(def.get("status", ""))
+		if not status_id.is_empty():
+			_check(GameManager.STATUS_LIBRARY.has(status_id),
+				"enemy skill %s references unknown status %s" % [skill_id, status_id])
+		var frames: SpriteFrames = _battle._skill_fx_frames(skill_id)
+		_check(frames != null, "missing enemy FX sheet: %s" % skill_id)
+		if frames != null and frames.has_animation("fx"):
+			_check(frames.get_frame_count("fx") == 4,
+				"enemy FX sheet must have 4 frames: %s" % skill_id)
+
+	# Loadout resolution on the live battle: the primary carries the packaged
+	# kit (with the Vietnamese telegraph override), echoes shed hard control.
+	var primary: Dictionary = _battle._foes[0]
+	_check(bool(primary.get("has_catalog_loadout", false)),
+		"primary foe must detect the packaged skill_loadout")
+	var primary_ids: Array[String] = []
+	for skill in primary.get("catalog_skills", []) as Array:
+		primary_ids.append(str((skill as Dictionary).get("id", "")))
+		if str((skill as Dictionary).get("id", "")) == "venom_spit":
+			_check(str((skill as Dictionary).get("telegraph", "")).begins_with("Nọc độc"),
+				"backend Vietnamese telegraph must override the EN default")
+	_check(primary_ids == ["venom_spit", "bone_ward", "frost_grasp"],
+		"primary foe must resolve every packaged catalog id in order")
+	var echo: Dictionary = _battle._foes[1]
+	var echo_ids: Array[String] = []
+	for skill in echo.get("catalog_skills", []) as Array:
+		echo_ids.append(str((skill as Dictionary).get("id", "")))
+	_check(not echo_ids.has("frost_grasp"),
+		"echo reinforcements must shed hard-CC skills")
+	_check(echo_ids.has("venom_spit"),
+		"echo reinforcements keep the non-CC kit")
+
+	# Intent AI: silence strips down to the basic attack; a kit fully on
+	# cooldown also falls back to the basic attack.
+	var intent: Dictionary = _battle._pick_catalog_intent(primary)
+	_check(intent.has("effect"), "catalog intent must be an effect-shaped skill")
+	var ready: Dictionary = primary.get("skill_ready_round", {}) as Dictionary
+	for skill_id in primary_ids:
+		ready[skill_id] = _battle._round_serial + 3
+	var cooled: Dictionary = _battle._pick_catalog_intent(primary)
+	_check(str(cooled.get("id", "x")) == "" and str(cooled.get("name")) == "Attack",
+		"a kit fully on cooldown must fall back to the basic attack")
+	ready.clear()
+	_battle._apply_status(primary, "silence")
+	var silenced: Dictionary = _battle._pick_catalog_intent(primary)
+	_check(str(silenced.get("name")) == "Attack", "silence must strip catalog skills")
+	_battle._remove_status(primary, "silence")
+
+	# Support targeting helpers.
+	var wounded: Dictionary = _battle._most_wounded_foe_ally(primary)
+	_check(wounded.is_empty(), "an unhurt pack has no heal target")
+	echo["hp"] = int(int(echo["max_hp"]) * 0.3)
+	wounded = _battle._most_wounded_foe_ally(primary)
+	_check(str(wounded.get("id", "")) == str(echo.get("id", "")),
+		"the most wounded packmate must be the heal target")
+	echo["hp"] = int(echo["max_hp"])
+	var open_victim: Dictionary = _battle._victim_without_status("poison")
+	_check(not open_victim.is_empty(), "hexes must find an unafflicted party member")
+
+	# The stamped status banner is fire-and-forget and must survive headless.
+	_battle._announce_status_applied(_battle._allies[0], true, "poison")
+	_check(_battle.STATUS_STAMP_VI.size() == GameManager.STATUS_LIBRARY.size(),
+		"every catalog status needs a Vietnamese stamp")
+	for status_id in GameManager.STATUS_LIBRARY.keys():
+		_check(_battle.STATUS_FX_COLORS.has(str(status_id)),
+			"every catalog status needs a signature FX color: %s" % status_id)
+	print("[PartySmoke] enemy skill system OK — loadout, intent AI, echo CC-strip, stamps")
+
+
+func _assert_escort_battle_contract(base_enemy: Dictionary) -> void:
+	const ESCORT_ID := "escort_smoke_ansel"
+	var started: bool = PartyManager.start_escort(ESCORT_ID, {
+		"npc_id": ESCORT_ID,
+		"name": "Ansel Smoke",
+		"battle_mode": "protected",
+		"can_act": false,
+		"hp_mode": "player_max_snapshot",
+	})
+	_check(started, "dev escort must activate through PartyManager")
+	if not started:
+		return
+
+	var snapshot_max := int(GameManager.player_battle_stats().get("max_hp", 1))
+	_check(PartyManager.escort_max_hp(ESCORT_ID) == snapshot_max,
+		"escort max HP must snapshot the player's current battle max")
+	PartyManager.set_escort_hp(ESCORT_ID, snapshot_max - 7)
+
+	var probe := BattleSceneScript.new()
+	add_child(probe)
+	probe.enemy = base_enemy.duplicate(true)
+	probe.enemy["dialogue"] = {}
+	probe.enemy_id = "escort_contract_probe"
+	probe.player_stats = GameManager.player_battle_stats()
+	probe._build_allies()
+	probe._build_foes()
+
+	var escort: Dictionary = {}
+	var escort_index := -1
+	for index in range(probe._allies.size()):
+		if str(probe._allies[index].get("id", "")) == ESCORT_ID:
+			escort = probe._allies[index]
+			escort_index = index
+			break
+	_check(not escort.is_empty(), "active escort must enter the ally card/target lane")
+	if escort.is_empty():
+		PartyManager.end_escort(ESCORT_ID)
+		probe.queue_free()
+		return
+
+	_check(str(escort.get("kind", "")) == "escort", "escort actor kind must stay distinct")
+	_check(int(escort.get("max_hp", 0)) == snapshot_max,
+		"battle actor must preserve PartyManager's max-HP snapshot")
+	_check(probe._ally_hp(escort) == snapshot_max - 7,
+		"escort current HP must persist into battle")
+	_check(not bool(escort.get("can_act", true)) and int(escort.get("sp_max", -1)) == 0,
+		"escort must have no turn or SP pool")
+	_check((escort.get("skills", []) as Array).is_empty()
+		and probe._ally_action_commands(escort).is_empty(),
+		"escort must expose neither skills nor action commands")
+	_check(probe._combat_ally_roster_size() == 3,
+		"escort must not increase the three-combatant roster")
+	_check(probe._targetable_allies().has(escort_index),
+		"standing escort must remain targetable")
+	_check(not probe._living_combat_allies().has(escort_index),
+		"escort must not count as a living combatant")
+	_check(probe._foes.size() == 3,
+		"escort must not add a reinforcement beyond the combat roster")
+
+	var queue: Array[Dictionary] = probe._build_round_queue()
+	var ally_turns := 0
+	var escort_turn_found := false
+	for entry in queue:
+		if str(entry.get("side", "")) != "ally":
+			continue
+		ally_turns += 1
+		if int(entry.get("index", -1)) == escort_index:
+			escort_turn_found = true
+	_check(ally_turns == 3 and not escort_turn_found,
+		"initiative must contain combatants only, never the escort")
+
+	var boss_data := base_enemy.duplicate(true)
+	boss_data["rank"] = "boss"
+	var base_hp := int((boss_data.get("stats", {}) as Dictionary).get("max_hp", 1))
+	var boss_probe := BattleSceneScript.new()
+	boss_probe.enemy = boss_data
+	boss_probe.enemy_id = "escort_contract_boss"
+	boss_probe._allies = probe._allies.duplicate(true)
+	boss_probe._build_foes()
+	_check(int(boss_probe._foes[0].get("max_hp", 0)) == int(round(base_hp * 2.1)),
+		"escort must not increase boss HP scaling")
+	_check(int(boss_probe._foes[0].get("actions_per_round", 0)) == 3,
+		"escort must not increase boss action scaling")
+	boss_probe.free()
+
+	# Give direct heal/shield/status helpers a minimal FX host; this exercises the
+	# real persistent HP path without opening a second animated encounter.
+	probe._root = Control.new()
+	probe.add_child(probe._root)
+	probe._fx_layer = Control.new()
+	probe._root.add_child(probe._fx_layer)
+	probe._heal_raw(escort, true, 3)
+	_check(PartyManager.get_escort_hp(ESCORT_ID) == snapshot_max - 4,
+		"friendly healing must update persistent escort HP")
+	probe._apply_status(escort, "shield", 9.0)
+	_check(probe._absorb_with_shields(escort, 7) == 0,
+		"escort must receive and consume shield status")
+	_check(probe._absorb_with_shields(escort, 5) == 3,
+		"escort shield overflow must reach HP normally")
+
+	# Escort KO is terminal for the attempt, unavailable to revive, restores the
+	# stored snapshot for retry and emits ordinary `defeat` without XP loss.
+	(escort["statuses"] as Array).clear()
+	PartyManager.set_escort_hp(ESCORT_ID, 0)
+	escort["downed"] = true
+	var revive_target: int = await probe._pick_ally_target(true)
+	_check(revive_target == -1, "escort KO must not be a valid revive target")
+	PartyManager.set_escort_hp(ESCORT_ID, 1)
+	escort["downed"] = false
+	probe._apply_status(escort, "poison")
+	var old_xp := GameManager.player_xp
+	GameManager.player_xp = 19
+	probe._round_serial += 1
+	await probe._tick_escort_statuses_for_round()
+	_check(probe.failure_reason == "escort_ko"
+		and probe._pending_finish_result == "defeat",
+		"escort KO must enter the compatible defeat/retry result")
+	_check(GameManager.player_xp == 19,
+		"escort defeat must not apply the normal XP penalty")
+	_check(PartyManager.get_escort_hp(ESCORT_ID) == snapshot_max
+		and not bool(escort.get("downed", true)),
+		"escort defeat must restore snapshot HP for retry")
+	GameManager.player_xp = old_xp
+
+	PartyManager.end_escort(ESCORT_ID)
+	probe.queue_free()
+	print("[PartySmoke] escort battle contract OK — targetable, inert, scaled out, retry-safe")
 
 
 func _assert_boss_party_scaling(base_enemy: Dictionary) -> void:

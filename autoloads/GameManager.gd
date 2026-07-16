@@ -544,6 +544,143 @@ const COMPANION_SKILL_POOL: Dictionary = {
 		"desc": "Slam the shield forward — it may stun."},
 }
 
+# ── enemy skill pool (hostile mirror of the companion pool) ─────────────────────
+## Enemies carry a PERSONAL loadout of skills picked by the backend LLM step
+## (SceneBuilder utils/scene_enemy_skills.py — the catalog there MUST mirror this
+## table; change both together). The backend owns which ids an enemy gets (and a
+## Vietnamese telegraph line per pick); this table owns every combat number.
+## Schema (per skill):
+##   effect          attack | multi | aoe | drain | heal | shield | status
+##   power           attack multiplier (aoe = per-target), heal = flat base
+##   hits            multi only — number of strikes
+##   pierce          attack ignores most defense
+##   status / status_chance   STATUS_LIBRARY id applied on hit (attack/aoe) or
+##                   directly (status); chance defaults to 1.0
+##   target          enemy = the player's party | ally = another foe |
+##                   ally_all = the whole foe pack | self
+##   cooldown        rounds before the skill is ready again after use
+##   windup          true = dramatic telegraphed wind-up (red flash) before firing
+##   telegraph       EN fallback intent line (backend telegraphs override in VI)
+## Every id has a 4-frame FX strip at assets/fx/skills/<id>_sheet.png.
+const ENEMY_SKILL_POOL: Dictionary = {
+	# ── ferocious strikes ──────────────────────────────────────────────────
+	"savage_bite": {"name": "Savage Bite", "power": 1.25, "effect": "attack", "target": "enemy",
+		"cooldown": 1, "telegraph": "It bares its glistening fangs...",
+		"desc": "Feral jaws clamp down on one target."},
+	"crushing_maul": {"name": "Crushing Maul", "power": 1.85, "effect": "attack", "target": "enemy",
+		"cooldown": 2, "windup": true, "telegraph": "It gathers all of its strength...",
+		"desc": "A slow, devastating overhead smash."},
+	"shadow_rend": {"name": "Shadow Rend", "power": 1.35, "effect": "attack", "target": "enemy",
+		"pierce": true, "cooldown": 2, "telegraph": "Darkness pools around its claws...",
+		"desc": "Claws of darkness that tear straight through armor."},
+	"frenzied_claws": {"name": "Frenzied Claws", "power": 0.55, "effect": "multi", "hits": 3,
+		"target": "enemy", "cooldown": 2, "telegraph": "Its claws twitch with wild hunger...",
+		"desc": "A wild flurry of rapid slashes."},
+	"bone_spear": {"name": "Bone Spear", "power": 1.5, "effect": "attack", "target": "enemy",
+		"cooldown": 1, "telegraph": "Splinters of bone knit into a lance...",
+		"desc": "A jagged lance of bone hurled at one target."},
+	"life_leech": {"name": "Life Leech", "power": 1.1, "effect": "drain", "target": "enemy",
+		"cooldown": 2, "telegraph": "A hungry tendril reaches for warm blood...",
+		"desc": "Steals the victim's life to mend the attacker."},
+	# ── venom & elements (attack + affliction) ─────────────────────────────
+	"venom_spit": {"name": "Venom Spit", "power": 0.8, "effect": "attack", "target": "enemy",
+		"status": "poison", "status_chance": 0.85, "cooldown": 1,
+		"telegraph": "Venom bubbles between its teeth...",
+		"desc": "A glob of poison that corrodes and sickens."},
+	"cinder_breath": {"name": "Cinder Breath", "power": 0.9, "effect": "attack", "target": "enemy",
+		"status": "burn", "status_chance": 0.8, "cooldown": 2,
+		"telegraph": "Embers glow deep in its throat...",
+		"desc": "A cone of embers that sets the target alight."},
+	"frost_grasp": {"name": "Frost Grasp", "power": 0.9, "effect": "attack", "target": "enemy",
+		"status": "freeze", "status_chance": 0.45, "cooldown": 3,
+		"telegraph": "The air around it crackles with frost...",
+		"desc": "An icy clutch that can freeze the victim solid."},
+	"numbing_sting": {"name": "Numbing Sting", "power": 0.8, "effect": "attack", "target": "enemy",
+		"status": "paralyze", "status_chance": 0.5, "cooldown": 3,
+		"telegraph": "Its stinger drips with paralytic venom...",
+		"desc": "A paralytic sting that can lock muscles."},
+	"skull_hammer": {"name": "Skull Hammer", "power": 1.0, "effect": "attack", "target": "enemy",
+		"status": "stun", "status_chance": 0.45, "cooldown": 3, "windup": true,
+		"telegraph": "It heaves its weight high for a skull-ringing blow...",
+		"desc": "A concussive blow that can stun outright."},
+	"rust_gnaw": {"name": "Rust Gnaw", "power": 0.85, "effect": "attack", "target": "enemy",
+		"status": "armor_break", "status_chance": 0.9, "cooldown": 2,
+		"telegraph": "Corrosion drips from its maw...",
+		"desc": "Corrosion that eats through armor plating."},
+	# ── pure hexes (status only) ───────────────────────────────────────────
+	"night_shroud": {"name": "Night Shroud", "power": 0.0, "effect": "status", "target": "enemy",
+		"status": "blind", "status_chance": 0.85, "cooldown": 3,
+		"telegraph": "Shadows thicken like spilled ink...",
+		"desc": "A veil of darkness that makes attacks miss."},
+	"hypnotic_gaze": {"name": "Hypnotic Gaze", "power": 0.0, "effect": "status", "target": "enemy",
+		"status": "sleep", "status_chance": 0.7, "cooldown": 4,
+		"telegraph": "Its eyes begin to spin with soft light...",
+		"desc": "A mesmerizing stare that lulls the victim to sleep."},
+	"sealing_hex": {"name": "Sealing Hex", "power": 0.0, "effect": "status", "target": "enemy",
+		"status": "silence", "status_chance": 0.85, "cooldown": 3,
+		"telegraph": "A rune of binding flickers to life...",
+		"desc": "A rune that seals away techniques."},
+	"mire_snare": {"name": "Mire Snare", "power": 0.0, "effect": "status", "target": "enemy",
+		"status": "slow", "status_chance": 0.95, "cooldown": 3,
+		"telegraph": "The ground softens into grasping mud...",
+		"desc": "Clinging mud that drags movement to a crawl."},
+	"curse_of_rot": {"name": "Curse of Rot", "power": 0.0, "effect": "status", "target": "enemy",
+		"status": "weaken", "status_chance": 0.95, "cooldown": 2,
+		"telegraph": "A withering sigil takes shape...",
+		"desc": "A withering curse that saps strength."},
+	"creeping_venom": {"name": "Creeping Venom", "power": 0.0, "effect": "status", "target": "enemy",
+		"status": "poison", "status_chance": 0.95, "cooldown": 2,
+		"telegraph": "Toxic vapor coils toward its prey...",
+		"desc": "Slow-acting toxin guaranteed to take hold."},
+	# ── area attacks (hit the whole party) ─────────────────────────────────
+	"quake_stomp": {"name": "Quake Stomp", "power": 0.75, "effect": "aoe", "target": "enemy",
+		"cooldown": 3, "windup": true, "telegraph": "It rears up — the ground trembles...",
+		"desc": "A ground-shattering stomp that rocks the whole party."},
+	"venom_mist": {"name": "Venom Mist", "power": 0.5, "effect": "aoe", "target": "enemy",
+		"status": "poison", "status_chance": 0.45, "cooldown": 3,
+		"telegraph": "A green haze seeps from its body...",
+		"desc": "A poisonous fog that washes over everyone."},
+	"ember_storm": {"name": "Ember Storm", "power": 0.55, "effect": "aoe", "target": "enemy",
+		"status": "burn", "status_chance": 0.4, "cooldown": 3,
+		"telegraph": "Sparks spiral upward around it...",
+		"desc": "A rain of burning cinders across the battlefield."},
+	"howling_gale": {"name": "Howling Gale", "power": 0.65, "effect": "aoe", "target": "enemy",
+		"cooldown": 3, "telegraph": "A screaming wind begins to rise...",
+		"desc": "A screaming wind that batters the whole party."},
+	"doom_roar": {"name": "Doom Roar", "power": 0.4, "effect": "aoe", "target": "enemy",
+		"status": "weaken", "status_chance": 0.75, "cooldown": 4, "windup": true,
+		"telegraph": "It draws a breath that darkens the air...",
+		"desc": "A terror-laden bellow that weakens all who hear it."},
+	# ── self / pack support ────────────────────────────────────────────────
+	"dark_regeneration": {"name": "Dark Regeneration", "power": 0.0, "effect": "status",
+		"target": "self", "status": "regen", "cooldown": 4,
+		"telegraph": "Shadow threads crawl across its wounds...",
+		"desc": "Knits the caster's wounds with shadow."},
+	"stone_carapace": {"name": "Stone Carapace", "power": 0.0, "effect": "status",
+		"target": "self", "status": "defense_up", "cooldown": 3,
+		"telegraph": "Its hide begins to gray into stone...",
+		"desc": "Rocky plates harden the caster's hide."},
+	"blood_frenzy": {"name": "Blood Frenzy", "power": 0.0, "effect": "status",
+		"target": "self", "status": "attack_up", "cooldown": 3,
+		"telegraph": "Its eyes flood crimson...",
+		"desc": "Whips the attacker into a killing rage."},
+	"shriek_of_haste": {"name": "Shriek of Haste", "power": 0.0, "effect": "status",
+		"target": "ally_all", "status": "haste", "cooldown": 4,
+		"telegraph": "It lets out a piercing rallying shriek...",
+		"desc": "A piercing cry that spurs the whole pack onward."},
+	"mend_the_pack": {"name": "Mend the Pack", "power": 12.0, "effect": "heal",
+		"target": "ally", "cooldown": 3,
+		"telegraph": "A sickly green light gathers over the wounded...",
+		"desc": "Restores a wounded packmate's flesh."},
+	"bone_ward": {"name": "Bone Ward", "power": 0.0, "effect": "shield",
+		"target": "self", "cooldown": 3,
+		"telegraph": "Ribs of bone arch up around it...",
+		"desc": "A cage of bone that soaks incoming blows."},
+}
+
+func enemy_skill_def(skill_id: String) -> Dictionary:
+	return (ENEMY_SKILL_POOL.get(skill_id, {}) as Dictionary).duplicate(true)
+
 ## Companion skill slot N (0-based) unlocks at this COMPANION level. Spread like the
 ## player's own pacing: the first two arrive fast (a new friend must feel useful),
 ## the last two land around later chapter bosses.

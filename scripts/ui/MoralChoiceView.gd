@@ -1,14 +1,20 @@
 extends CanvasLayer
-## MoralChoiceView — the full-screen moral-choice ceremony (choice_v1 kit).
+## MoralChoiceView — the full-screen moral-choice ceremony (choice_v2 layout).
 ##
 ## Every moral choice plays here, moonlit-silver and deliberately COLD compared
 ## to the gold UI of the rest of the game. Two phases in one view:
-##   CHOICE  — crescent emblem, dilemma panel (NPC medallion + typewriter), the
-##             options as vertically stacked bars (↑↓ + Enter, second Enter to
-##             confirm — a moral choice is irreversible).
-##   REVEAL  — cracked crescent, the chosen bar, the NPC's in-character
-##             reaction, then the consequence chips (from
-##             QuestManager.last_choice_result) and the narrator caption.
+##   CHOICE  — crescent emblem, the dilemma floating on a soft haze, and TWO
+##             illustrated CARDS side by side (one anime painting per option,
+##             from the zone-level scene_choice_illustrations step). ←/→ picks,
+##             Enter + second Enter confirms — a moral choice is irreversible.
+##   REVEAL  — cracked crescent, the chosen card sealed at the left, the NPC's
+##             in-character reaction beside it, then the consequence chips
+##             (from QuestManager.last_choice_result) and the narrator caption.
+##
+## Card art is OPTIONAL at every level: no kit → procedural silver-on-navy
+## frames; no illustration → a moonlit crescent placeholder. Illustrations come
+## from QuestManager's prefetched cache first, then lazily from the option's
+## illustration_url (never blocking the ceremony).
 ##
 ## While open it owns AnnouncementCenter.conversation_active, so quest/item
 ## rewards triggered by the resolution queue up and play as the usual reward
@@ -17,11 +23,13 @@ extends CanvasLayer
 signal closed
 
 const KIT_DIR := "res://assets/ui/choice_v1/"
+const KIT2_DIR := "res://assets/ui/choice_v2/"
 const INPUT_GRACE := 0.45
 
-const BAR_ASPECT := 640.0 / 72.0      # option_bar_*.png are baked at exactly this
-const SELECTED_OVERSIZE := 1.08       # uniform-scale overhang for the baked glow
-const PANEL_SIZE := Vector2(760, 120) # panel_frame.png is baked at exactly this
+const CARD_W := 240.0
+const CARD_H := 316.0
+const CARD_GAP := 64.0
+const CARD_SELECTED_OVERSIZE := 1.06  # uniform-scale overhang for the baked glow
 
 const SILVER := Color(0.84, 0.90, 0.99, 1.0)
 const SILVER_DIM := Color(0.84, 0.90, 0.99, 0.58)
@@ -29,6 +37,7 @@ const SILVER_FAINT := Color(0.84, 0.90, 0.99, 0.34)
 const ICE := Color(0.64, 0.86, 1.0, 1.0)
 const RED_COLD := Color(0.90, 0.47, 0.49, 1.0)
 const DIM_COLOR := Color(0.006, 0.010, 0.026, 0.62)
+const GLASS_NAVY := Color(0.016, 0.026, 0.058, 0.88)
 
 ## Frosted-glass backdrop: the live scene stays visible behind the ceremony,
 ## blurred (mipmap LOD) and gently tinted toward moonlit navy for contrast.
@@ -58,9 +67,10 @@ var _closing: bool = false
 var _root: Control
 var _choice_group: Control
 var _reveal_group: Control
-var _option_bars: Array = []       # [{holder, bar_selected, bar_normal, label, hint}]
+var _cards: Array = []  # [{holder, frame_selected, frame_normal, image, placeholder, label, hint}]
+var _card_art: Dictionary = {}  # option_id -> Texture2D (resolved for this ceremony)
 var _cursor: TextureRect
-var _footer: Label
+var _footer: HBoxContainer
 var _dilemma_label: Label
 var _reveal_timer: SceneTreeTimer = null
 
@@ -82,6 +92,8 @@ func present(payload: Dictionary, npc_name: String = "", npc_portrait: Texture2D
 	_build_shell()
 	_build_choice_phase()
 	_animate_in()
+	for index in range(_options.size()):
+		_resolve_card_art(index)
 	get_tree().create_timer(INPUT_GRACE).timeout.connect(func() -> void: _can_input = true)
 
 
@@ -145,21 +157,20 @@ func _build_choice_phase() -> void:
 	_choice_group.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_root.add_child(_choice_group)
 
-	_place_emblem(_choice_group, "crescent_emblem.png", Vector2(cx, 58.0), 92.0)
-	_place_title(_choice_group, "QUYẾT ĐỊNH", Vector2(cx, 106.0))
-	_place_divider(_choice_group, Vector2(cx, 132.0), 300.0)
+	_place_emblem(_choice_group, "crescent_emblem.png", Vector2(cx, 44.0), 56.0)
+	_place_title(_choice_group, "QUYẾT ĐỊNH", Vector2(cx, 86.0), 22)
+	_place_divider(_choice_group, Vector2(cx, 108.0), 300.0)
 
-	# Dilemma panel + NPC medallion + typewriter prompt.
-	var panel_rect := Rect2(Vector2(cx - PANEL_SIZE.x * 0.5, 158.0), PANEL_SIZE)
-	_place_panel(_choice_group, panel_rect)
-	if _npc_portrait != null:
-		_place_medallion(_choice_group, Vector2(cx, panel_rect.position.y), 84.0)
-	_dilemma_label = _make_serif(str(_objective.get("prompt", _objective.get("description", ""))), 15, Color(0.96, 0.97, 1.0, 0.95), true)
+	# The dilemma floats on a soft haze — frameless, like the chat menu, so the
+	# text area can be any size without stretching baked border art.
+	var haze_rect := Rect2(Vector2(cx - 360.0, 116.0), Vector2(720.0, 78.0))
+	_place_haze(_choice_group, haze_rect)
+	_dilemma_label = _make_serif(str(_objective.get("prompt", _objective.get("description", ""))), 14, Color(0.96, 0.97, 1.0, 0.95), true)
 	_dilemma_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_dilemma_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_dilemma_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_dilemma_label.position = panel_rect.position + Vector2(56.0, 30.0)
-	_dilemma_label.size = panel_rect.size - Vector2(112.0, 48.0)
+	_dilemma_label.position = haze_rect.position + Vector2(28.0, 6.0)
+	_dilemma_label.size = haze_rect.size - Vector2(56.0, 12.0)
 	_dilemma_label.visible_characters = 0
 	_choice_group.add_child(_dilemma_label)
 	var dilemma_type := func(count: int) -> void: _dilemma_label.visible_characters = count
@@ -167,115 +178,315 @@ func _build_choice_phase() -> void:
 	var reveal_tween := create_tween()
 	reveal_tween.tween_method(dilemma_type, 0, dilemma_chars, minf(1.4, 0.022 * dilemma_chars))
 
-	# Option bars, stacked. Sizing adapts so up to 4 options stay on screen —
-	# the bar art is baked at BAR_ASPECT, so a shorter bar also narrows to keep
-	# the border art pixel-true (never stretched off-ratio).
+	# The two option cards, side by side. More than two options degrade to a
+	# tighter row — the card art aspect is preserved by scaling W with H.
 	var count := maxi(_options.size(), 1)
-	var bar_h := 72.0 if count <= 2 else 60.0
-	var gap := 18.0 if count <= 2 else 12.0
-	var block_h := count * bar_h + (count - 1) * gap
-	var start_y := 306.0 + maxf(0.0, (200.0 - block_h) * 0.5)
-	var bar_w := bar_h * BAR_ASPECT
-	_option_bars.clear()
+	var card_w := CARD_W
+	var gap := CARD_GAP
+	if count > 2:
+		card_w = minf(CARD_W, (vp.x - 120.0 - (count - 1) * 28.0) / float(count))
+		gap = 28.0
+	var card_h := card_w * (CARD_H / CARD_W)
+	var row_w := count * card_w + (count - 1) * gap
+	var start_x := cx - row_w * 0.5
+	var card_y := 206.0 + (CARD_H - card_h) * 0.5
+	_cards.clear()
 	for index in range(_options.size()):
 		var option: Dictionary = _options[index] as Dictionary
-		var holder := Control.new()
-		holder.position = Vector2(cx - bar_w * 0.5, start_y + index * (bar_h + gap))
-		holder.size = Vector2(bar_w, bar_h)
-		holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		_choice_group.add_child(holder)
-
-		var tex_selected := _tex("option_bar_selected.png")
-		var tex_normal := _tex("option_bar_normal.png")
-		# The selected art bakes its glow inside the strip, so it draws with a
-		# UNIFORM oversize (same factor on both axes — aspect stays true).
-		var sel_size := Vector2(bar_w, bar_h) * SELECTED_OVERSIZE
-		var bar_selected := _stretch(tex_selected, sel_size, (Vector2(bar_w, bar_h) - sel_size) * 0.5)
-		var bar_normal := _stretch(tex_normal, Vector2(bar_w, bar_h), Vector2.ZERO)
-		holder.add_child(bar_normal)
-		holder.add_child(bar_selected)
-
-		var hint_line := str(option.get("tone_hint", option.get("hint_line", "")))
-		var label := _make_serif(str(option.get("label", "...")), 17, SILVER)
-		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		label.position = Vector2(16.0, (0.0 if hint_line.is_empty() else -10.0))
-		label.size = Vector2(bar_w - 32.0, bar_h)
-		label.uppercase = true
-		label.clip_text = true
-		label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		holder.add_child(label)
-
-		var hint: Label = null
-		if not hint_line.is_empty():
-			hint = _make_serif(hint_line, 11, SILVER_DIM, true)
-			hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-			# The bar art bakes its glow inside the strip, so the usable interior
-			# is inset — keep the hint clear of the lower border.
-			hint.position = Vector2(16.0, bar_h - 34.0)
-			hint.size = Vector2(bar_w - 32.0, 18.0)
-			hint.clip_text = true
-			hint.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			holder.add_child(hint)
-
-		_option_bars.append({
-			"holder": holder, "selected": bar_selected, "normal": bar_normal,
-			"label": label, "hint": hint,
-		})
+		var holder := _build_card(option, Vector2(card_w, card_h))
+		holder["holder"].position = Vector2(start_x + index * (card_w + gap), card_y)
+		_choice_group.add_child(holder["holder"])
+		_cards.append(holder)
+		# Staggered entrance: each card rises out of the haze.
+		var node := holder["holder"] as Control
+		node.modulate.a = 0.0
+		node.position.y += 14.0
+		var enter := create_tween()
+		enter.tween_interval(0.12 + index * 0.12)
+		enter.tween_property(node, "modulate:a", 1.0, 0.32)
+		enter.parallel().tween_property(node, "position:y", card_y, 0.38).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 
 	_cursor = TextureRect.new()
 	_cursor.texture = _tex("cursor_moonstone.png")
 	_cursor.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	_cursor.stretch_mode = TextureRect.STRETCH_SCALE
-	_cursor.size = Vector2(44, 44)
+	_cursor.size = Vector2(40, 40)
+	_cursor.visible = _cursor.texture != null
 	_cursor.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_choice_group.add_child(_cursor)
 	var pulse := create_tween().set_loops()
 	pulse.tween_property(_cursor, "modulate:a", 0.62, 0.8).set_trans(Tween.TRANS_SINE)
 	pulse.tween_property(_cursor, "modulate:a", 1.0, 0.8).set_trans(Tween.TRANS_SINE)
 
-	_footer = _make_serif("↑ ↓  Chọn      ·      Enter  Xác nhận", 11, SILVER_FAINT)
-	_footer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_footer.position = Vector2(cx - 260.0, vp.y - 36.0)
-	_footer.size = Vector2(520.0, 16.0)
-	_choice_group.add_child(_footer)
+	_footer = _build_footer(_choice_group, vp.y - 38.0)
+	_footer_parts(_footer, [
+		{"keys": ["←", "→"], "text": "Chọn"},
+		{"keys": ["Enter"], "text": "Xác nhận"},
+	], Color(SILVER.r, SILVER.g, SILVER.b, 0.48))
 
 	_apply_selection()
 
 
+## One option card: glass base, illustration window, ornate frame (kit art when
+## present, procedural silver-on-navy otherwise), label + tone hint underneath.
+## compact = the reveal-phase keepsake: label only, no hint, smaller type.
+func _build_card(option: Dictionary, card_size: Vector2, compact: bool = false) -> Dictionary:
+	var holder := Control.new()
+	holder.size = card_size
+	holder.pivot_offset = card_size * 0.5
+	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	# 1) Dark glass base — always present, the frame's window looks into it.
+	var glass := Panel.new()
+	var glass_style := StyleBoxFlat.new()
+	glass_style.bg_color = GLASS_NAVY
+	glass_style.set_corner_radius_all(7)
+	glass.add_theme_stylebox_override("panel", glass_style)
+	glass.position = Vector2.ZERO
+	glass.size = card_size
+	glass.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	holder.add_child(glass)
+
+	# 2) Illustration window (art arrives async; placeholder holds the mood).
+	var window := _card_window_rect(card_size)
+	var image := TextureRect.new()
+	image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	image.stretch_mode = TextureRect.STRETCH_SCALE
+	image.position = window.position
+	image.size = window.size
+	image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	holder.add_child(image)
+
+	var placeholder := _build_card_placeholder(window)
+	holder.add_child(placeholder)
+
+	# 3) Frame on top. Kit art (baked at the exact card aspect) or procedural.
+	var tex_normal := _tex2("card_frame_normal.png")
+	var tex_selected := _tex2("card_frame_selected.png")
+	var frame_normal: Control
+	var frame_selected: Control
+	if tex_normal != null and tex_selected != null:
+		frame_normal = _stretch(tex_normal, card_size, Vector2.ZERO)
+		# The selected art bakes its glow inside the sheet, so it draws with a
+		# UNIFORM oversize (same factor on both axes — aspect stays true).
+		var sel_size := card_size * CARD_SELECTED_OVERSIZE
+		frame_selected = _stretch(tex_selected, sel_size, (card_size - sel_size) * 0.5)
+	else:
+		frame_normal = _procedural_frame(card_size, false)
+		frame_selected = _procedural_frame(card_size, true)
+	holder.add_child(frame_normal)
+	holder.add_child(frame_selected)
+
+	# 4) Label + tone hint in the text zone under the window, split from the
+	# illustration by a slim silver hairline (the kit frame bakes its own).
+	var text_top := window.position.y + window.size.y
+	if tex_normal == null:
+		var hairline := ColorRect.new()
+		hairline.color = Color(SILVER.r, SILVER.g, SILVER.b, 0.22)
+		hairline.position = Vector2(card_size.x * 0.22, text_top + 1.0)
+		hairline.size = Vector2(card_size.x * 0.56, 1.0)
+		hairline.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		holder.add_child(hairline)
+	# Text hugs the WINDOW's inset, not the outer card edge — long labels must
+	# never ride over the ornate border art.
+	var side_pad := maxf(16.0, window.position.x + 6.0)
+	var label := _make_serif(str(option.get("label", "...")), 12 if compact else 14, SILVER)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.uppercase = true
+	label.max_lines_visible = 2
+	label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	label.position = Vector2(side_pad, text_top + 4.0)
+	label.size = Vector2(card_size.x - side_pad * 2.0, (card_size.y - text_top) - 8.0 if compact else 46.0)
+	holder.add_child(label)
+
+	var hint_line := "" if compact else str(option.get("tone_hint", option.get("hint_line", "")))
+	var hint: Label = null
+	if not hint_line.is_empty():
+		hint = _make_serif(hint_line, 10, SILVER_DIM, true)
+		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		hint.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		hint.max_lines_visible = 2
+		hint.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		hint.position = Vector2(side_pad + 2.0, text_top + 52.0)
+		hint.size = Vector2(card_size.x - side_pad * 2.0 - 4.0, 30.0)
+		holder.add_child(hint)
+
+	return {
+		"holder": holder, "selected": frame_selected, "normal": frame_normal,
+		"image": image, "placeholder": placeholder, "label": label, "hint": hint,
+		"window": window,
+	}
+
+
+## The illustration window inside a card. When the kit ships card_layout.json
+## (measured off the generated frame art) that geometry wins; otherwise a
+## sensible inset default matches the procedural frame.
+func _card_window_rect(card_size: Vector2) -> Rect2:
+	var layout := _kit2_layout()
+	if not layout.is_empty():
+		var size_block: Dictionary = layout.get("size", {}) as Dictionary
+		var window_block: Dictionary = layout.get("window", {}) as Dictionary
+		var tex_w := float(size_block.get("w", 0.0))
+		var tex_h := float(size_block.get("h", 0.0))
+		if tex_w > 0.0 and tex_h > 0.0:
+			return Rect2(
+				Vector2(float(window_block.get("x", 0.0)) / tex_w, float(window_block.get("y", 0.0)) / tex_h) * Vector2(card_size.x, card_size.y),
+				Vector2(float(window_block.get("w", 0.0)) / tex_w, float(window_block.get("h", 0.0)) / tex_h) * Vector2(card_size.x, card_size.y))
+	var inset := 12.0
+	return Rect2(Vector2(inset, inset), Vector2(card_size.x - inset * 2.0, card_size.y * 0.70 - inset))
+
+
+var _kit2_layout_cache: Variant = null
+
+func _kit2_layout() -> Dictionary:
+	if _kit2_layout_cache is Dictionary:
+		return _kit2_layout_cache
+	_kit2_layout_cache = {}
+	var path := KIT2_DIR + "card_layout.json"
+	if FileAccess.file_exists(path):
+		var file := FileAccess.open(path, FileAccess.READ)
+		if file != null:
+			var parsed: Variant = JSON.parse_string(file.get_as_text())
+			if parsed is Dictionary:
+				_kit2_layout_cache = parsed
+	return _kit2_layout_cache
+
+
+## Waiting-for-art / no-art look: moonlit gradient with a faint crescent floating
+## in the window. Doubles as the permanent look when the step hasn't run.
+func _build_card_placeholder(window: Rect2) -> Control:
+	var placeholder := Control.new()
+	placeholder.position = window.position
+	placeholder.size = window.size
+	placeholder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var wash := ColorRect.new()
+	wash.color = Color(0.030, 0.048, 0.096, 1.0)
+	wash.set_anchors_preset(Control.PRESET_FULL_RECT)
+	wash.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	placeholder.add_child(wash)
+	var crescent := _tex("crescent_emblem.png")
+	if crescent != null:
+		var h := window.size.y * 0.42
+		var w := h * crescent.get_width() / maxf(1.0, float(crescent.get_height()))
+		var mark := _stretch(crescent, Vector2(w, h), Vector2((window.size.x - w) * 0.5, (window.size.y - h) * 0.5))
+		mark.modulate = Color(1, 1, 1, 0.16)
+		placeholder.add_child(mark)
+	return placeholder
+
+
+## Procedural card frame used until the choice_v2 kit exists: thin silver border
+## on the glass, plus a cold glow halo for the selected state.
+func _procedural_frame(card_size: Vector2, selected: bool) -> Control:
+	var frame := Panel.new()
+	var style := StyleBoxFlat.new()
+	style.draw_center = false
+	style.set_corner_radius_all(7)
+	style.set_border_width_all(2 if not selected else 3)
+	style.border_color = Color(SILVER.r, SILVER.g, SILVER.b, 0.38) if not selected else Color(0.92, 0.96, 1.0, 0.95)
+	if selected:
+		style.shadow_color = Color(ICE.r, ICE.g, ICE.b, 0.32)
+		style.shadow_size = 14
+	frame.add_theme_stylebox_override("panel", style)
+	frame.position = Vector2.ZERO
+	frame.size = card_size
+	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return frame
+
+
+## Resolve one card's illustration: ceremony-local cache → QuestManager's
+## prefetched chapter cache → lazy download from the option's illustration_url.
+## Never blocks the ceremony; the placeholder simply stays when nothing lands.
+func _resolve_card_art(index: int) -> void:
+	if index >= _options.size() or index >= _cards.size():
+		return
+	var option: Dictionary = _options[index] as Dictionary
+	var option_id := str(option.get("id", ""))
+	if option_id.is_empty():
+		return
+	var texture: Texture2D = _card_art.get(option_id)
+	if texture == null:
+		texture = QuestManager.choice_illustration(option_id)
+	if texture == null:
+		var url := str(option.get("illustration_url", ""))
+		if url.is_empty():
+			return
+		var flow := get_node_or_null("/root/ChapterFlow")
+		if flow == null or not flow.has_method("download_image_texture"):
+			return
+		texture = await flow.download_image_texture(url)
+		if texture != null:
+			QuestManager.set_choice_illustration(option_id, texture)
+	if texture == null or _closing or index >= _cards.size():
+		return
+	_card_art[option_id] = texture
+	var card: Dictionary = _cards[index] as Dictionary
+	_mount_card_art(card, texture)
+
+
+func _mount_card_art(card: Dictionary, texture: Texture2D) -> void:
+	var image := card.get("image") as TextureRect
+	var placeholder := card.get("placeholder") as Control
+	if image == null or not is_instance_valid(image):
+		return
+	var window: Rect2 = card.get("window", Rect2()) as Rect2
+	image.texture = _cover_cropped(texture, window.size)
+	image.modulate.a = 0.0
+	var fade := create_tween()
+	fade.tween_property(image, "modulate:a", 1.0, 0.35)
+	if placeholder != null and is_instance_valid(placeholder):
+		fade.parallel().tween_property(placeholder, "modulate:a", 0.0, 0.35)
+
+
 func _apply_selection() -> void:
-	for index in range(_option_bars.size()):
-		var entry: Dictionary = _option_bars[index] as Dictionary
+	for index in range(_cards.size()):
+		var entry: Dictionary = _cards[index] as Dictionary
 		var is_sel := index == _selected
 		(entry["selected"] as Control).visible = is_sel
 		(entry["normal"] as Control).visible = not is_sel
+		var holder := entry["holder"] as Control
+		var scale_tween := create_tween()
+		scale_tween.tween_property(holder, "scale", Vector2.ONE if is_sel else Vector2(0.955, 0.955), 0.18).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+		(entry["image"] as TextureRect).self_modulate = Color(1, 1, 1, 1) if is_sel else Color(0.72, 0.76, 0.85, 1.0)
 		(entry["label"] as Label).add_theme_color_override(
 			"font_color", SILVER if is_sel else Color(0.66, 0.72, 0.84, 0.66))
 		if entry["hint"] != null:
-			(entry["hint"] as Label).visible = is_sel
+			(entry["hint"] as Label).add_theme_color_override(
+				"font_color", SILVER_DIM if is_sel else Color(0.66, 0.72, 0.84, 0.36))
 		if is_sel and _cursor != null:
-			var holder := entry["holder"] as Control
-			_cursor.position = holder.position + Vector2(-56.0, holder.size.y * 0.5 - 22.0)
+			# The moonstone gem sits ON the card's left border (mockup), not beside it.
+			_cursor.position = holder.position + Vector2(-22.0, holder.size.y * 0.5 - 20.0)
 
 
 func _arm_confirm() -> void:
-	if _option_bars.is_empty():
+	if _cards.is_empty():
 		_close()
 		return
 	_phase = Phase.ARMED
-	_footer.text = "Enter  lần nữa — quyết định không thể đảo ngược      ·      Esc  nghĩ lại"
-	_footer.add_theme_color_override("font_color", Color(SILVER.r, SILVER.g, SILVER.b, 0.85))
-	var entry: Dictionary = _option_bars[_selected] as Dictionary
-	var bar := entry["selected"] as Control
+	_footer_parts(_footer, [
+		{"keys": ["Enter"], "text": "lần nữa — quyết định không thể đảo ngược"},
+		{"keys": ["Esc"], "text": "nghĩ lại"},
+	], Color(SILVER.r, SILVER.g, SILVER.b, 0.85))
+	var entry: Dictionary = _cards[_selected] as Dictionary
+	var frame := entry["selected"] as Control
 	var flash := create_tween()
-	flash.tween_property(bar, "modulate", Color(1.35, 1.35, 1.5, 1.0), 0.12)
-	flash.tween_property(bar, "modulate", Color.WHITE, 0.30)
+	flash.tween_property(frame, "modulate", Color(1.35, 1.35, 1.5, 1.0), 0.12)
+	flash.tween_property(frame, "modulate", Color.WHITE, 0.30)
 
 
 func _disarm_confirm() -> void:
 	_phase = Phase.CHOICE
-	_footer.text = "↑ ↓  Chọn      ·      Enter  Xác nhận"
-	_footer.add_theme_color_override("font_color", SILVER_FAINT)
+	_footer_parts(_footer, [
+		{"keys": ["←", "→"], "text": "Chọn"},
+		{"keys": ["Enter"], "text": "Xác nhận"},
+	], Color(SILVER.r, SILVER.g, SILVER.b, 0.48))
+
+
+func _move_selection(delta: int) -> void:
+	_selected = clampi(_selected + delta, 0, maxi(_cards.size() - 1, 0))
+	_apply_selection()
 
 
 # ── phase B: the reveal ──────────────────────────────────────────────────────────
@@ -307,6 +518,11 @@ func _confirm_choice() -> void:
 
 
 func _build_reveal_phase(option: Dictionary, result: Dictionary) -> void:
+	# Mockup layout (reveal_raw.png): the chosen card stays LARGE on the left;
+	# the right column stacks cracked crescent + title, the NPC reaction row
+	# (medallion, name over a thin rule, floating italic quote — no box), the
+	# HẬU QUẢ header, a 2-per-row grid of consequence plaques, then a full-width
+	# narrator caption and the keycap footer.
 	var vp := _viewport_size()
 	var cx := vp.x * 0.5
 	_reveal_group = Control.new()
@@ -315,43 +531,66 @@ func _build_reveal_phase(option: Dictionary, result: Dictionary) -> void:
 	_reveal_group.modulate.a = 0.0
 	_root.add_child(_reveal_group)
 
-	_place_emblem(_reveal_group, "crescent_cracked.png", Vector2(cx, 42.0), 72.0)
-	_place_title(_reveal_group, "ĐÃ QUYẾT ĐỊNH", Vector2(cx, 96.0))
-	_place_divider(_reveal_group, Vector2(cx, 122.0), 300.0)
+	# The chosen card, sealed as a keepsake — same size as the choice phase.
+	var card_size := Vector2(CARD_W, CARD_H)
+	var card_pos := Vector2(96.0, 116.0)
+	var keepsake := _build_card(option, card_size, true)
+	var keepsake_holder := keepsake["holder"] as Control
+	keepsake_holder.position = card_pos
+	(keepsake["selected"] as Control).visible = true
+	(keepsake["normal"] as Control).visible = false
+	_reveal_group.add_child(keepsake_holder)
+	keepsake_holder.scale = Vector2(0.94, 0.94)
+	var settle := create_tween()
+	settle.tween_property(keepsake_holder, "scale", Vector2.ONE, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	var option_id := str(option.get("id", ""))
+	var art: Texture2D = _card_art.get(option_id)
+	if art == null:
+		art = QuestManager.choice_illustration(option_id)
+	if art != null:
+		_mount_card_art(keepsake, art)
 
-	# The chosen option, sealed — same exact bar slot as the choice phase.
-	var bar_h := 72.0
-	var bar_w := bar_h * BAR_ASPECT
-	var sel_size := Vector2(bar_w, bar_h) * SELECTED_OVERSIZE
-	var chosen := _stretch(_tex("option_bar_selected.png"), sel_size,
-		Vector2(cx, 140.0 + bar_h * 0.5) - sel_size * 0.5)
-	_reveal_group.add_child(chosen)
-	var chosen_label := _make_serif(str(option.get("label", result.get("option_label", ""))), 17, SILVER)
-	chosen_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	chosen_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	chosen_label.uppercase = true
-	chosen_label.position = Vector2(cx - bar_w * 0.5, 140.0)
-	chosen_label.size = Vector2(bar_w, bar_h)
-	_reveal_group.add_child(chosen_label)
+	# Right column axis: centered in the space the card leaves free.
+	var rx := card_pos.x + card_size.x + (vp.x - (card_pos.x + card_size.x) - 40.0) * 0.5
+	_place_emblem(_reveal_group, "crescent_cracked.png", Vector2(rx, 58.0), 58.0)
+	_place_title(_reveal_group, "ĐÃ QUYẾT ĐỊNH", Vector2(rx, 104.0), 22)
+	_place_divider(_reveal_group, Vector2(rx, 126.0), 320.0)
 
-	# NPC reaction panel (portrait medallion left, in-character line right).
+	# NPC reaction row: medallion left, name over a thin rule, floating quote.
 	var reaction := str(result.get("npc_reaction", "")).strip_edges()
 	if reaction.is_empty():
 		reaction = str(option.get("npc_reaction", "")).strip_edges()
 	if reaction.is_empty():
 		reaction = "Vậy là ngươi đã quyết."
-	var panel_rect := Rect2(Vector2(cx - PANEL_SIZE.x * 0.5, 236.0), PANEL_SIZE)
-	_place_panel(_reveal_group, panel_rect)
+	var row_top := 146.0
 	var has_portrait := _npc_portrait != null
+	var text_left := rx - 240.0
 	if has_portrait:
-		_place_medallion(_reveal_group, panel_rect.position + Vector2(84.0, panel_rect.size.y * 0.5), 104.0)
-	var quote := _make_serif("“%s”" % reaction, 15, Color(0.96, 0.97, 1.0, 0.95), true)
-	quote.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	quote.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		_place_medallion(_reveal_group, Vector2(rx - 250.0, row_top + 62.0), 100.0)
+		text_left = rx - 178.0
+	var text_width := rx + 250.0 - text_left
+	var quote_top := row_top + 10.0
+	if not _npc_name.is_empty():
+		var who := _make_serif(_npc_name, 11, SILVER_DIM)
+		who.uppercase = true
+		who.position = Vector2(text_left, row_top)
+		who.size = Vector2(text_width, 14.0)
+		_reveal_group.add_child(who)
+		var rule := ColorRect.new()
+		rule.color = Color(SILVER.r, SILVER.g, SILVER.b, 0.22)
+		rule.position = Vector2(text_left, row_top + 20.0)
+		rule.size = Vector2(minf(text_width, 220.0), 1.0)
+		rule.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_reveal_group.add_child(rule)
+		quote_top = row_top + 28.0
+	var quote := _make_serif("“%s”" % reaction, 14, Color(0.96, 0.97, 1.0, 0.95), true)
+	quote.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	quote.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	quote.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	var text_left := (168.0 if has_portrait else 46.0)
-	quote.position = panel_rect.position + Vector2(text_left, 20.0)
-	quote.size = Vector2(panel_rect.size.x - text_left - 46.0, panel_rect.size.y - 40.0)
+	quote.max_lines_visible = 4
+	quote.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	quote.position = Vector2(text_left, quote_top)
+	quote.size = Vector2(text_width, 96.0)
 	quote.visible_characters = 0
 	_reveal_group.add_child(quote)
 	var quote_type := func(count: int) -> void: quote.visible_characters = count
@@ -360,24 +599,28 @@ func _build_reveal_phase(option: Dictionary, result: Dictionary) -> void:
 	type_tween.tween_interval(0.30)
 	type_tween.tween_method(quote_type, 0, quote_chars, minf(1.2, 0.024 * quote_chars))
 
-	# HẬU QUẢ divider + consequence chips.
+	# HẬU QUẢ header between ornamented dividers, then the plaque grid.
 	var chips: Array = result.get("chips", []) as Array
-	var section_y := 376.0
-	var mini := _make_serif("HẬU QUẢ", 12, SILVER_DIM)
-	mini.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	mini.uppercase = true
-	mini.position = Vector2(cx - 120.0, section_y)
-	mini.size = Vector2(240.0, 16.0)
-	_reveal_group.add_child(mini)
-	_place_divider(_reveal_group, Vector2(cx - 150.0, section_y + 8.0), 90.0)
-	_place_divider(_reveal_group, Vector2(cx + 150.0, section_y + 8.0), 90.0)
-
 	if chips.is_empty():
 		chips = [{"icon": "item", "tone": "neutral", "text": "Câu chuyện sẽ ghi nhớ điều này"}]
-	var per_row := 4
-	var chip_w := 200.0
-	var chip_h := 46.0
-	var chip_gap := 14.0
+	var section_y := 296.0
+	var header := _make_serif("HẬU QUẢ", 13, SILVER_DIM)
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	header.uppercase = true
+	header.position = Vector2(rx - 120.0, section_y)
+	header.size = Vector2(240.0, 18.0)
+	_reveal_group.add_child(header)
+	_place_divider(_reveal_group, Vector2(rx - 175.0, section_y + 9.0), 110.0)
+	_place_divider(_reveal_group, Vector2(rx + 175.0, section_y + 9.0), 110.0)
+
+	# Plaques follow the mockup's larger 2-column grid; with more than 4 chips
+	# the grid tightens so the caption band is never squeezed.
+	var per_row := 2
+	var chip_h := 56.0 if chips.size() <= 4 else 48.0
+	var chip_w := chip_h * (400.0 / 92.0)  # chip_frame.png baked aspect
+	var chip_gap := 16.0
+	var row_gap := 12.0 if chips.size() <= 4 else 8.0
+	var grid_top := section_y + 28.0
 	var delay := 0.55
 	for index in range(chips.size()):
 		var chip: Dictionary = chips[index] as Dictionary
@@ -385,7 +628,7 @@ func _build_reveal_phase(option: Dictionary, result: Dictionary) -> void:
 		var in_row_count: int = mini(chips.size() - row * per_row, per_row)
 		var col := index % per_row
 		var row_w := in_row_count * chip_w + (in_row_count - 1) * chip_gap
-		var pos := Vector2(cx - row_w * 0.5 + col * (chip_w + chip_gap), section_y + 26.0 + row * (chip_h + 8.0))
+		var pos := Vector2(rx - row_w * 0.5 + col * (chip_w + chip_gap), grid_top + row * (chip_h + row_gap))
 		var node := _build_chip(chip, Vector2(chip_w, chip_h))
 		node.position = pos
 		node.modulate.a = 0.0
@@ -397,37 +640,40 @@ func _build_reveal_phase(option: Dictionary, result: Dictionary) -> void:
 		pop.tween_property(node, "modulate:a", 1.0, 0.20)
 		pop.parallel().tween_property(node, "scale", Vector2.ONE, 0.26).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
-	# Narrator caption (consequence_text — its true home). Clamped so a second
-	# chip row can never push it into the footer line.
+	# Narrator caption — full-width beneath card and grid (its mockup home),
+	# clamped clear of the footer line.
 	var rows := ceili(float(chips.size()) / float(per_row))
 	var caption_text := str(result.get("consequence_text", "")).strip_edges()
 	if not caption_text.is_empty():
-		var caption := _make_serif(caption_text, 12, Color(0.78, 0.82, 0.92, 0.62), true)
+		var caption := _make_serif(caption_text, 13, Color(0.82, 0.86, 0.94, 0.70), true)
 		caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		caption.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		caption.max_lines_visible = 2
 		caption.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		var caption_y: float = minf(section_y + 26.0 + rows * (chip_h + 8.0) + 6.0, vp.y - 72.0)
-		caption.position = Vector2(cx - 330.0, caption_y)
-		caption.size = Vector2(660.0, 36.0)
+		var grid_bottom := grid_top + rows * (chip_h + row_gap) - row_gap
+		var caption_y: float = minf(maxf(grid_bottom + 14.0, card_pos.y + card_size.y + 14.0), vp.y - 86.0)
+		caption.position = Vector2(cx - 380.0, caption_y)
+		caption.size = Vector2(760.0, 40.0)
 		_reveal_group.add_child(caption)
 
-	var footer := _make_serif("Enter  Tiếp tục", 11, SILVER_FAINT)
-	footer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	footer.position = Vector2(cx - 130.0, vp.y - 32.0)
-	footer.size = Vector2(260.0, 16.0)
+	var footer := _build_footer(_reveal_group, vp.y - 38.0)
+	_footer_parts(footer, [{"keys": ["Enter"], "text": "Tiếp tục"}], Color(SILVER.r, SILVER.g, SILVER.b, 0.48))
 	footer.modulate.a = 0.0
-	_reveal_group.add_child(footer)
 	var footer_in := create_tween()
 	footer_in.tween_interval(delay + chips.size() * 0.14 + 0.35)
 	footer_in.tween_property(footer, "modulate:a", 1.0, 0.3)
 
 
 func _build_chip(chip: Dictionary, chip_size: Vector2) -> Control:
+	# Contents scale with the plaque height so the mockup's larger reveal grid
+	# and any tightened variant read identically.
 	var holder := Control.new()
 	holder.size = chip_size
 	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	holder.add_child(_stretch(_tex("chip_frame.png"), chip_size, Vector2.ZERO))
+	var icon_side := chip_size.y * 0.58
+	var icon_left := chip_size.y * 0.28
+	var text_left := icon_left + icon_side + 10.0
 	var icon_name := str(chip.get("icon", "item"))
 	var icon_tex := _tex("icons/%s.png" % icon_name)
 	if icon_tex != null:
@@ -435,16 +681,16 @@ func _build_chip(chip: Dictionary, chip_size: Vector2) -> Control:
 		icon.texture = icon_tex
 		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		icon.stretch_mode = TextureRect.STRETCH_SCALE
-		icon.size = Vector2(28, 28)
-		icon.position = Vector2(12.0, chip_size.y * 0.5 - 14.0)
+		icon.size = Vector2(icon_side, icon_side)
+		icon.position = Vector2(icon_left, (chip_size.y - icon_side) * 0.5)
 		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		holder.add_child(icon)
 	var tone := str(chip.get("tone", "neutral"))
 	var color := RED_COLD if tone == "loss" else (ICE if tone == "gain" else SILVER_DIM)
-	var text := _make_serif(str(chip.get("text", "")), 12, color)
+	var text := _make_serif(str(chip.get("text", "")), 13 if chip_size.y >= 52.0 else 12, color)
 	text.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	text.position = Vector2(48.0, 0.0)
-	text.size = Vector2(chip_size.x - 58.0, chip_size.y)
+	text.position = Vector2(text_left, 0.0)
+	text.size = Vector2(chip_size.x - text_left - 14.0, chip_size.y)
 	text.clip_text = true
 	text.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	holder.add_child(text)
@@ -464,12 +710,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	match _phase:
 		Phase.CHOICE:
-			if event.is_action_pressed("ui_down"):
-				_selected = mini(_selected + 1, _option_bars.size() - 1)
-				_apply_selection()
-			elif event.is_action_pressed("ui_up"):
-				_selected = maxi(_selected - 1, 0)
-				_apply_selection()
+			if event.is_action_pressed("ui_right") or event.is_action_pressed("ui_down"):
+				_move_selection(1)
+			elif event.is_action_pressed("ui_left") or event.is_action_pressed("ui_up"):
+				_move_selection(-1)
 			elif event.is_action_pressed("ui_accept"):
 				_arm_confirm()
 		Phase.ARMED:
@@ -477,13 +721,13 @@ func _unhandled_input(event: InputEvent) -> void:
 				_confirm_choice()
 			elif event.is_action_pressed("ui_cancel"):
 				_disarm_confirm()
-			elif event.is_action_pressed("ui_down") or event.is_action_pressed("ui_up"):
+			elif event.is_action_pressed("ui_right") or event.is_action_pressed("ui_down") \
+					or event.is_action_pressed("ui_left") or event.is_action_pressed("ui_up"):
 				_disarm_confirm()
-				if event.is_action_pressed("ui_down"):
-					_selected = mini(_selected + 1, _option_bars.size() - 1)
+				if event.is_action_pressed("ui_right") or event.is_action_pressed("ui_down"):
+					_move_selection(1)
 				else:
-					_selected = maxi(_selected - 1, 0)
-				_apply_selection()
+					_move_selection(-1)
 		Phase.DONE:
 			if event.is_action_pressed("ui_accept") or event.is_action_pressed("ui_cancel"):
 				_close()
@@ -520,6 +764,13 @@ func _tex(file_name: String) -> Texture2D:
 	return null
 
 
+func _tex2(file_name: String) -> Texture2D:
+	var path := KIT2_DIR + file_name
+	if ResourceLoader.exists(path):
+		return load(path) as Texture2D
+	return null
+
+
 func _stretch(texture: Texture2D, target: Vector2, offset: Vector2) -> Control:
 	if texture == null:
 		var fallback := Panel.new()
@@ -540,6 +791,36 @@ func _stretch(texture: Texture2D, target: Vector2, offset: Vector2) -> Control:
 	return rect
 
 
+## Center-crop a texture to the window's aspect in Image space — the card
+## window then scales it uniformly (never squashed, never letterboxed).
+func _cover_cropped(texture: Texture2D, target_size: Vector2) -> Texture2D:
+	if texture == null or target_size.x <= 0.0 or target_size.y <= 0.0:
+		return texture
+	var image := texture.get_image()
+	if image == null:
+		return texture
+	image = image.duplicate() as Image
+	if image.is_compressed():
+		image.decompress()
+	image.convert(Image.FORMAT_RGBA8)
+	var src_w := image.get_width()
+	var src_h := image.get_height()
+	var target_aspect := target_size.x / target_size.y
+	var src_aspect := float(src_w) / maxf(1.0, float(src_h))
+	var crop_w := src_w
+	var crop_h := src_h
+	if src_aspect > target_aspect:
+		crop_w = int(round(src_h * target_aspect))
+	else:
+		crop_h = int(round(src_w / target_aspect))
+	var x0 := int((src_w - crop_w) * 0.5)
+	# Bias the vertical crop upward — faces live in the upper half of the art.
+	var y0 := int((src_h - crop_h) * 0.38)
+	var out := Image.create(crop_w, crop_h, false, Image.FORMAT_RGBA8)
+	out.blit_rect(image, Rect2i(x0, y0, crop_w, crop_h), Vector2i.ZERO)
+	return ImageTexture.create_from_image(out)
+
+
 func _place_emblem(parent: Control, file_name: String, center: Vector2, height: float) -> void:
 	var texture := _tex(file_name)
 	if texture == null:
@@ -549,8 +830,8 @@ func _place_emblem(parent: Control, file_name: String, center: Vector2, height: 
 	parent.add_child(rect)
 
 
-func _place_title(parent: Control, text: String, center: Vector2) -> void:
-	var title := UiKit.make_title(text, 26, SILVER)
+func _place_title(parent: Control, text: String, center: Vector2, font_size: int = 26) -> void:
+	var title := UiKit.make_title(text, font_size, SILVER)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.uppercase = true
 	title.position = Vector2(center.x - 320.0, center.y - 18.0)
@@ -575,8 +856,72 @@ func _place_divider(parent: Control, center: Vector2, width: float) -> void:
 	parent.add_child(jewel)
 
 
-func _place_panel(parent: Control, rect: Rect2) -> void:
-	parent.add_child(_stretch(_tex("panel_frame.png"), rect.size, rect.position))
+## Footer key-hint line rendered as keycap chips ( [←][→] Chọn · [Enter] Xác
+## nhận — the mockup's treatment) instead of a plain text string.
+func _build_footer(parent: Control, y: float) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.position = Vector2(0, y)
+	row.size = Vector2(_viewport_size().x, 22.0)
+	row.add_theme_constant_override("separation", 10)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(row)
+	return row
+
+
+func _footer_parts(row: HBoxContainer, parts: Array, color: Color) -> void:
+	for child in row.get_children():
+		child.queue_free()
+	var first := true
+	for part in parts:
+		if not (part is Dictionary):
+			continue
+		if not first:
+			var sep := _make_serif("·", 11, Color(color.r, color.g, color.b, color.a * 0.6))
+			sep.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+			row.add_child(sep)
+		first = false
+		for key in (part as Dictionary).get("keys", []) as Array:
+			row.add_child(_make_keycap(str(key), color))
+		var text := _make_serif(str((part as Dictionary).get("text", "")), 11, color)
+		text.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		row.add_child(text)
+
+
+func _make_keycap(glyph: String, color: Color) -> Control:
+	var cap := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(color.r, color.g, color.b, 0.06)
+	style.set_border_width_all(1)
+	style.border_color = Color(color.r, color.g, color.b, color.a * 0.55)
+	style.set_corner_radius_all(4)
+	style.content_margin_left = 7.0
+	style.content_margin_right = 7.0
+	style.content_margin_top = 1.0
+	style.content_margin_bottom = 2.0
+	cap.add_theme_stylebox_override("panel", style)
+	cap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var label := _make_serif(glyph, 10, color)
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	cap.add_child(label)
+	return cap
+
+
+## Soft frameless haze behind floating text — smooth gradients are the one case
+## where stretching is invisible, so a procedural panel serves any size. Kept
+## deliberately faint (the mockup's dilemma floats with no visible box).
+func _place_haze(parent: Control, rect: Rect2) -> void:
+	var haze := Panel.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.008, 0.014, 0.034, 0.30)
+	style.set_corner_radius_all(int(minf(22.0, rect.size.y * 0.30)))
+	style.shadow_color = Color(0.008, 0.014, 0.034, 0.22)
+	style.shadow_size = 22
+	haze.add_theme_stylebox_override("panel", style)
+	haze.position = rect.position
+	haze.size = rect.size
+	haze.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(haze)
 
 
 func _place_medallion(parent: Control, center: Vector2, diameter: float) -> void:

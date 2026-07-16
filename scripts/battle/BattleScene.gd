@@ -73,6 +73,12 @@ const BOSS_HP_PER_EXTRA_ALLY: = 0.55
 const BOSS_MAX_ACTIONS_PER_ROUND: = 3
 const ELITE_HARD_CC_RESISTANCE: = 0.35
 const BOSS_HARD_CC_RESISTANCE: = 0.65
+const STARTING_SP_MINIMUM := 2
+const STARTING_SP_RATIO_BY_RANK := {
+    "minion": 0.50,
+    "elite": 2.0 / 3.0,
+    "boss": 0.75,
+}
 const HARD_CC_STATUS_IDS: = {
     "freeze": true,
     "sleep": true,
@@ -82,8 +88,9 @@ const HARD_CC_STATUS_IDS: = {
 
 # ── multi-actor battle state ─────────────────────────────────────────────────
 # The battle is party-vs-group: every combatant is an "actor" Dictionary.
-# Ally actor: {kind:"player"|"companion", id, name, level, max_hp, attack, defense,
-#   speed, sp, sp_max, statuses:[], skills:[], downed, focus, guarding, portrait}
+# Ally actor: {kind:"player"|"companion"|"escort", id, name, level, max_hp,
+#   attack, defense, speed, sp, sp_max, statuses:[], skills:[], downed, focus,
+#   guarding}. Escorts share the targetable ally lane, but never enter initiative.
 # Foe actor: {id, name, level, rank, data, max_hp, hp, attack, defense, speed,
 #   statuses:[], xp_reward, synthetic, intent, turns_since_heavy, ui:{...}}
 # Status instance (on actor.statuses): {id, turns_left, magnitude} — definitions
@@ -112,6 +119,9 @@ var flee_failed_count: int = 0
 var _ui_mode: UiMode = UiMode.NONE
 var _battle_over: bool = false
 var _pending_finish_result: String = ""
+## Empty for normal outcomes; `escort_ko` distinguishes the no-XP retry path
+## while the public result remains `defeat` for Main's existing reposition flow.
+var failure_reason: String = ""
 var _finish_confirm_ready: bool = false
 var _battle_log_entries: Array[Dictionary] = []
 var _next_battle_log_entry_id: int = 1
@@ -135,6 +145,48 @@ var _texture_cache: Dictionary = {}
 
 var _shake_time: float = 0.0
 var _shake_strength: float = 0.0
+
+# ── AAA hit-feedback layer ────────────────────────────────────────────────────
+# Full-screen radial vignette pulsed on party damage (red), poison ticks
+# (green), burn ticks (orange)... plus a global hit-stop guard so overlapping
+# heavy hits never stack time-scale dips.
+var _damage_vignette: TextureRect = null
+var _hit_stop_active: bool = false
+
+## Vietnamese status stamps for the on-hit announcement banner.
+const STATUS_STAMP_VI: Dictionary = {
+    "poison": "TRÚNG ĐỘC!", "burn": "BỎNG RÁT!", "freeze": "ĐÓNG BĂNG!",
+    "sleep": "NGỦ MÊ!", "paralyze": "TÊ LIỆT!", "stun": "CHOÁNG VÁNG!",
+    "blind": "MÙ LÒA!", "silence": "CÂM LẶNG!", "slow": "TRÌ TRỆ!",
+    "weaken": "SUY YẾU!", "armor_break": "VỠ GIÁP!", "haste": "THẦN TỐC!",
+    "shield": "KHIÊN CHẮN!", "regen": "TÁI SINH!", "attack_up": "CUỒNG NỘ!",
+    "defense_up": "KIÊN CỐ!", "taunt": "KHIÊU KHÍCH!",
+}
+
+## Signature color per status — drives the stamp, tick particles, vignette
+## pulses and the lingering portrait tint, so every ailment reads at a glance.
+const STATUS_FX_COLORS: Dictionary = {
+    "poison": Color(0.45, 0.92, 0.35), "burn": Color(1.0, 0.55, 0.18),
+    "freeze": Color(0.55, 0.85, 1.0), "sleep": Color(0.72, 0.6, 1.0),
+    "paralyze": Color(1.0, 0.9, 0.3), "stun": Color(1.0, 0.82, 0.4),
+    "blind": Color(0.62, 0.6, 0.68), "silence": Color(0.55, 0.55, 0.95),
+    "slow": Color(0.72, 0.58, 0.4), "weaken": Color(0.75, 0.4, 0.85),
+    "armor_break": Color(0.9, 0.55, 0.3), "haste": Color(1.0, 0.95, 0.55),
+    "shield": Color(0.8, 0.75, 0.55), "regen": Color(0.55, 0.95, 0.6),
+    "attack_up": Color(1.0, 0.45, 0.4), "defense_up": Color(0.6, 0.8, 1.0),
+    "taunt": Color(1.0, 0.75, 0.4),
+}
+
+## Lingering portrait tints while a visible affliction is active (priority
+## order — the first match wins; subtle, never repaints the art).
+const AFFLICTION_TINTS: Array = [
+    ["poison", Color(0.78, 1.0, 0.75)],
+    ["burn", Color(1.0, 0.8, 0.68)],
+    ["freeze", Color(0.72, 0.86, 1.0)],
+    ["sleep", Color(0.82, 0.76, 1.0)],
+    ["paralyze", Color(1.0, 0.96, 0.7)],
+    ["stun", Color(1.0, 0.92, 0.7)],
+]
 
 var _root: Control
 
@@ -216,6 +268,8 @@ func open(enemy_data: Dictionary) -> void :
 ## their LLM-authored skill set (GameManager.companion_skills).
 func _build_allies() -> void :
     _allies.clear()
+    var encounter_rank := str(enemy.get("rank", "minion")).strip_edges().to_lower()
+    var player_sp_max := maxi(int(player_stats.get("sp_max", 3)), 0)
     _allies.append({
         "kind": "player",
         "id": "player",
@@ -225,8 +279,10 @@ func _build_allies() -> void :
         "attack": int(player_stats.get("attack", 12)),
         "defense": int(player_stats.get("defense", 5)),
         "speed": int(player_stats.get("speed", 9)),
-        "sp": int(player_stats.get("sp_max", 3)),
-        "sp_max": int(player_stats.get("sp_max", 3)),
+        # SP is battle-local momentum: every encounter starts from a calibrated
+        # reserve instead of persisting attrition or refilling the whole pool.
+        "sp": _starting_sp_for(player_sp_max, encounter_rank),
+        "sp_max": player_sp_max,
         "statuses": [],
         "skills": GameManager.player_skills(),
         "downed": GameManager.get_player_hp() <= 0,
@@ -236,6 +292,7 @@ func _build_allies() -> void :
     for raw_id in GameManager.active_companion_ids():
         var npc_id: = str(raw_id)
         var stats: Dictionary = GameManager.companion_battle_stats(npc_id)
+        var companion_sp_max := maxi(int(stats.get("sp_max", 2)), 0)
         _allies.append({
             "kind": "companion",
             "id": npc_id,
@@ -245,27 +302,128 @@ func _build_allies() -> void :
             "attack": int(stats.get("attack", 10)),
             "defense": int(stats.get("defense", 4)),
             "speed": int(stats.get("speed", 8)),
-            "sp": int(stats.get("sp_max", 2)),
-            "sp_max": int(stats.get("sp_max", 2)),
+            "sp": _starting_sp_for(companion_sp_max, encounter_rank),
+            "sp_max": companion_sp_max,
             "statuses": [],
             "skills": GameManager.companion_skills(npc_id),
             "downed": GameManager.get_companion_hp(npc_id) <= 0,
             "focus": false,
             "guarding": false,
         })
+    # An escort is protected cargo, not a companion: it gets a targetable HP card
+    # and can receive combat effects, but has no SP, skills, action menu or turn.
+    # PartyManager snapshots max HP when the escort begins; the battle merely
+    # consumes that persistent value so attrition carries across encounters.
+    for raw_id in _active_escort_ids():
+        var npc_id := str(raw_id)
+        if npc_id.is_empty() or _has_ally_id(npc_id):
+            continue
+        var escort_max := _escort_max_hp(npc_id)
+        var escort_hp := _escort_hp(npc_id, escort_max)
+        _allies.append({
+            "kind": "escort",
+            "id": npc_id,
+            "name": _escort_name(npc_id),
+            "level": 0,
+            "max_hp": escort_max,
+            "hp": escort_hp,
+            "attack": 0,
+            "defense": int(player_stats.get("defense", 5)),
+            "speed": int(player_stats.get("speed", 9)),
+            "sp": 0,
+            "sp_max": 0,
+            "statuses": [],
+            "skills": [],
+            "downed": escort_hp <= 0,
+            "focus": false,
+            "guarding": false,
+            "can_act": false,
+        })
+
+
+## Longer encounters grant a larger opening reserve, while the two-point floor
+## lets a level-one support/healer use its defining two-SP skill immediately.
+## Unknown ranks intentionally follow the conservative normal-encounter policy.
+func _starting_sp_for(sp_max: int, encounter_rank: String) -> int:
+    sp_max = maxi(sp_max, 0)
+    if sp_max == 0:
+        return 0
+    var normalized_rank := encounter_rank.strip_edges().to_lower()
+    var ratio := float(STARTING_SP_RATIO_BY_RANK.get(
+        normalized_rank, STARTING_SP_RATIO_BY_RANK["minion"]))
+    return mini(
+        sp_max,
+        maxi(STARTING_SP_MINIMUM, ceili(float(sp_max) * ratio)),
+    )
+
+
+func _active_escort_ids() -> Array:
+    if not PartyManager.has_method("active_escort_ids"):
+        return []
+    var value: Variant = PartyManager.call("active_escort_ids")
+    return (value as Array).duplicate() if value is Array else []
+
+
+func _has_ally_id(npc_id: String) -> bool:
+    for ally in _allies:
+        if str(ally.get("id", "")) == npc_id:
+            return true
+    return false
+
+
+func _escort_name(npc_id: String) -> String:
+    if PartyManager.has_method("escort_name"):
+        var value := str(PartyManager.call("escort_name", npc_id)).strip_edges()
+        if not value.is_empty():
+            return value
+    if PartyManager.has_method("companion_name"):
+        return str(PartyManager.call("companion_name", npc_id))
+    return npc_id
+
+
+func _escort_max_hp(npc_id: String) -> int:
+    var fallback := maxi(int(player_stats.get("max_hp", 80)), 1)
+    if PartyManager.has_method("escort_max_hp"):
+        return maxi(int(PartyManager.call("escort_max_hp", npc_id)), 1)
+    return fallback
+
+
+func _escort_hp(npc_id: String, max_hp: int) -> int:
+    if PartyManager.has_method("get_escort_hp"):
+        return clampi(int(PartyManager.call("get_escort_hp", npc_id)), 0, max_hp)
+    return max_hp
 
 
 func _ally_hp(ally: Dictionary) -> int:
-    if str(ally.get("kind")) == "player":
-        return GameManager.get_player_hp()
-    return GameManager.get_companion_hp(str(ally.get("id")))
+    match str(ally.get("kind")):
+        "player":
+            return GameManager.get_player_hp()
+        "escort":
+            var max_hp := maxi(int(ally.get("max_hp", 1)), 1)
+            if PartyManager.has_method("get_escort_hp"):
+                var value := clampi(
+                    int(PartyManager.call("get_escort_hp", str(ally.get("id", "")))),
+                    0,
+                    max_hp,
+                )
+                ally["hp"] = value
+                return value
+            return clampi(int(ally.get("hp", max_hp)), 0, max_hp)
+        _:
+            return GameManager.get_companion_hp(str(ally.get("id")))
 
 
 func _set_ally_hp(ally: Dictionary, value: int) -> void :
-    if str(ally.get("kind")) == "player":
-        GameManager.set_player_hp(value)
-    else:
-        GameManager.set_companion_hp(str(ally.get("id")), value)
+    match str(ally.get("kind")):
+        "player":
+            GameManager.set_player_hp(value)
+        "escort":
+            value = clampi(value, 0, maxi(int(ally.get("max_hp", 1)), 1))
+            ally["hp"] = value
+            if PartyManager.has_method("set_escort_hp"):
+                PartyManager.call("set_escort_hp", str(ally.get("id", "")), value)
+        _:
+            GameManager.set_companion_hp(str(ally.get("id")), value)
 
 
 ## The hostile side: the touched world enemy plus reinforcement "echoes" sized to
@@ -277,7 +435,8 @@ func _build_foes() -> void :
     _foes.clear()
     _foes.append(_make_foe_actor(enemy, 0, false))
     var rank: = str(enemy.get("rank", "minion"))
-    var extra_budget: int = clampi(_allies.size() - 1, 0, 2)
+    var combat_roster_size := _combat_ally_roster_size()
+    var extra_budget: int = clampi(combat_roster_size - 1, 0, 2)
     if rank == "boss":
         extra_budget = 0
     elif rank == "elite":
@@ -287,11 +446,19 @@ func _build_foes() -> void :
     if rank == "boss":
         var primary: Dictionary = _foes[0]
         var scaled_hp: int = maxi(1, int(round(
-            int(primary.get("max_hp", 1)) * _boss_hp_multiplier(_allies.size())
+            int(primary.get("max_hp", 1)) * _boss_hp_multiplier(combat_roster_size)
         )))
         primary["max_hp"] = scaled_hp
         primary["hp"] = scaled_hp
-        primary["actions_per_round"] = _boss_actions_per_round(_allies.size())
+        primary["actions_per_round"] = _boss_actions_per_round(combat_roster_size)
+
+
+func _combat_ally_roster_size() -> int:
+    var count := 0
+    for ally in _allies:
+        if str(ally.get("kind", "")) != "escort":
+            count += 1
+    return count
 
 
 func _boss_hp_multiplier(party_size: int) -> float:
@@ -321,8 +488,40 @@ func _make_foe_actor(data: Dictionary, index: int, synthetic: bool) -> Dictionar
         "intent": {},
         "turns_since_heavy": 99,
         "actions_per_round": 1,
+        # Catalog loadout (scene_enemy_skills step). Presence of the package key
+        # — even with an empty skill list — selects the catalog battle system;
+        # packages without it keep the legacy free-form skills.
+        "has_catalog_loadout": (data.get("skill_loadout") is Dictionary),
+        "catalog_skills": _catalog_skills_for(data, synthetic),
+        "skill_ready_round": {},
         "ui": {},
     }
+
+
+## Resolve a packaged skill_loadout {skill_ids, telegraphs} against
+## GameManager.ENEMY_SKILL_POOL. Unknown ids are dropped (old package vs newer
+## catalog); backend Vietnamese telegraphs override the EN defaults. Echo
+## reinforcements never carry hard control — a party fight must not multiply
+## stun sources beyond what the zone budget authorized.
+func _catalog_skills_for(data: Dictionary, synthetic: bool) -> Array[Dictionary]:
+    var loadout: Variant = data.get("skill_loadout")
+    if not (loadout is Dictionary):
+        return []
+    var telegraphs: Dictionary = (loadout as Dictionary).get("telegraphs", {}) as Dictionary
+    var skills: Array[Dictionary] = []
+    for raw_id in (loadout as Dictionary).get("skill_ids", []) as Array:
+        var skill_id := str(raw_id)
+        var def: Dictionary = GameManager.enemy_skill_def(skill_id)
+        if def.is_empty():
+            continue
+        if synthetic and HARD_CC_STATUS_IDS.has(str(def.get("status", ""))):
+            continue
+        def["id"] = skill_id
+        var vi_telegraph := str(telegraphs.get(skill_id, ""))
+        if not vi_telegraph.is_empty():
+            def["telegraph"] = vi_telegraph
+        skills.append(def)
+    return skills
 
 
 ## A reinforcement copy of the primary enemy: one level lower (stat ratios mirror
@@ -498,10 +697,12 @@ func _tick_statuses(actor: Dictionary, is_ally: bool) -> Dictionary:
         if tick_pct > 0.0:
             var dot: int = maxi(1, int(round(max_hp * tick_pct)))
             _deal_raw_damage(actor, is_ally, dot, Color(0.55, 0.9, 0.35) if status_id == "poison" else Color(1.0, 0.5, 0.2))
+            _play_status_tick_fx(actor, is_ally, status_id)
             notes.append("%s takes %d %s damage." % [actor_name, dot, str(def.get("name", status_id)).to_lower()])
         if bool(def.get("tick_heal", false)):
             var heal: int = maxi(1, int(round(float((status as Dictionary).get("magnitude", 6.0)))))
             _heal_raw(actor, is_ally, heal)
+            _play_status_tick_fx(actor, is_ally, status_id)
             notes.append("%s regenerates %d HP." % [actor_name, heal])
 
     if _actor_down(actor, is_ally):
@@ -575,12 +776,32 @@ func _actor_down(actor: Dictionary, is_ally: bool) -> bool:
     return int(actor.get("hp", 0)) <= 0
 
 
-func _living_allies() -> Array[int]:
+## Every standing ally that enemies and friendly targeted effects can select.
+## This includes protected escorts even though they are non-combatants.
+func _targetable_allies() -> Array[int]:
     var out: Array[int] = []
     for index in range(_allies.size()):
         if not _actor_down(_allies[index], true):
             out.append(index)
     return out
+
+
+## Standing actors that can actually take a battle turn. This drives initiative,
+## defeat checks and boss pressure, and therefore deliberately excludes escorts.
+func _living_combat_allies() -> Array[int]:
+    var out: Array[int] = []
+    for index in _targetable_allies():
+        if str(_allies[index].get("kind", "")) != "escort" \
+                and bool(_allies[index].get("can_act", true)):
+            out.append(index)
+    return out
+
+
+## Kept as a compatibility query for dev tools; target selection is what the old
+## helper represented. Mechanics that need action-capable actors call the
+## explicit `_living_combat_allies` helper.
+func _living_allies() -> Array[int]:
+    return _targetable_allies()
 
 
 func _living_foes() -> Array[int]:
@@ -1187,6 +1408,7 @@ func _build_ui() -> void :
     _fx_layer.size = DESIGN_SIZE
     _fx_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
     _design.add_child(_fx_layer)
+    _build_damage_vignette()
 
     _refresh_all_panels()
     _play_intro_animation()
@@ -1603,6 +1825,7 @@ func _build_ally_stack() -> void:
 
 
 func _build_ally_card(ally: Dictionary, rect: Rect2, is_full: bool) -> Dictionary:
+    var is_escort := str(ally.get("kind", "")) == "escort"
     var panel: Panel
     var compact_scrim: TextureRect = null
     if is_full:
@@ -1677,6 +1900,7 @@ func _build_ally_card(ally: Dictionary, rect: Rect2, is_full: bool) -> Dictionar
     # The fit calculation keeps every pip inside; clipping is a final guard for
     # fractional rendering at unusual viewport scales.
     sp_row.clip_contents = true
+    sp_row.visible = not is_escort
     panel.add_child(sp_row)
     var sp_pips: Array = _build_sp_pips_for(
         sp_row, int(ally.get("sp_max", 3)), bar_w)
@@ -1688,7 +1912,8 @@ func _build_ally_card(ally: Dictionary, rect: Rect2, is_full: bool) -> Dictionar
 
     var xp_bar: Control = null
     var xp_text: Label = null
-    if is_full:
+    var role_label: Label = null
+    if is_full and not is_escort:
         var xp_label: = UiKit.make_label_strong("XP", 10, COLOR_TEXT_DIM)
         xp_label.position = Vector2(left, hp_y + 52)
         panel.add_child(xp_label)
@@ -1700,6 +1925,13 @@ func _build_ally_card(ally: Dictionary, rect: Rect2, is_full: bool) -> Dictionar
         xp_text.size = Vector2(bar_w - 24, 11)
         xp_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
         panel.add_child(xp_text)
+    elif is_full:
+        role_label = UiKit.make_label_strong(
+            "PROTECTED · NON-COMBATANT", 9, COLOR_TEXT_DIM)
+        role_label.position = Vector2(left, hp_y + 51)
+        role_label.size = Vector2(bar_w, 14)
+        role_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+        panel.add_child(role_label)
 
     # Ally-side target arrow (heal/shield targeting).
     var arrow: = _make_display_label("▶", 18, COLOR_ACCENT)
@@ -1722,6 +1954,7 @@ func _build_ally_card(ally: Dictionary, rect: Rect2, is_full: bool) -> Dictionar
         "status_row": status_row,
         "xp_bar": xp_bar,
         "xp_text": xp_text,
+        "role_label": role_label,
         "compact_scrim": compact_scrim,
         "bar_w": bar_w,
         "arrow": arrow,
@@ -1734,6 +1967,15 @@ func _ally_portrait_texture(ally: Dictionary) -> Texture2D:
     if str(ally.get("kind")) == "player":
         return _hero_portrait_texture()
     var npc_id: = str(ally.get("id"))
+    if str(ally.get("kind", "")) == "escort":
+        if PartyManager.has_method("escort_portrait"):
+            var escort_portrait: Variant = PartyManager.call("escort_portrait", npc_id)
+            if escort_portrait is Texture2D:
+                return escort_portrait as Texture2D
+        if PartyManager.has_method("escort_texture"):
+            var escort_texture: Variant = PartyManager.call("escort_texture", npc_id)
+            if escort_texture is Texture2D:
+                return escort_texture as Texture2D
     var portrait: Texture2D = PartyManager.companion_portrait(npc_id)
     if portrait != null:
         return portrait
@@ -2221,6 +2463,158 @@ func _enemy_lunge(foe: Dictionary) -> void :
     lunge.tween_property(holder, "position", home, 0.3).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 
 
+# ── AAA hit-feedback layer ────────────────────────────────────────────────────
+# Every point of party pain must be FELT: a radial vignette breathes the damage
+# color at the screen edge, heavy blows freeze the frame for a heartbeat
+# (hit-stop), the struck card recoils, and every ailment lands with a stamped
+# Vietnamese banner + signature-color particles, then lingers as a portrait
+# tint until it wears off.
+
+
+func _build_damage_vignette() -> void :
+    var gradient: = Gradient.new()
+    gradient.set_color(0, Color(1, 1, 1, 0.0))
+    gradient.set_color(1, Color(1, 1, 1, 0.9))
+    gradient.set_offset(0, 0.52)
+    var texture: = GradientTexture2D.new()
+    texture.gradient = gradient
+    texture.fill = GradientTexture2D.FILL_RADIAL
+    texture.fill_from = Vector2(0.5, 0.5)
+    texture.fill_to = Vector2(0.5, -0.08)
+    texture.width = 480
+    texture.height = 270
+    _damage_vignette = TextureRect.new()
+    _damage_vignette.texture = texture
+    _damage_vignette.stretch_mode = TextureRect.STRETCH_SCALE
+    _damage_vignette.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+    _damage_vignette.position = Vector2.ZERO
+    _damage_vignette.size = DESIGN_SIZE
+    _damage_vignette.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    _damage_vignette.modulate = Color(0.9, 0.12, 0.1, 0.0)
+    _design.add_child(_damage_vignette)
+
+
+## One breath of the edge vignette in `color` at `strength` alpha, then a slow
+## exhale. Re-pulsing retints instantly so overlapping sources never fight.
+func _pulse_damage_vignette(color: Color, strength: float) -> void :
+    if _damage_vignette == null or not is_instance_valid(_damage_vignette):
+        return
+    var previous: Variant = _damage_vignette.get_meta("pulse_tween") if _damage_vignette.has_meta("pulse_tween") else null
+    if previous is Tween and (previous as Tween).is_valid():
+        (previous as Tween).kill()
+    _damage_vignette.modulate = Color(color.r, color.g, color.b, clampf(strength, 0.0, 0.85))
+    var fade: = create_tween()
+    fade.tween_property(_damage_vignette, "modulate:a", 0.0, 0.55).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+    _damage_vignette.set_meta("pulse_tween", fade)
+
+
+## A film-style impact freeze: time crawls for a few real milliseconds, then
+## snaps back. Guarded so overlapping heavy hits never stack the dip; restored
+## on a real-time timer, so it can never wedge the battle slow.
+func _hit_stop(duration: float = 0.09, dip: float = 0.12) -> void :
+    if _hit_stop_active:
+        return
+    _hit_stop_active = true
+    Engine.time_scale = dip
+    await get_tree().create_timer(duration, true, false, true).timeout
+    Engine.time_scale = 1.0
+    _hit_stop_active = false
+
+
+## The struck ally card recoils and flashes; big hits also stop time for a
+## heartbeat. `damage` scales the vignette so a graze whispers and a near-lethal
+## blow screams.
+func _play_ally_hit_feedback(victim: Dictionary, damage: int, heavy: bool) -> void :
+    var ratio: = clampf(float(damage) / maxf(float(victim.get("max_hp", 1)), 1.0), 0.0, 1.0)
+    _shake(7.0 if heavy else 4.0, 0.35 if heavy else 0.25)
+    _pulse_damage_vignette(Color(0.9, 0.12, 0.1), clampf(0.28 + ratio * 1.7, 0.28, 0.8))
+    if heavy or ratio >= 0.22:
+        _hit_stop()
+    _spawn_particles(_actor_fx_center(victim, true), Color(1.0, 0.4, 0.32), 14 if heavy else 9, false)
+    var index: = _allies.find(victim)
+    if index < 0 or index >= _ally_cards.size():
+        return
+    var card: Dictionary = _ally_cards[index]
+    var portrait: Control = card.get("portrait") as Control
+    if portrait == null or not is_instance_valid(portrait):
+        return
+    if not card.has("portrait_home"):
+        card["portrait_home"] = portrait.position
+    var home: Vector2 = card["portrait_home"]
+    var previous: Variant = portrait.get_meta("punch_tween") if portrait.has_meta("punch_tween") else null
+    if previous is Tween and (previous as Tween).is_valid():
+        (previous as Tween).kill()
+    portrait.position = home
+    portrait.modulate = Color(1.6, 1.35, 1.3)
+    var punch: = create_tween()
+    punch.tween_property(portrait, "position", home + Vector2(-7.0 if heavy else -4.0, 2.0), 0.06).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+    punch.parallel().tween_property(portrait, "modulate", Color(1.25, 0.55, 0.5), 0.08)
+    punch.tween_property(portrait, "position", home, 0.32).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
+    punch.parallel().tween_property(portrait, "modulate", Color.WHITE, 0.4)
+    portrait.set_meta("punch_tween", punch)
+
+
+## Full-width stamped banner the moment a status lands: icon + Vietnamese cry in
+## the status's signature color, punched in like a wax seal, then drifting off.
+func _announce_status_applied(actor: Dictionary, is_ally: bool, status_id: String) -> void :
+    var text: = str(STATUS_STAMP_VI.get(status_id, str(GameManager.status_def(status_id).get("name", status_id)).to_upper() + "!"))
+    var color: Color = STATUS_FX_COLORS.get(status_id, COLOR_ACCENT)
+    var at: = _actor_fx_center(actor, is_ally)
+    var stamp: = HBoxContainer.new()
+    stamp.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    stamp.add_theme_constant_override("separation", 5)
+    var icon_texture: Texture2D = _load_png_texture("res://assets/ui/battle/status/%s.png" % status_id)
+    if icon_texture != null:
+        var icon: = TextureRect.new()
+        icon.texture = icon_texture
+        icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+        icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+        icon.custom_minimum_size = Vector2(22, 22)
+        stamp.add_child(icon)
+    var label: = _make_header_label(text, 18, color)
+    label.add_theme_color_override("font_outline_color", Color(0.05, 0.02, 0.08, 0.95))
+    label.add_theme_constant_override("outline_size", 7)
+    stamp.add_child(label)
+    _fx_layer.add_child(stamp)
+    # Measure after add so the stamp centers on the actor.
+    await get_tree().process_frame
+    if not is_instance_valid(stamp):
+        return
+    stamp.position = at + Vector2(-stamp.size.x * 0.5, -62.0)
+    stamp.pivot_offset = stamp.size * 0.5
+    stamp.scale = Vector2(1.7, 1.7)
+    stamp.modulate = Color(1, 1, 1, 0.0)
+    _spawn_particles(at, color, 14, true)
+    var seal: = create_tween()
+    seal.tween_property(stamp, "scale", Vector2.ONE, 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+    seal.parallel().tween_property(stamp, "modulate:a", 1.0, 0.1)
+    seal.tween_interval(0.85)
+    seal.tween_property(stamp, "position:y", stamp.position.y - 20.0, 0.5).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+    seal.parallel().tween_property(stamp, "modulate:a", 0.0, 0.5)
+    seal.tween_callback(stamp.queue_free)
+
+
+## Per-tick affliction FX: poison bubbles up sickly green, burn spits embers,
+## regen sparkles — and party members breathe the color at the screen edge so a
+## DoT on YOUR side is never missed.
+func _play_status_tick_fx(actor: Dictionary, is_ally: bool, status_id: String) -> void :
+    var color: Color = STATUS_FX_COLORS.get(status_id, COLOR_ACCENT)
+    var at: = _actor_fx_center(actor, is_ally)
+    _spawn_particles(at, color, 12, true)
+    if is_ally and (status_id == "poison" or status_id == "burn"):
+        _pulse_damage_vignette(color, 0.3)
+        _shake(2.0, 0.18)
+
+
+## The strongest visible affliction tints the actor's portrait until it wears
+## off (subtle — a sick ally LOOKS sick between turns).
+func _affliction_tint(actor: Dictionary) -> Color:
+    for entry in AFFLICTION_TINTS:
+        if not _find_status(actor, str(entry[0])).is_empty():
+            return entry[1]
+    return Color.WHITE
+
+
 ## Exposed glow always concerns the PRIMARY foe (the probe/weakness story system).
 func _set_exposed_glow(active: bool) -> void :
     if _foes.is_empty():
@@ -2296,6 +2690,9 @@ func _run_battle() -> void :
 
     while not _battle_over:
         _round_serial += 1
+        await _tick_escort_statuses_for_round()
+        if _battle_over:
+            return
         _round_queue = _build_round_queue()
         _queue_pos = 0
         while _queue_pos < _round_queue.size():
@@ -2341,7 +2738,7 @@ func _run_battle() -> void :
 func _build_round_queue() -> Array[Dictionary]:
     var entries: Array[Dictionary] = []
     var ally_speeds: Array[int] = []
-    for index in _living_allies():
+    for index in _living_combat_allies():
         var speed: int = _effective_speed(_allies[index])
         ally_speeds.append(speed)
         entries.append({"side": "ally", "index": index,
@@ -2355,7 +2752,7 @@ func _build_round_queue() -> Array[Dictionary]:
             # Pressure follows the LIVING party, not the opening roster. If an
             # ally falls, the boss sheds one action next round so defeat does not
             # cascade into an unavoidable 3-v-1 lock; a revive restores it.
-            actions = _boss_actions_per_round(_living_allies().size())
+            actions = _boss_actions_per_round(_living_combat_allies().size())
             foe["actions_per_round"] = actions
         for action_slot in range(actions):
             var initiative: float = _foe_action_initiative(foe, action_slot, actions, ally_speeds)
@@ -2392,13 +2789,35 @@ func _actor_for_entry(entry: Dictionary) -> Dictionary:
 # ── ally turns ────────────────────────────────────────────────────────────────
 
 
+## Escorts have no initiative slot, so their statuses need one explicit upkeep
+## pass per round. DoT, regen, shield duration and hard-control duration all use
+## the same engine as combatants; a lethal tick immediately enters escort retry.
+func _tick_escort_statuses_for_round() -> void:
+    for ally in _allies:
+        if str(ally.get("kind", "")) != "escort":
+            continue
+        if _actor_down(ally, true):
+            await _escort_defeat(ally)
+            return
+        var upkeep := _status_upkeep_for_round(ally, true)
+        for note in upkeep.get("notes", []) as Array:
+            await _say(str(note))
+        _refresh_all_panels()
+        if _actor_down(ally, true):
+            await _escort_defeat(ally)
+            return
+
+
 func _ally_turn(ally: Dictionary) -> void :
+    if str(ally.get("kind", "")) == "escort" \
+            or not bool(ally.get("can_act", true)):
+        return
     _set_active_ally(ally)
     var upkeep: Dictionary = _status_upkeep_for_round(ally, true)
     for note in upkeep.get("notes", []) as Array:
         await _say(str(note))
     _refresh_all_panels()
-    if _living_allies().is_empty():
+    if _living_combat_allies().is_empty():
         await _defeat()
         return
     if _actor_down(ally, true) or bool(upkeep.get("skip", false)):
@@ -2471,6 +2890,9 @@ func _ally_action_menu(ally: Dictionary) -> void :
 ## Probe/finisher remain protagonist story abilities; inventory and encounter-wide
 ## decisions belong to whichever living party member currently owns the turn.
 func _ally_action_commands(ally: Dictionary) -> Array[Dictionary]:
+    if str(ally.get("kind", "")) == "escort" \
+            or not bool(ally.get("can_act", true)):
+        return []
     var is_player: = str(ally.get("kind")) == "player"
     var commands: Array[Dictionary] = [
         {
@@ -2596,7 +3018,7 @@ func _use_skill(ally: Dictionary, skill: Dictionary) -> bool:
         "heal_all":
             _spend_sp(ally, skill)
             var heal_all: int = int(round(power)) + int(round(level * 1.8))
-            for index in _living_allies():
+            for index in _targetable_allies():
                 var member: Dictionary = _allies[index]
                 _play_skill_fx(skill_id, _actor_fx_center(member, true))
                 _heal_raw(member, true, heal_all)
@@ -2686,6 +3108,7 @@ func _use_skill(ally: Dictionary, skill: Dictionary) -> bool:
                     var foe: Dictionary = _foes[target]
                     _play_ally_attack_fx(skill_id, _foe_center(foe))
                     if randf() < float(skill.get("status_chance", 1.0)) and _apply_status(foe, status_id):
+                        _announce_status_applied(foe, false, status_id)
                         _refresh_all_panels()
                         await _say("%s uses %s — %s is afflicted by %s!" % [caster_name, skill_name, foe.get("name"), _status_label(status_id)])
                     else:
@@ -2702,7 +3125,7 @@ func _use_skill(ally: Dictionary, skill: Dictionary) -> bool:
                     await _say("%s uses %s — %s gains %s!" % [caster_name, skill_name, member.get("name"), _status_label(status_id)])
                 "ally_all":
                     _spend_sp(ally, skill)
-                    for index in _living_allies():
+                    for index in _targetable_allies():
                         _apply_buff_status(_allies[index], status_id, level)
                         _play_skill_fx(skill_id, _actor_fx_center(_allies[index], true))
                     _refresh_all_panels()
@@ -2727,6 +3150,7 @@ func _use_skill(ally: Dictionary, skill: Dictionary) -> bool:
                     if not _apply_status(foe, rider):
                         await _say("%s resists %s!" % [foe.get("name"), _status_label(rider)])
                         return true
+                    _announce_status_applied(foe, false, rider)
                     _refresh_all_panels()
                     await _say("%s is afflicted by %s!" % [foe.get("name"), _status_label(rider)])
     return true
@@ -3007,6 +3431,9 @@ func _foe_turn(foe: Dictionary) -> void :
 
 
 func _foe_use_skill(foe: Dictionary, skill: Dictionary) -> void :
+    if skill.has("effect"):
+        await _foe_use_catalog_skill(foe, skill)
+        return
     var kind: String = str(skill.get("kind", "strike"))
     var skill_name: String = str(skill.get("name", "Attack"))
     var power: float = float(skill.get("power", 1.0))
@@ -3014,14 +3441,7 @@ func _foe_use_skill(foe: Dictionary, skill: Dictionary) -> void :
     if victim.is_empty():
         return
     if kind == "heavy":
-        var ui: Dictionary = _foe_ui(foe)
-        if not ui.is_empty():
-            var flash: TextureRect = ui["flash"]
-            flash.modulate = Color(1.0, 0.3, 0.2, 0.0)
-            var windup: = create_tween()
-            windup.tween_property(flash, "modulate:a", 0.5, 0.35)
-            windup.tween_property(flash, "modulate:a", 0.0, 0.15)
-            await windup.finished
+        await _play_foe_windup(foe)
     match kind:
         "hex":
             _apply_status(victim, "weaken")
@@ -3037,10 +3457,149 @@ func _foe_use_skill(foe: Dictionary, skill: Dictionary) -> void :
             await _foe_strike(foe, victim, power, "%s uses %s!" % [foe.get("name"), skill_name])
 
 
+## The red pre-attack flash on the foe's portrait — the shared wind-up telegraph
+## for legacy "heavy" skills and catalog skills flagged windup.
+func _play_foe_windup(foe: Dictionary) -> void :
+    var ui: Dictionary = _foe_ui(foe)
+    if ui.is_empty():
+        return
+    var flash: TextureRect = ui["flash"]
+    flash.modulate = Color(1.0, 0.3, 0.2, 0.0)
+    var windup: = create_tween()
+    windup.tween_property(flash, "modulate:a", 0.5, 0.35)
+    windup.tween_property(flash, "modulate:a", 0.0, 0.15)
+    await windup.finished
+
+
+## Foe-side dispatch for CATALOG skills (GameManager.ENEMY_SKILL_POOL) — the
+## hostile mirror of _use_skill. Cooldowns are round-anchored: using a skill
+## stamps the round it becomes ready again.
+func _foe_use_catalog_skill(foe: Dictionary, skill: Dictionary) -> void :
+    var skill_id := str(skill.get("id", ""))
+    var skill_name := str(skill.get("name", "Attack"))
+    var effect := str(skill.get("effect", "attack"))
+    var power := float(skill.get("power", 1.0))
+    var foe_name := str(foe.get("name", "Enemy"))
+    var level: int = maxi(1, int(foe.get("level", 1)))
+    if not skill_id.is_empty():
+        var telegraph := str(skill.get("telegraph", ""))
+        if not telegraph.is_empty():
+            await _say(telegraph)
+    if bool(skill.get("windup", false)):
+        await _play_foe_windup(foe)
+
+    match effect:
+        "multi":
+            var victim: Dictionary = _pick_foe_victim()
+            if victim.is_empty():
+                return
+            var hits: int = clampi(int(skill.get("hits", 3)), 2, 4)
+            await _say("%s unleashes %s!" % [foe_name, skill_name])
+            for hit_index in range(hits):
+                if _battle_over or _actor_down(victim, true):
+                    break
+                _play_skill_fx(skill_id, _actor_fx_center(victim, true) + Vector2(
+                    randf_range(-12, 12), randf_range(-8, 8)))
+                await _foe_strike(foe, victim, power, "Hit %d —" % [hit_index + 1])
+        "aoe":
+            await _say("%s unleashes %s — it sweeps over the whole party!" % [foe_name, skill_name])
+            var rider: String = str(skill.get("status", ""))
+            var rider_chance: float = float(skill.get("status_chance", 1.0))
+            for index in _targetable_allies().duplicate():
+                var member: Dictionary = _allies[index]
+                if _battle_over:
+                    return
+                if _actor_down(member, true):
+                    continue
+                _play_skill_fx(skill_id, _actor_fx_center(member, true))
+                var dealt: int = await _foe_strike(foe, member, power, "")
+                if dealt > 0 and not rider.is_empty() and not _actor_down(member, true):
+                    if randf() < rider_chance and _apply_status(member, rider):
+                        _announce_status_applied(member, true, rider)
+                        await _say("%s is afflicted by %s!" % [member.get("name"), _status_label(rider)])
+        "drain":
+            var victim: Dictionary = _pick_foe_victim()
+            if victim.is_empty():
+                return
+            _play_skill_fx(skill_id, _actor_fx_center(victim, true))
+            var dealt: int = await _foe_strike(foe, victim, power, "%s uses %s!" % [foe_name, skill_name])
+            if dealt > 0 and not _actor_down(foe, false):
+                var siphon: int = maxi(1, int(round(dealt * 0.6)))
+                _heal_raw(foe, false, siphon)
+                await _say("%s drains %d HP from the wound." % [foe_name, siphon])
+        "heal":
+            var patient: Dictionary = _most_wounded_foe_ally(foe)
+            if patient.is_empty():
+                patient = foe
+            var heal_amount: int = int(round(power)) + level * 2
+            _play_skill_fx(skill_id, _actor_fx_center(patient, false))
+            _heal_raw(patient, false, heal_amount)
+            await _say("%s uses %s — %s recovers %d HP." % [foe_name, skill_name, patient.get("name"), heal_amount])
+        "shield":
+            var pool: int = 10 + 3 * level
+            _apply_status(foe, "shield", float(pool))
+            _play_skill_fx(skill_id, _actor_fx_center(foe, false))
+            _refresh_all_panels()
+            await _say("%s raises %s — a %d-point ward forms around it." % [foe_name, skill_name, pool])
+        "status":
+            var status_id := str(skill.get("status", ""))
+            var chance := float(skill.get("status_chance", 1.0))
+            match str(skill.get("target", "enemy")):
+                "self":
+                    _apply_foe_buff(foe, status_id, level)
+                    _play_skill_fx(skill_id, _actor_fx_center(foe, false))
+                    _refresh_all_panels()
+                    await _say("%s uses %s — it gains %s!" % [foe_name, skill_name, _status_label(status_id)])
+                "ally_all":
+                    for index in _living_foes():
+                        _apply_foe_buff(_foes[index], status_id, level)
+                        _play_skill_fx(skill_id, _actor_fx_center(_foes[index], false))
+                    _refresh_all_panels()
+                    await _say("%s uses %s — the pack gains %s!" % [foe_name, skill_name, _status_label(status_id)])
+                _:
+                    var victim: Dictionary = _victim_without_status(status_id)
+                    if victim.is_empty():
+                        victim = _pick_foe_victim()
+                    if victim.is_empty():
+                        return
+                    _play_skill_fx(skill_id, _actor_fx_center(victim, true))
+                    if randf() < chance and _apply_status(victim, status_id):
+                        _announce_status_applied(victim, true, status_id)
+                        _refresh_all_panels()
+                        await _say("%s uses %s — %s is afflicted by %s!" % [foe_name, skill_name, victim.get("name"), _status_label(status_id)])
+                    else:
+                        await _say("%s uses %s — but %s shakes it off!" % [foe_name, skill_name, victim.get("name")])
+        _:
+            var victim: Dictionary = _pick_foe_victim()
+            if victim.is_empty():
+                return
+            if not skill_id.is_empty():
+                _play_skill_fx(skill_id, _actor_fx_center(victim, true))
+            var flavor := "%s uses %s!" % [foe_name, skill_name] if not skill_id.is_empty() else "%s attacks!" % foe_name
+            var dealt: int = await _foe_strike(
+                foe, victim, power, flavor, bool(skill.get("pierce", false)))
+            var rider := str(skill.get("status", ""))
+            if dealt > 0 and not rider.is_empty() and not _actor_down(victim, true):
+                if randf() < float(skill.get("status_chance", 0.0)):
+                    if _apply_status(victim, rider):
+                        _announce_status_applied(victim, true, rider)
+                        _refresh_all_panels()
+                        await _say("%s is afflicted by %s!" % [victim.get("name"), _status_label(rider)])
+
+
+## Regen magnitude scales with the caster's level (mirror of _apply_buff_status
+## on the ally side).
+func _apply_foe_buff(actor: Dictionary, status_id: String, caster_level: int) -> void :
+    var magnitude: = 0.0
+    if status_id == "regen":
+        magnitude = float(5 + caster_level)
+    _apply_status(actor, status_id, magnitude)
+
+
 ## Which ally does a foe swing at? A taunting tank forces the choice; otherwise
 ## the protagonist draws a little more heat than each companion.
 func _pick_foe_victim() -> Dictionary:
-    var living: Array[int] = _living_allies()
+    var living: Array[int] = _targetable_allies()
     if living.is_empty():
         return {}
     for index in living:
@@ -3060,14 +3619,17 @@ func _pick_foe_victim() -> Dictionary:
     return _allies[living.back()]
 
 
-func _foe_strike(foe: Dictionary, victim: Dictionary, power: float, flavor: String) -> void :
+## One enemy swing landing on one ally. Returns the damage that reached HP
+## (0 on miss / fully absorbed) so catalog skills can gate status riders and
+## drains on a real hit.
+func _foe_strike(foe: Dictionary, victim: Dictionary, power: float, flavor: String, ignore_defense: bool = false) -> int:
     var hit_chance: = _status_mult(foe, "hit_chance")
     if hit_chance < 1.0 and randf() > hit_chance:
         _enemy_lunge(foe)
         await get_tree().create_timer(0.14).timeout
         _spawn_damage_number(_actor_fx_center(victim, true) + Vector2(10, -60), "MISS", COLOR_TEXT_DIM)
         await _say("%s's attack misses %s!" % [foe.get("name"), victim.get("name")])
-        return
+        return 0
 
     var is_primary: = foe == _foes[0]
     var base: float = float(foe.get("attack", 8)) * power
@@ -3076,6 +3638,8 @@ func _foe_strike(foe: Dictionary, victim: Dictionary, power: float, flavor: Stri
         base *= phase_damage_bonus
     var variance: float = randf_range(0.85, 1.15)
     var defense: float = float(victim.get("defense", 5)) * _status_mult(victim, "defense_mult")
+    if ignore_defense:
+        defense *= 0.15
     var damage: float = base * variance - defense * 0.5
     if bool(victim.get("guarding", false)):
         damage *= 0.5
@@ -3084,14 +3648,16 @@ func _foe_strike(foe: Dictionary, victim: Dictionary, power: float, flavor: Stri
 
     _enemy_lunge(foe)
     await get_tree().create_timer(0.14).timeout
-    _shake(5.0 if power >= 1.5 else 3.0, 0.3)
+    var heavy_hit: = power >= 1.5
     if final_damage > 0:
-        _spawn_damage_number(_actor_fx_center(victim, true) + Vector2(10, -30), str(final_damage), COLOR_PLAYER_DMG, power >= 1.5)
+        _spawn_damage_number(_actor_fx_center(victim, true) + Vector2(10, -30), str(final_damage), COLOR_PLAYER_DMG, heavy_hit)
         _set_ally_hp(victim, _ally_hp(victim) - final_damage)
         _on_actor_damaged(victim)
         if _ally_hp(victim) <= 0:
             victim["downed"] = true
+        _play_ally_hit_feedback(victim, final_damage, heavy_hit)
     else:
+        _shake(3.0, 0.25)
         _spawn_damage_number(_actor_fx_center(victim, true) + Vector2(10, -30), "BLOCKED", Color(0.75, 0.8, 0.95))
     _animate_ally_hp(victim)
     _refresh_all_panels()
@@ -3106,11 +3672,19 @@ func _foe_strike(foe: Dictionary, victim: Dictionary, power: float, flavor: Stri
 
     if bool(victim.get("downed", false)):
         await _say("%s falls!" % str(victim.get("name")))
-    if _living_allies().is_empty():
+    if bool(victim.get("downed", false)) \
+            and str(victim.get("kind", "")) == "escort":
+        await _escort_defeat(victim)
+    elif _living_combat_allies().is_empty():
         await _defeat()
+    return final_damage
 
 
 func _pick_foe_intent(foe: Dictionary) -> void :
+    if bool(foe.get("has_catalog_loadout", false)):
+        foe["intent"] = _pick_catalog_intent(foe)
+        _refresh_target_readout()
+        return
     var skills: Array = (foe.get("data", {}) as Dictionary).get("skills", []) as Array
     var usable: Array[Dictionary] = []
     var silenced: = _status_flag(foe, "no_skills")
@@ -3129,6 +3703,108 @@ func _pick_foe_intent(foe: Dictionary) -> void :
     else:
         foe["turns_since_heavy"] = int(foe.get("turns_since_heavy", 99)) + 1
     _refresh_target_readout()
+
+
+const _CATALOG_BASIC_ATTACK: Dictionary = {
+    "id": "", "name": "Attack", "effect": "attack", "power": 1.0,
+    "cooldown": 0, "telegraph": "",
+}
+
+
+## Situation-aware weighted pick from the foe's catalog kit, cooldown-gated:
+## mend when the pack bleeds, buff up early, afflict the still-untouched, save
+## area attacks for a standing party — and always keep the plain strike as a
+## fallback. Silence strips everything except the basic attack.
+func _pick_catalog_intent(foe: Dictionary) -> Dictionary:
+    if _status_flag(foe, "no_skills"):
+        return _CATALOG_BASIC_ATTACK.duplicate(true)
+    var ready: Dictionary = foe.get("skill_ready_round", {}) as Dictionary
+    var candidates: Array[Dictionary] = [_CATALOG_BASIC_ATTACK.duplicate(true)]
+    var weights: Array[float] = [3.0]
+    for skill in foe.get("catalog_skills", []) as Array:
+        var s: Dictionary = skill as Dictionary
+        var skill_id := str(s.get("id", ""))
+        if _round_serial < int(ready.get(skill_id, 0)):
+            continue
+        var weight := 3.2
+        match str(s.get("effect", "attack")):
+            "heal":
+                var patient: Dictionary = _most_wounded_foe_ally(foe)
+                if patient.is_empty():
+                    continue
+                weight = 7.0
+            "shield":
+                if not _find_status(foe, "shield").is_empty():
+                    continue
+                weight = 4.0 if _round_serial <= 2 else 2.5
+            "status":
+                var status_id := str(s.get("status", ""))
+                match str(s.get("target", "enemy")):
+                    "self":
+                        if not _find_status(foe, status_id).is_empty():
+                            continue
+                        weight = 4.5 if _round_serial <= 2 else 2.5
+                    "ally_all":
+                        var missing := 0
+                        for foe_index in _living_foes():
+                            if _find_status(_foes[foe_index], status_id).is_empty():
+                                missing += 1
+                        if missing == 0:
+                            continue
+                        weight = 3.5 if _living_foes().size() >= 2 else 1.2
+                    _:
+                        if _victim_without_status(status_id).is_empty():
+                            continue
+                        weight = 4.0
+            "aoe":
+                weight = 4.2 if _living_combat_allies().size() >= 2 else 1.2
+            _:
+                weight = 3.4
+        candidates.append(s)
+        weights.append(weight)
+    var total := 0.0
+    for weight in weights:
+        total += weight
+    var roll := randf() * total
+    var chosen: Dictionary = candidates.back()
+    for position in range(candidates.size()):
+        roll -= weights[position]
+        if roll <= 0.0:
+            chosen = candidates[position]
+            break
+    # Cooldown is stamped at PICK time (intents are chosen one turn ahead —
+    # stamping at use time would let the next pick re-select a skill whose
+    # cooldown it could not yet see; same pattern as legacy turns_since_heavy).
+    var chosen_id := str(chosen.get("id", ""))
+    if not chosen_id.is_empty():
+        ready[chosen_id] = _round_serial + maxi(int(chosen.get("cooldown", 1)), 1)
+    return chosen
+
+
+## The foe's most wounded LIVING packmate below 65% HP (itself included) — the
+## heal target, or {} when nobody needs mending.
+func _most_wounded_foe_ally(_healer: Dictionary) -> Dictionary:
+    var best: Dictionary = {}
+    var best_ratio := 0.65
+    for index in _living_foes():
+        var candidate: Dictionary = _foes[index]
+        var ratio := float(candidate.get("hp", 1)) / maxf(float(candidate.get("max_hp", 1)), 1.0)
+        if ratio < best_ratio:
+            best_ratio = ratio
+            best = candidate
+    return best
+
+
+## A living party member NOT yet carrying `status_id` — hex targets prefer the
+## untouched so debuffs spread instead of re-stacking.
+func _victim_without_status(status_id: String) -> Dictionary:
+    var open: Array[Dictionary] = []
+    for index in _targetable_allies():
+        if _find_status(_allies[index], status_id).is_empty():
+            open.append(_allies[index])
+    if open.is_empty():
+        return {}
+    return open[randi() % open.size()]
 
 
 func _flee_chance(ally: Dictionary) -> float:
@@ -3321,12 +3997,12 @@ func _show_victory_banner() -> Control :
 
 
 ## Passive healer-regen from the party bonus, applied on the protagonist's turn
-## to every living, wounded ally.
+## to every living, wounded combatant. Escorts never inherit companion passives.
 func _apply_party_regen() -> void :
     var regen: int = int(player_stats.get("party_regen", 0))
     if regen <= 0:
         return
-    for index in _living_allies():
+    for index in _living_combat_allies():
         var ally: Dictionary = _allies[index]
         if _ally_hp(ally) >= int(ally.get("max_hp", 1)):
             continue
@@ -3385,25 +4061,74 @@ func _grant_xp(xp: int, message: String) -> void :
 ## back into the live actor dictionaries (downed state and current HP persist).
 func _sync_ally_actor_stats() -> void :
     for ally in _allies:
-        if str(ally.get("kind")) == "player":
-            ally["level"] = GameManager.player_level
-            ally["max_hp"] = int(player_stats.get("max_hp", 80))
-            ally["attack"] = int(player_stats.get("attack", 12))
-            ally["defense"] = int(player_stats.get("defense", 5))
-            ally["speed"] = int(player_stats.get("speed", 9))
-            ally["sp_max"] = int(player_stats.get("sp_max", 3))
-            ally["skills"] = GameManager.player_skills()
-        else:
-            var npc_id: = str(ally.get("id"))
-            var stats: Dictionary = GameManager.companion_battle_stats(npc_id)
-            ally["level"] = int(stats.get("level", 1))
-            ally["max_hp"] = int(stats.get("max_hp", 50))
-            ally["attack"] = int(stats.get("attack", 10))
-            ally["defense"] = int(stats.get("defense", 4))
-            ally["speed"] = int(stats.get("speed", 8))
-            ally["sp_max"] = int(stats.get("sp_max", 2))
-            ally["skills"] = GameManager.companion_skills(npc_id)
+        match str(ally.get("kind", "")):
+            "player":
+                ally["level"] = GameManager.player_level
+                ally["max_hp"] = int(player_stats.get("max_hp", 80))
+                ally["attack"] = int(player_stats.get("attack", 12))
+                ally["defense"] = int(player_stats.get("defense", 5))
+                ally["speed"] = int(player_stats.get("speed", 9))
+                ally["sp_max"] = int(player_stats.get("sp_max", 3))
+                ally["skills"] = GameManager.player_skills()
+            "escort":
+                # Never rebase the snapshot against a mid-escort level-up.
+                ally["max_hp"] = _escort_max_hp(str(ally.get("id", "")))
+                ally["level"] = 0
+                ally["attack"] = 0
+                ally["sp"] = 0
+                ally["sp_max"] = 0
+                ally["skills"] = []
+                ally["can_act"] = false
+            _:
+                var npc_id: = str(ally.get("id"))
+                var stats: Dictionary = GameManager.companion_battle_stats(npc_id)
+                ally["level"] = int(stats.get("level", 1))
+                ally["max_hp"] = int(stats.get("max_hp", 50))
+                ally["attack"] = int(stats.get("attack", 10))
+                ally["defense"] = int(stats.get("defense", 4))
+                ally["speed"] = int(stats.get("speed", 8))
+                ally["sp_max"] = int(stats.get("sp_max", 2))
+                ally["skills"] = GameManager.companion_skills(npc_id)
         ally["sp"] = mini(int(ally.get("sp", 0)), int(ally.get("sp_max", 3)))
+
+
+## Losing a protected NPC is a retry, not ordinary player defeat: preserve XP,
+## restore the escort snapshot HP, then emit the existing `defeat` result so Main
+## performs its established player/enemy reposition and cooldown flow.
+func _escort_defeat(escort: Dictionary) -> void:
+    if _battle_over or failure_reason == "escort_ko":
+        return
+    failure_reason = "escort_ko"
+    if _root != null and is_instance_valid(_root):
+        var dark := create_tween()
+        dark.tween_property(_root, "modulate", Color(0.55, 0.5, 0.6), 1.2)
+    for line in _dialogue("player_defeat"):
+        if not _foes.is_empty():
+            _enemy_say(_foes[0], str(line))
+    _reset_escorts_for_retry()
+    _refresh_all_panels()
+    await _say("%s can no longer continue. The escort will restart — no experience is lost." % str(escort.get("name", "The escort")))
+    _finish("defeat")
+
+
+func _reset_escorts_for_retry() -> void:
+    var reset_all := PartyManager.has_method("reset_all_escort_hp")
+    if reset_all:
+        PartyManager.call("reset_all_escort_hp")
+    for ally in _allies:
+        if str(ally.get("kind", "")) != "escort":
+            continue
+        var npc_id := str(ally.get("id", ""))
+        if not reset_all and PartyManager.has_method("reset_escort_hp"):
+            PartyManager.call("reset_escort_hp", npc_id)
+        elif not reset_all:
+            _set_ally_hp(ally, int(ally.get("max_hp", 1)))
+        ally["hp"] = _escort_hp(npc_id, int(ally.get("max_hp", 1)))
+        # A defensive fallback for older PartyManager builds whose reset method
+        # did not yet materialize the lazy full-health value immediately.
+        if int(ally["hp"]) <= 0:
+            _set_ally_hp(ally, int(ally.get("max_hp", 1)))
+        ally["downed"] = false
 
 
 func _defeat() -> void :
@@ -3442,6 +4167,10 @@ func _pick_foe_target() -> int:
 func _pick_ally_target(only_downed: bool = false) -> int:
     var candidates: Array[int] = []
     for index in range(_allies.size()):
+        # Escort KO is terminal for this attempt and can never be bypassed by a
+        # revive spell. Standing escorts remain valid heal/shield/status targets.
+        if only_downed and str(_allies[index].get("kind", "")) == "escort":
+            continue
         var down: = _actor_down(_allies[index], true)
         if (only_downed and down) or (not only_downed and not down):
             candidates.append(index)
@@ -3627,6 +4356,11 @@ func _refresh_foe_overlay(foe: Dictionary) -> void :
     _refresh_status_row(ui["status_row"] as HBoxContainer, foe, status_extra)
     if identity != null and identity.has_method("refresh_status_layout"):
         identity.call("refresh_status_layout")
+    # Afflicted foes carry their sickness color too (the flash overlay handles
+    # hit feedback separately, so a plain modulate is safe here).
+    var portrait: Control = ui.get("portrait") as Control
+    if portrait != null and is_instance_valid(portrait):
+        portrait.modulate = _affliction_tint(foe)
 
 
 func _refresh_ally_card(ally: Dictionary, card: Dictionary) -> void :
@@ -3635,7 +4369,8 @@ func _refresh_ally_card(ally: Dictionary, card: Dictionary) -> void :
         name_label.text = str(ally.get("name"))
     var lv_label: Label = card.get("lv_label") as Label
     if lv_label != null:
-        lv_label.text = "Lv.%d" % int(ally.get("level", 1))
+        lv_label.text = "ESCORT" if str(ally.get("kind", "")) == "escort" \
+            else "Lv.%d" % int(ally.get("level", 1))
     var max_hp: int = int(ally.get("max_hp", 1))
     var hp: int = _ally_hp(ally)
     (card["hp_text"] as Label).text = "%d / %d" % [hp, max_hp]
@@ -3652,15 +4387,25 @@ func _refresh_ally_card(ally: Dictionary, card: Dictionary) -> void :
     if status_row != null:
         _refresh_status_row(status_row, ally, status_extra)
     (card["root"] as Control).modulate.a = 0.55 if (bool(ally.get("downed", false)) or hp <= 0) else 1.0
+    # A poisoned/burning/frozen ally LOOKS sick between turns (skip while the
+    # hit-punch tween owns the portrait's modulate).
+    var portrait: Control = card.get("portrait") as Control
+    if portrait != null and is_instance_valid(portrait):
+        var punch: Variant = portrait.get_meta("punch_tween") if portrait.has_meta("punch_tween") else null
+        if not (punch is Tween and (punch as Tween).is_valid() and (punch as Tween).is_running()):
+            portrait.modulate = _affliction_tint(ally)
     if card.get("xp_text") != null:
         var current_xp: int
         var needed_xp: int
         if str(ally.get("kind")) == "player":
             current_xp = GameManager.player_xp
             needed_xp = GameManager.xp_to_next_level()
-        else:
+        elif str(ally.get("kind")) == "companion":
             current_xp = GameManager.companion_xp(str(ally.get("id", "")))
             needed_xp = GameManager.xp_to_next_level_for(int(ally.get("level", 1)))
+        else:
+            current_xp = 0
+            needed_xp = 1
         needed_xp = maxi(needed_xp, 1)
         (card["xp_text"] as Label).text = "%d / %d" % [current_xp, needed_xp]
         if card.get("xp_bar") != null:

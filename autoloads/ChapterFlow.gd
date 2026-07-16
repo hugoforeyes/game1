@@ -287,10 +287,30 @@ func begin_current_chapter() -> Error:
 ## Load a chapter's content catalogs (quests, item catalog + icons, companion roster
 ## + sprites). Shared by begin_current_chapter and continue_saved_game.
 func _load_chapter_content(chapter: Dictionary) -> void:
+	PartyManager.begin_chapter_party_load()
 	QuestManager.load_chapter_quests(chapter.get("quests", []) as Array)
 	# Revisiting a chapter (world map travel) restores its own quest progress instead of
 	# starting fresh — no-op on a chapter's first-ever visit (nothing snapshotted yet).
 	QuestManager.restore_chapter_snapshot(int(chapter.get("chapter", 0)))
+
+	# Moral-choice card art (optional) — the zone-level scene_choice_illustrations
+	# step paints one anime panel per option; prefetch so the ceremony opens with
+	# its cards already dressed. MoralChoiceView still lazy-downloads as a backstop.
+	for raw_quest in chapter.get("quests", []) as Array:
+		if not (raw_quest is Dictionary):
+			continue
+		for raw_objective in (raw_quest as Dictionary).get("objectives", []) as Array:
+			if not (raw_objective is Dictionary) or str((raw_objective as Dictionary).get("kind", "")) != "choice":
+				continue
+			for raw_option in (raw_objective as Dictionary).get("options", []) as Array:
+				if not (raw_option is Dictionary):
+					continue
+				var illustration_url := str((raw_option as Dictionary).get("illustration_url", ""))
+				if illustration_url.is_empty():
+					continue
+				var illustration: Texture2D = await download_image_texture(illustration_url)
+				if illustration != null:
+					QuestManager.set_choice_illustration(str((raw_option as Dictionary).get("id", "")), illustration)
 
 	var items_payload: Dictionary = chapter.get("items", {}) as Dictionary
 	if not (items_payload.get("items", []) as Array).is_empty():
@@ -301,8 +321,8 @@ func _load_chapter_content(chapter: Dictionary) -> void:
 			icon_texture = await download_image_texture(icon_url)
 		InventoryManager.load_chapter_catalog(items_payload, icon_texture)
 
-	# Companion / party roster — load events then fetch each companion's walk sheet so
-	# they can follow the player in any zone.
+	# Party roster — load events/objective-driven escorts, then fetch walk sheets
+	# and portraits so both companion and protected-escort followers survive zones.
 	var party_payload: Dictionary = chapter.get("party", {}) as Dictionary
 	PartyManager.load_chapter_party(party_payload)
 	for raw_companion in party_payload.get("companions", []) as Array:
@@ -317,6 +337,19 @@ func _load_chapter_content(chapter: Dictionary) -> void:
 		if not portrait_url.is_empty():
 			var portrait_texture: Texture2D = await download_image_texture(portrait_url)
 			PartyManager.set_companion_portrait(str(companion.get("npc_id", "")), portrait_texture)
+	for raw_escort in party_payload.get("escorts", []) as Array:
+		if not (raw_escort is Dictionary):
+			continue
+		var escort := raw_escort as Dictionary
+		var npc_id := str(escort.get("npc_id", ""))
+		var sprite_url := str(escort.get("sprite_url", ""))
+		if not sprite_url.is_empty():
+			var sprite_texture: Texture2D = await download_image_texture(sprite_url)
+			PartyManager.set_escort_texture(npc_id, sprite_texture)
+		var portrait_url := str(escort.get("portrait_url", ""))
+		if not portrait_url.is_empty():
+			var portrait_texture: Texture2D = await download_image_texture(portrait_url)
+			PartyManager.set_escort_portrait(npc_id, portrait_texture)
 
 	# Chapter map illustration (optional) — painted region art for the minimap
 	# background. Re-fetched per chapter; null when the BE step hasn't produced

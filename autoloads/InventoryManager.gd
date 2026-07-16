@@ -45,7 +45,7 @@ var _inventory_texture_cache: Dictionary = {}
 var _detail_view_root: Control
 var _detail_view_title: Label
 var _detail_view_caption: Label
-var _detail_view_text: Label
+var _detail_view_text: RichTextLabel
 var _detail_view_image: TextureRect
 var _detail_view_open: bool = false
 var _detail_view_current_item_id: String = ""
@@ -617,6 +617,11 @@ func _filtered_catalog_indices() -> Array[int]:
 	var result: Array[int] = []
 	for index in range(catalog.size()):
 		var definition: Dictionary = catalog[index] as Dictionary
+		# The inventory is a view of what the player is carrying, not a catalog.
+		# Definitions with a zero count remain available to quests/drop logic, but
+		# must not reveal unobtained items in the inventory UI.
+		if count_of(str(definition.get("id", ""))) <= 0:
+			continue
 		if _item_matches_filter(definition):
 			result.append(index)
 	return result
@@ -668,6 +673,14 @@ func _owned_total() -> int:
 	for item in catalog:
 		if item is Dictionary:
 			total += count_of(str((item as Dictionary).get("id")))
+	return total
+
+
+func _owned_catalog_size() -> int:
+	var total := 0
+	for item in catalog:
+		if item is Dictionary and count_of(str((item as Dictionary).get("id"))) > 0:
+			total += 1
 	return total
 
 
@@ -868,7 +881,7 @@ func _ensure_ui() -> void:
 	action_button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	action_button.gui_input.connect(func(event: InputEvent) -> void:
 		if event is InputEventMouseButton and event.is_pressed() and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
-			_use_selected()
+			_activate_selected()
 			get_viewport().set_input_as_handled()
 	)
 	detail_panel.add_child(action_button)
@@ -948,14 +961,25 @@ func _ensure_ui() -> void:
 	_detail_view_image.size = Vector2(340, 300)
 	detail_view_panel.add_child(_detail_view_image)
 
-	_detail_view_text = UiKit.make_label("", 13, UiKit.COLOR_TEXT)
+	# RichTextLabel clips content to its own rectangle and supplies a vertical
+	# scrollbar when the authored item text is taller than the detail panel.
+	_detail_view_text = RichTextLabel.new()
 	_detail_view_text.position = Vector2(30, 100)
 	_detail_view_text.size = Vector2(340, 300)
+	_detail_view_text.bbcode_enabled = false
 	_detail_view_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_detail_view_text.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	_detail_view_text.fit_content = false
+	_detail_view_text.scroll_active = true
+	_detail_view_text.scroll_following = false
+	_detail_view_text.add_theme_font_size_override("normal_font_size", 13)
+	_detail_view_text.add_theme_color_override("default_color", UiKit.COLOR_TEXT)
+	_detail_view_text.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
+	var detail_text_font := UiKit.body_font()
+	if detail_text_font != null:
+		_detail_view_text.add_theme_font_override("normal_font", detail_text_font)
 	detail_view_panel.add_child(_detail_view_text)
 
-	var detail_view_close_hint := UiKit.make_label("Enter / Esc để đóng", 10, Color(0.93, 0.88, 0.75, 0.72))
+	var detail_view_close_hint := UiKit.make_label("↑ / ↓ / Wheel cuộn   ·   Enter / Esc đóng", 10, Color(0.93, 0.88, 0.75, 0.72))
 	detail_view_close_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	detail_view_close_hint.position = Vector2(20, 402)
 	detail_view_close_hint.size = Vector2(360, 16)
@@ -987,7 +1011,7 @@ func _refresh_screen() -> void:
 	var page := _selected_page()
 	var page_start := page * INV_SLOT_VISIBLE
 	var filtered_indices := _filtered_catalog_indices()
-	_top_stats.text = "Items %d   Owned %d   Bag %d/120" % [catalog.size(), _owned_total(), _owned_total()]
+	_top_stats.text = "Items %d   Owned %d   Bag %d/120" % [_owned_catalog_size(), _owned_total(), _owned_total()]
 	_page_label.text = "%d / %d" % [page + 1, _catalog_pages()]
 	for tab_index in range(_tab_nodes.size()):
 		var tab := _tab_nodes[tab_index]
@@ -1154,8 +1178,16 @@ func _open_item_detail_view() -> void:
 		_detail_view_image.visible = false
 		_detail_view_text.visible = true
 		_detail_view_text.text = str(detail.get("text", ""))
+		_detail_view_text.scroll_to_line(0)
 	_detail_view_open = true
 	_detail_view_root.visible = true
+
+
+func _scroll_detail_text(delta: float) -> void:
+	if _detail_view_text == null or not _detail_view_text.visible:
+		return
+	var scroll_bar := _detail_view_text.get_v_scroll_bar()
+	scroll_bar.value += delta
 
 
 func _load_detail_image(item_id: String, url: String) -> void:
@@ -1249,13 +1281,26 @@ func _show_next_toast() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	# The item detail view is a modal ON TOP of the inventory screen — while
-	# open, only Enter/Esc close it; every other key/click is swallowed so it can
-	# never fall through to grid navigation or close the whole screen.
+	# open, its text can be scrolled and Enter/Esc closes it; every other input is
+	# swallowed so it cannot reach the grid or close the whole inventory screen.
 	if _detail_view_open:
 		if event is InputEventKey and event.is_pressed() and not event.is_echo():
 			# Enter (opened it) or Esc closes the reader.
 			if event.is_action_pressed("ui_accept") or event.is_action_pressed("ui_cancel"):
 				_close_item_detail_view()
+			elif event.is_action_pressed("ui_down"):
+				_scroll_detail_text(36.0)
+			elif event.is_action_pressed("ui_up"):
+				_scroll_detail_text(-36.0)
+			elif (event as InputEventKey).physical_keycode == KEY_PAGEDOWN:
+				_scroll_detail_text(240.0)
+			elif (event as InputEventKey).physical_keycode == KEY_PAGEUP:
+				_scroll_detail_text(-240.0)
+		elif event is InputEventMouseButton and event.is_pressed():
+			if (event as InputEventMouseButton).button_index == MOUSE_BUTTON_WHEEL_DOWN:
+				_scroll_detail_text(36.0)
+			elif (event as InputEventMouseButton).button_index == MOUSE_BUTTON_WHEEL_UP:
+				_scroll_detail_text(-36.0)
 		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventKey and event.is_pressed() and not event.is_echo():

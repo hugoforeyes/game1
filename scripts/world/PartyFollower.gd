@@ -17,6 +17,11 @@ const PLAYER_AVOID_RADIUS := 50.0
 const ORBIT_STEP_RADIANS := 0.42
 
 var npc_id: String = ""
+## Mirrors NPCController's discoverability contract. CutscenePlayer, the quest
+## compass and Main can therefore resolve a travelling companion/escort by the
+## same actor id as its stationary NPC form.
+var npc_data: Dictionary = {}
+var anim_sprite: AnimatedSprite2D = null
 
 var _player: Node2D = null
 var _anim: AnimatedSprite2D = null
@@ -31,6 +36,8 @@ var _formation_orbit_sign: float = 0.0
 
 func setup(p_npc_id: String, texture: Texture2D, player: Node2D, lag_frames: int = 26) -> void:
 	npc_id = p_npc_id
+	npc_data = {"id": p_npc_id, "name": p_npc_id, "travelling": true}
+	add_to_group("party_follower")
 	_player = player
 	_lag_frames = max(8, lag_frames)
 	z_index = 0
@@ -64,6 +71,7 @@ func _setup_shadow() -> void:
 
 func _setup_sprite(texture: Texture2D) -> void:
 	_anim = AnimatedSprite2D.new()
+	anim_sprite = _anim
 	add_child(_anim)
 	if texture == null:
 		texture = GameManager.load_texture(GameManager.DEFAULT_PLAYER_SPRITE_PATH)
@@ -90,6 +98,43 @@ func _setup_sprite(texture: Texture2D) -> void:
 	_anim.sprite_frames = frames
 	_anim.play("walk_down")
 	_anim.pause()
+
+
+## Snap and reseed after an intentional player teleport (battle defeat, scripted
+## relocation). Without this the follower replays an obsolete cross-map trail.
+func reseed_after_player_teleport() -> void:
+	if _player == null or not is_instance_valid(_player):
+		return
+	global_position = _offset_behind_player(FOLLOW_DISTANCE)
+	_prev_position = global_position
+	_last_player_position = _player.global_position
+	_formation_orbit_sign = 0.0
+	_seed_history()
+	_face_player_direction()
+
+
+## CutscenePlayer records/restores actor homes through these methods. Keeping the
+## implementation here prevents its generic NPC-AI reset from writing controller
+## fields that a lightweight follower intentionally does not own.
+func get_return_home_destination() -> Vector2:
+	return global_position
+
+
+func return_home_to(destination: Vector2) -> void:
+	global_position = destination
+	_prev_position = destination
+	_last_player_position = _player.global_position if _player != null else destination
+	_seed_history()
+
+
+func face_direction(direction: String) -> void:
+	if direction not in ["up", "down", "left", "right"]:
+		return
+	_facing = direction
+	if _anim != null and _anim.sprite_frames != null \
+			and _anim.sprite_frames.has_animation("walk_%s" % direction):
+		_anim.play("walk_%s" % direction)
+		_anim.pause()
 
 
 func _physics_process(delta: float) -> void:

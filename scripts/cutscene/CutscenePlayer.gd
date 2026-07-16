@@ -55,8 +55,12 @@ var _player_camera: Camera2D = null
 
 const ScrollingDialogueTextScript := preload("res://scripts/ui/ScrollingDialogueText.gd")
 
+const CutsceneGhostActorScript := preload("res://scripts/cutscene/CutsceneGhostActor.gd")
+
 var _chat_v3 := false
 var _actions: Array = []
+var _ghost_defs: Dictionary = {}  # ghost_id -> display name (backend ghost_actors)
+var _spawned_ghosts: Array[Node2D] = []  # cutscene-only apparitions, freed in _finish
 var _skip: bool = false
 var _accept_pressed: bool = false
 var _last_speaker: String = ""
@@ -90,24 +94,58 @@ var _title_banner: TextureRect
 var _skip_hint: Label
 
 
-func play(actions: Array, world: Node2D, player: Node2D, characters_root: Node2D, start_tiles: Dictionary = {}) -> void:
+func play(actions: Array, world: Node2D, player: Node2D, characters_root: Node2D, start_tiles: Dictionary = {}, ghost_actors: Array = []) -> void:
 	add_to_group("active_cutscene_player")
 	_actions = actions
 	_world = world
 	_player = player
 	_characters_root = characters_root
 	_start_tiles = start_tiles
+	_ghost_defs = {}
+	for ghost in ghost_actors:
+		if ghost is Dictionary and not str((ghost as Dictionary).get("id", "")).is_empty():
+			_ghost_defs[str((ghost as Dictionary).get("id", ""))] = str((ghost as Dictionary).get("name", ""))
 	layer = 70
 	transform = Transform2D.IDENTITY.scaled(Vector2(2, 2))  # UI authored in 480x270
 	GameManager.ui_blocking_input = true
 	_blocked_tiles = GameManager.get_blocked_tiles(GameManager.get_scene_package())
 	_record_origins()
+	_spawn_ghost_actors()
 	_disable_actor_collisions()
 	_prestage_actors()
 	_idle_all_actors()
 	_build_ui()
 	_setup_camera()
 	_run()
+
+
+func _spawn_ghost_actors() -> void:
+	# Dead figures declared by the backend plan exist only inside this cutscene:
+	# spawn a translucent silhouette per referenced ghost id. Spawned AFTER
+	# _record_origins so _release_actors_to_world never tries to walk one home —
+	# they are freed outright in _finish().
+	if _ghost_defs.is_empty() or _characters_root == null:
+		return
+	var frames: SpriteFrames = null
+	var player_sprite: AnimatedSprite2D = _actor_anim_sprite(_player)
+	if player_sprite != null:
+		frames = player_sprite.sprite_frames
+	for actor_id in _cutscene_participants():
+		if not _ghost_defs.has(actor_id) or _find_actor(actor_id) != null:
+			continue
+		var ghost: Node2D = CutsceneGhostActorScript.new()
+		ghost.setup(actor_id, str(_ghost_defs[actor_id]), frames)
+		ghost.global_position = _player.global_position if _player != null else Vector2.ZERO
+		_characters_root.add_child(ghost)
+		_spawned_ghosts.append(ghost)
+		print("[Cutscene] spawned ghost actor %s (%s)" % [actor_id, str(_ghost_defs[actor_id])])
+
+
+func _free_ghost_actors() -> void:
+	for ghost in _spawned_ghosts:
+		if is_instance_valid(ghost):
+			ghost.queue_free()
+	_spawned_ghosts.clear()
 
 
 func _disable_actor_collisions() -> void:
@@ -862,6 +900,12 @@ func _normalize_emotion(emotion: String) -> String:
 
 
 func _resolve_portrait(actor_id: String, emotion: String) -> Texture2D:
+	# Ghost apparitions mirror their on-map look: the default body silhouette
+	# with the ghost tint (same body-fallback mechanism as sheet-less NPCs).
+	if _ghost_defs.has(actor_id):
+		_portrait_tint_cache[actor_id] = Color(0.72, 0.88, 1.0, 0.85)
+		return _sheet_frame(GameManager.load_texture(GameManager.DEFAULT_PLAYER_SPRITE_PATH))
+
 	var package: Dictionary = GameManager.get_scene_package()
 	var characters: Dictionary = package.get("characters", {}) as Dictionary
 
@@ -1264,7 +1308,7 @@ func _do_say(action: Dictionary) -> void:
 	if text.is_empty():
 		return
 	var actor_id: String = str(action.get("actor", ""))
-	var speaker: String = str(action.get("speaker_name", actor_id))
+	var speaker: String = _speaker_display_name(actor_id, str(action.get("speaker_name", actor_id)))
 	var emotion: String = str(action.get("emotion", "neutral"))
 
 	_face_pair(actor_id, str(action.get("target", "")))
@@ -1338,6 +1382,28 @@ func _do_say(action: Dictionary) -> void:
 	_dialogue_root.visible = false
 
 
+## Cutscene manifests use the stable actor id `player`, but older generated
+## manifests also serialize its display label as the placeholder "Player". The
+## imported scene package is the authoritative source for the protagonist name.
+func _speaker_display_name(actor_id: String, authored_name: String) -> String:
+	if actor_id != "player":
+		return authored_name
+	var package: Dictionary = GameManager.get_scene_package()
+	var characters: Dictionary = package.get("characters", {}) as Dictionary
+	var main_character: Variant = characters.get("main_character", {})
+	if main_character is Dictionary:
+		var character_name: String = str((main_character as Dictionary).get("name", "")).strip_edges()
+		if not character_name.is_empty() and character_name.to_upper() not in ["PLAYER", "YOU"]:
+			return character_name
+	var story_bible: Dictionary = package.get("story_bible", {}) as Dictionary
+	var protagonist: Variant = story_bible.get("protagonist", {})
+	if protagonist is Dictionary:
+		var protagonist_name: String = str((protagonist as Dictionary).get("name", "")).strip_edges()
+		if not protagonist_name.is_empty() and protagonist_name.to_upper() not in ["PLAYER", "YOU"]:
+			return protagonist_name
+	return "Bạn" if authored_name.strip_edges().to_upper() in ["", "PLAYER", "YOU"] else authored_name
+
+
 func _do_die(actor_id: String) -> void:
 	var actor: Node2D = _find_actor(actor_id)
 	if actor == null:
@@ -1374,6 +1440,10 @@ func _finish() -> void:
 	# This node remains alive only as a background walk-home coordinator. It must
 	# no longer consume Esc/Enter after gameplay control is returned.
 	set_process_unhandled_input(false)
+
+	# Apparitions never outlive their cutscene: free them before actors are
+	# released so _release_actors_to_world simply skips their (now null) ids.
+	_free_ghost_actors()
 
 	# Restore gameplay ownership completely. NPCController receives a return-home
 	# destination and handles pathfinding, physics, collision and interaction from

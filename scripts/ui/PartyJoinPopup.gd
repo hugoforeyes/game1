@@ -37,6 +37,7 @@ func show_member(data: Dictionary) -> void:
 
 
 func _build(data: Dictionary) -> void:
+	var is_escort := str(data.get("kind", "companion")) == "escort"
 	_root = Control.new()
 	_root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -102,12 +103,13 @@ func _build(data: Dictionary) -> void:
 	var text_w := CARD.size.x - text_x - 22.0
 	var text_cx := text_x + text_w * 0.5
 
-	var header := UiKit.make_label("ĐỒNG ĐỘI MỚI", 12, UiKit.COLOR_ACCENT)
+	var header_text := "NHÂN VẬT HỘ TỐNG" if is_escort else "ĐỒNG ĐỘI MỚI"
+	var header := UiKit.make_label(header_text, 12, UiKit.COLOR_ACCENT)
 	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	header.position = Vector2(text_x, 26)
 	header.size = Vector2(text_w, 16)
 	_card.add_child(header)
-	_add_header_flourishes(text_cx, 34.0, "ĐỒNG ĐỘI MỚI", 12)
+	_add_header_flourishes(text_cx, 34.0, header_text, 12)
 
 	var name_label := UiKit.make_label(str(data.get("name", "")), 26, UiKit.COLOR_ACCENT)
 	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -117,7 +119,11 @@ func _build(data: Dictionary) -> void:
 	_card.add_child(name_label)
 
 	var role := str(data.get("role", "")).strip_edges()
-	var subtitle := "đã gia nhập đội!" if role.is_empty() else "%s · đã gia nhập đội!" % role
+	var subtitle: String
+	if is_escort:
+		subtitle = "đã đi cùng nhóm · không thể chiến đấu"
+	else:
+		subtitle = "đã gia nhập đội!" if role.is_empty() else "%s · đã gia nhập đội!" % role
 	var sub_label := UiKit.make_label(subtitle, 13, Color(0.93, 0.88, 0.75, 0.92))
 	sub_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub_label.position = Vector2(text_x, 96)

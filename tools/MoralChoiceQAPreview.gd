@@ -15,12 +15,13 @@ const ChatBoxScript := preload("res://scripts/ui/ChatBox.gd")  # force-compile t
 const DialogueAssemblerScript := preload("res://scripts/ui/DialogueAssembler.gd")
 const BattleSceneScript := preload("res://scripts/battle/BattleScene.gd")
 
-const SHOT_DIR := "/private/tmp/claude-501/-Users-dinhhuynh-Documents-FULLGAME/0f7519ac-6c6a-4586-96d9-b9196e5b3fc4/scratchpad/choice_kit"
+const SHOT_DIR := "/private/tmp/claude-501/-Users-dinhhuynh-Documents-FULLGAME/13b8760e-cdd2-49ba-a5c6-f7d8ea2de458/scratchpad/choice_v2"
 
 var _failures: Array[String] = []
 
 
 func _ready() -> void:
+	DirAccess.make_dir_recursive_absolute(SHOT_DIR)
 	await get_tree().process_frame
 	await _run()
 	if _failures.is_empty():
@@ -126,6 +127,12 @@ func _run() -> void:
 	# exists (normally built when a chapter loads its quests).
 	QuestManager._ensure_ui()
 
+	# A prefetched card illustration (what ChapterFlow downloads per option) —
+	# the ceremony must mount it into the card window.
+	var art_image := Image.create(8, 8, false, Image.FORMAT_RGBA8)
+	art_image.fill(Color(0.2, 0.4, 0.8, 1.0))
+	QuestManager.set_choice_illustration("a", ImageTexture.create_from_image(art_image))
+
 	# The real fallback flow: talking to the giver activates the quest and
 	# queues the unresolved choice; QuestManager._process opens the ceremony.
 	QuestManager.notify_npc_talked("npc_mira")
@@ -140,6 +147,17 @@ func _run() -> void:
 		return
 
 	await get_tree().create_timer(0.9).timeout  # input grace + dilemma typewriter
+	# ── the two-card layout ──
+	var cards: Array = view.get("_cards") as Array
+	_check(cards.size() == 2, "two option cards built (got %d)" % cards.size())
+	var card_a: Dictionary = cards[0] as Dictionary
+	_check((card_a.get("image") as TextureRect).texture != null, "prefetched card art mounted on option a")
+	_key(KEY_RIGHT)
+	await get_tree().process_frame
+	_check(int(view.get("_selected")) == 1, "KEY_RIGHT selects card b")
+	_key(KEY_LEFT)
+	await get_tree().process_frame
+	_check(int(view.get("_selected")) == 0, "KEY_LEFT returns to card a")
 	await _shot("qa_phase_choice.png")
 	_key(KEY_ENTER)  # arm
 	await get_tree().create_timer(0.25).timeout

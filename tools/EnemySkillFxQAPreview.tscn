@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://enemyskillfxqa1"]
+
+[ext_resource type="Script" path="res://tools/EnemySkillFxQAPreview.gd" id="1_esfqa"]
+
+[node name="EnemySkillFxQAPreview" type="Node2D"]
+script = ExtResource("1_esfqa")

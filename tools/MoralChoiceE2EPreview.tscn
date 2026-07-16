@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://moralchoicee2e1"]
+
+[ext_resource type="Script" path="res://tools/MoralChoiceE2EPreview.gd" id="1"]
+
+[node name="MoralChoiceE2EPreview" type="Node"]
+script = ExtResource("1")
