@@ -17,6 +17,22 @@ const DOOR_SPACING := 300.0
 const DOOR_TOP_Y := 88.0
 const MIN_SEARCH_SECONDS := 2.4
 
+# Loading-background measurements, in the 1536x1024 source image.  Keeping the
+# geometry in source pixels means the painted gate, its invisible runtime
+# aperture, and the soul route all share the exact same cover transform.
+const LOADING_REFERENCE_SIZE := Vector2(1536.0, 1024.0)
+const LOADING_APERTURE_SOURCE := Rect2(614.0, 231.0, 308.0, 522.0)
+const LOADING_ARCH_SPRING_V := 173.0 / 522.0
+const LOADING_ROUTE_SOURCE := [
+	Vector2(316.0, 864.0),
+	Vector2(321.0, 851.0),
+	Vector2(360.0, 827.0),
+	Vector2(445.0, 803.0),
+	Vector2(565.0, 781.0),
+	Vector2(670.0, 764.0),
+	Vector2(768.0, 753.0),
+]
+
 const COLOR_TITLE := Color(0.99, 0.88, 0.56, 1.0)
 const COLOR_SOUL := Color(0.62, 0.93, 1.0, 1.0)
 const COLOR_NAME_IDLE := Color(0.85, 0.76, 0.55, 0.85)
@@ -31,6 +47,26 @@ uniform sampler2D mask_tex;
 void fragment() {
 	vec4 c = texture(TEXTURE, UV);
 	c.a *= texture(mask_tex, UV).r;
+	COLOR = c;
+}
+"""
+
+# The photographed gate is a round elliptical arch.  The old arch_mask.png is
+# intentionally not used here: it is a pointed gothic silhouette and becomes
+# visibly wrong as soon as the separate frame sprite is hidden.
+const LOADING_ARCH_SHADER_CODE := """
+shader_type canvas_item;
+uniform vec2 mask_uv_scale = vec2(1.0, 1.0);
+uniform vec2 mask_uv_offset = vec2(0.0, 0.0);
+uniform float spring_v = 0.331418;
+void fragment() {
+	vec4 c = texture(TEXTURE, UV);
+	vec2 p = UV * mask_uv_scale + mask_uv_offset;
+	vec2 ellipse = vec2((p.x - 0.5) / 0.5, (p.y - spring_v) / spring_v);
+	float cap = 1.0 - smoothstep(0.993, 1.007, length(ellipse));
+	float body = step(spring_v, p.y);
+	float bounds = step(0.0, p.x) * step(p.x, 1.0) * step(0.0, p.y) * step(p.y, 1.0);
+	c.a *= max(cap, body) * bounds;
 	COLOR = c;
 }
 """
@@ -51,7 +87,6 @@ var _search_started_msec := 0
 var _bg: TextureRect               # goddess-free sanctuary (searching backdrop)
 var _bg_goddess: TextureRect       # sanctuary WITH the baked goddess (reveal backdrop)
 var _goddess: Control              # large animated goddess during searching/error
-var _loading_goddess: Control      # smaller goddess floating above the loading panel
 var _ring_outer: TextureRect
 var _ring_inner: TextureRect
 var _soul: Control
@@ -69,12 +104,18 @@ var _flash: ColorRect
 var _loading_overlay: Control
 var _loading_chapter: Label
 var _loading_status: Label
+var _ld_background: TextureRect     # supplied sanctuary image, goddess already baked in
 var _ld_door: Control               # the destination gate (art + leaves + frame)
 var _ld_art: TextureRect            # chosen world's vista behind the leaves
 var _ld_glow: TextureRect           # light spilling through the opening
 var _ld_leaf_left: TextureRect
 var _ld_leaf_right: TextureRect
-var _ld_path: TextureRect           # glowing floor path the soul walks
+var _ld_path: Node2D                # subtle shimmer exactly over the painted floor route
+var _ld_path_glow: Line2D
+var _ld_path_core: Line2D
+var _ld_route := Curve2D.new()
+var _ld_reference_scale := 1.0
+var _ld_reference_offset := Vector2.ZERO
 var _ld_soul: Control               # the traveling soul on the loading screen
 var _ld_plate_label: Label          # world name on the plaque
 var _ld_percent: Label
@@ -246,7 +287,7 @@ func _make_ring(size_px: float, alpha: float) -> TextureRect:
 	ring.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return ring
 
-func _build_soul() -> Control:
+func _build_soul(register_halo: bool = true) -> Control:
 	var soul := Control.new()
 	soul.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	soul.z_index = 5
@@ -254,16 +295,19 @@ func _build_soul() -> Control:
 	var add_material := CanvasItemMaterial.new()
 	add_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
 
-	_soul_halo = TextureRect.new()
-	_soul_halo.texture = _make_radial_texture(
+	var halo := TextureRect.new()
+	halo.name = "Halo"
+	halo.texture = _make_radial_texture(
 		Color(COLOR_SOUL.r, COLOR_SOUL.g, COLOR_SOUL.b, 0.55), Color(COLOR_SOUL.r, COLOR_SOUL.g, COLOR_SOUL.b, 0.0), 0.5, true
 	)
-	_soul_halo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	_soul_halo.size = Vector2(96, 96)
-	_soul_halo.position = -_soul_halo.size * 0.5
-	_soul_halo.material = add_material
-	_soul_halo.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	soul.add_child(_soul_halo)
+	halo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	halo.size = Vector2(96, 96)
+	halo.position = -halo.size * 0.5
+	halo.material = add_material
+	halo.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	soul.add_child(halo)
+	if register_halo:
+		_soul_halo = halo
 
 	var core := TextureRect.new()
 	core.texture = _make_radial_texture(Color(1.0, 1.0, 1.0, 1.0), Color(COLOR_SOUL.r, COLOR_SOUL.g, COLOR_SOUL.b, 0.0), 0.5, true)
@@ -356,7 +400,7 @@ func _layout_goddess(group: Control, center: Vector2, height: float) -> void:
 ## The loading-data screen: the chosen soul travels a glowing floor path toward
 ## the world's gate while its double doors swing open with download progress —
 ## the opening door IS the progress bar. The chosen world's vista glows behind
-## the leaves; the mini goddess guides from above; name/status/percent below.
+## the leaves; the supplied background already contains the goddess.
 func _build_loading_overlay() -> void:
 	_loading_overlay = Control.new()
 	_loading_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -365,26 +409,41 @@ func _build_loading_overlay() -> void:
 	_loading_overlay.z_index = 10
 	add_child(_loading_overlay)
 
+	_ld_background = TextureRect.new()
+	_ld_background.name = "LoadingBackground"
+	_ld_background.texture = _art("bg_loading_gateway.png")
+	_ld_background.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_ld_background.stretch_mode = TextureRect.STRETCH_SCALE
+	_ld_background.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_loading_overlay.add_child(_ld_background)
+
+	# A restrained grade keeps the supplied art vivid while unifying the world
+	# vista that appears inside the opening doors.
 	var dim := ColorRect.new()
-	dim.color = Color(0.010, 0.008, 0.036, 0.94)
+	dim.color = Color(0.008, 0.012, 0.035, 0.10)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_loading_overlay.add_child(dim)
 
-	_loading_overlay.add_child(_make_motes(true))
-
 	var add_material := CanvasItemMaterial.new()
 	add_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
 
-	# glowing floor path the soul follows to the gate — a soft elongated beam
-	# (radial texture stretched wide) so both ends fade instead of cutting hard
-	_ld_path = TextureRect.new()
-	_ld_path.texture = _make_radial_texture(
-		Color(1.0, 0.9, 0.62, 0.55), Color(1.0, 0.85, 0.5, 0.0), 0.5, true
-	)
-	_ld_path.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	_ld_path.material = add_material
-	_ld_path.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Two additive hairlines provide a living shimmer without redrawing or
+	# flattening the luminous S-curve that is already painted into the image.
+	_ld_path = Node2D.new()
+	_ld_path.name = "PathShimmer"
+	_ld_path_glow = Line2D.new()
+	_ld_path_glow.width = 13.0
+	_ld_path_glow.default_color = Color(1.0, 0.73, 0.30, 0.16)
+	_ld_path_glow.antialiased = true
+	_ld_path_glow.material = add_material
+	_ld_path.add_child(_ld_path_glow)
+	_ld_path_core = Line2D.new()
+	_ld_path_core.width = 2.4
+	_ld_path_core.default_color = Color(1.0, 0.94, 0.70, 0.58)
+	_ld_path_core.antialiased = true
+	_ld_path_core.material = add_material.duplicate()
+	_ld_path.add_child(_ld_path_core)
 	_loading_overlay.add_child(_ld_path)
 
 	# the destination gate: world vista → light spill → closed leaves → frame
@@ -396,12 +455,7 @@ func _build_loading_overlay() -> void:
 	_ld_art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	_ld_art.stretch_mode = TextureRect.STRETCH_SCALE
 	_ld_art.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var art_material := ShaderMaterial.new()
-	var art_shader := Shader.new()
-	art_shader.code = ARCH_SHADER_CODE
-	art_material.shader = art_shader
-	art_material.set_shader_parameter("mask_tex", _art("arch_mask.png"))
-	_ld_art.material = art_material
+	_ld_art.material = _make_loading_arch_material(Vector2.ONE, Vector2.ZERO)
 	_ld_door.add_child(_ld_art)
 
 	_ld_glow = TextureRect.new()
@@ -409,15 +463,19 @@ func _build_loading_overlay() -> void:
 		Color(1.0, 0.95, 0.78, 0.9), Color(1.0, 0.9, 0.6, 0.0), 0.5, true
 	)
 	_ld_glow.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	_ld_glow.material = add_material.duplicate()
+	_ld_glow.material = _make_loading_arch_material(Vector2.ONE, Vector2.ZERO)
 	_ld_glow.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_ld_door.add_child(_ld_glow)
 
 	_ld_leaf_left = _make_leaf("door_leaf_left.png")
+	_ld_leaf_left.material = _make_loading_arch_material(Vector2(0.5, 1.0), Vector2.ZERO)
 	_ld_door.add_child(_ld_leaf_left)
 	_ld_leaf_right = _make_leaf("door_leaf_right.png")
+	_ld_leaf_right.material = _make_loading_arch_material(Vector2(0.5, 1.0), Vector2(0.5, 0.0))
 	_ld_door.add_child(_ld_leaf_right)
 
+	# Retain the frame node as the invisible alignment object requested by the
+	# design.  The photographed frame is the only visible frame on this screen.
 	var frame := TextureRect.new()
 	frame.name = "Frame"
 	frame.texture = _art("door_frame.png")
@@ -425,15 +483,26 @@ func _build_loading_overlay() -> void:
 	frame.stretch_mode = TextureRect.STRETCH_SCALE
 	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
 	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	frame.visible = false
 	_ld_door.add_child(frame)
 
 	# the traveling soul (its own instance — the scene's soul sits below this overlay)
-	_ld_soul = _build_soul()
+	_ld_soul = _build_soul(false)
 	_loading_overlay.add_child(_ld_soul)
 
-	# the goddess guides the door open from above
-	_loading_goddess = _build_goddess()
-	_loading_overlay.add_child(_loading_goddess)
+	# Compact bottom HUD keeps every label away from the measured aperture and
+	# preserves the cinematic composition at the native 16:9 viewport.
+	var hud := Panel.new()
+	hud.name = "LoadingHud"
+	hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var hud_style := StyleBoxFlat.new()
+	hud_style.bg_color = Color(0.006, 0.010, 0.028, 0.82)
+	hud_style.border_color = Color(0.86, 0.68, 0.31, 0.34)
+	hud_style.border_width_top = 1
+	hud_style.border_width_left = 1
+	hud_style.corner_radius_top_left = 14
+	hud.add_theme_stylebox_override("panel", hud_style)
+	_loading_overlay.add_child(hud)
 
 	# world nameplate + chapter + status + percent
 	var plate := Control.new()
@@ -456,9 +525,30 @@ func _build_loading_overlay() -> void:
 	_ld_percent = _make_title_label(20, COLOR_TITLE)
 	_loading_overlay.add_child(_ld_percent)
 
+func _make_loading_arch_material(uv_scale: Vector2, uv_offset: Vector2) -> ShaderMaterial:
+	var material := ShaderMaterial.new()
+	var shader := Shader.new()
+	shader.code = LOADING_ARCH_SHADER_CODE
+	material.shader = shader
+	material.set_shader_parameter("mask_uv_scale", uv_scale)
+	material.set_shader_parameter("mask_uv_offset", uv_offset)
+	material.set_shader_parameter("spring_v", LOADING_ARCH_SPRING_V)
+	return material
+
 func _make_leaf(file_name: String) -> TextureRect:
 	var leaf := TextureRect.new()
-	leaf.texture = _art(file_name)
+	var source := _art(file_name)
+	# The original leaf PNGs include large transparent margins and a pointed
+	# arch baked for door_frame.png.  Sample the clean rectangular panel body;
+	# the measured ellipse shader now supplies the correct photographed arch.
+	if source != null:
+		var image := source.get_image()
+		if image != null:
+			var panel_region := Rect2i(240, 500, 150, 647) if file_name.contains("left") \
+				else Rect2i(0, 500, 151, 647)
+			leaf.texture = ImageTexture.create_from_image(image.get_region(panel_region))
+		else:
+			leaf.texture = source
 	leaf.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	leaf.stretch_mode = TextureRect.STRETCH_SCALE
 	leaf.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -566,13 +656,16 @@ func _build_door(candidate: Dictionary, index: int) -> Dictionary:
 ## Center-crop a world vista to the door frame's aspect so it can be drawn on
 ## the exact door rect (UV 0..1) under the arch-aperture mask shader.
 func _cropped_to_door_aspect(texture: Texture2D) -> Texture2D:
+	return _cropped_to_aspect(texture, DOOR_ASPECT)
+
+func _cropped_to_aspect(texture: Texture2D, target_aspect: float) -> Texture2D:
 	var image := texture.get_image()
 	if image == null:
 		return texture
 	var w := image.get_width()
 	var h := image.get_height()
-	var crop_w := mini(w, int(round(float(h) * DOOR_ASPECT)))
-	var crop_h := mini(h, int(round(float(crop_w) / DOOR_ASPECT)))
+	var crop_w := mini(w, int(round(float(h) * target_aspect)))
+	var crop_h := mini(h, int(round(float(crop_w) / target_aspect)))
 	var region := Rect2i((w - crop_w) / 2, (h - crop_h) / 2, crop_w, crop_h)
 	return ImageTexture.create_from_image(image.get_region(region))
 
@@ -659,6 +752,7 @@ func _layout() -> void:
 			var cover := maxf(vp.x / art.x, vp.y / art.y)
 			backdrop.size = art * cover
 			backdrop.position = ((vp - backdrop.size) * 0.5).round()
+	_layout_loading_background(vp)
 
 	# The animated goddess dominates the top while she searches; the reveal
 	# hands her back to the painted background.
@@ -692,14 +786,17 @@ func _layout() -> void:
 		var center_x := cx + (float(i) - float(count - 1) * 0.5) * DOOR_SPACING
 		root.position = Vector2(center_x - door_size.x * 0.5, DOOR_TOP_Y)
 
-	# loading screen: goddess above the gate, soul path along the floor, texts below
-	var ld_door_size := Vector2(300.0 * DOOR_ASPECT, 300.0)
+	# Loading screen: map every runtime element through the exact same transform
+	# as the supplied image.  The separate frame stays invisible; this rect is
+	# the photographed gate's clear aperture, not its ornamental outer bounds.
+	var aperture := _loading_source_rect_to_viewport(LOADING_APERTURE_SOURCE)
+	var ld_door_size := aperture.size
 	_ld_door.size = ld_door_size
-	_ld_door.position = Vector2(cx - ld_door_size.x * 0.5, 130.0)
+	_ld_door.position = aperture.position
 	_ld_art.size = ld_door_size
 	_ld_art.position = Vector2.ZERO
-	_ld_glow.size = Vector2(380, 380)
-	_ld_glow.position = (ld_door_size - _ld_glow.size) * 0.5
+	_ld_glow.size = ld_door_size
+	_ld_glow.position = Vector2.ZERO
 	var leaf_size := Vector2(ld_door_size.x * 0.5, ld_door_size.y)
 	_ld_leaf_left.size = leaf_size
 	_ld_leaf_left.position = Vector2.ZERO
@@ -707,17 +804,57 @@ func _layout() -> void:
 	_ld_leaf_right.size = leaf_size
 	_ld_leaf_right.position = Vector2(leaf_size.x, 0.0)
 	_ld_leaf_right.pivot_offset = Vector2(leaf_size.x, leaf_size.y * 0.5)
-	_ld_path.position = Vector2(110.0, 413.0)
-	_ld_path.size = Vector2(cx - 80.0, 34.0)
-	_layout_goddess(_loading_goddess, Vector2(cx, 64.0), 122.0)
+	_rebuild_loading_route()
+	var hud := _loading_overlay.get_node("LoadingHud") as Control
+	hud.position = Vector2(vp.x - 424.0, vp.y - 64.0)
+	hud.size = Vector2(424.0, 64.0)
 	var plate := _loading_overlay.get_node("Plate") as Control
-	plate.position = Vector2(cx - plate.size.x * 0.5, 446.0)
-	_loading_chapter.size = Vector2(vp.x, 18)
-	_loading_chapter.position = Vector2(0, 490.0)
-	_loading_status.size = Vector2(vp.x - 80.0, 18)
-	_loading_status.position = Vector2(40.0, 512.0)
-	_ld_percent.size = Vector2(vp.x, 26)
-	_ld_percent.position = Vector2(0, 536.0)
+	plate.position = Vector2(vp.x - 412.0, vp.y - 58.0)
+	_loading_chapter.size = Vector2(100.0, 18.0)
+	_loading_chapter.position = Vector2(vp.x - 404.0, vp.y - 20.0)
+	_loading_status.size = Vector2(276.0, 18.0)
+	_loading_status.position = Vector2(vp.x - 304.0, vp.y - 20.0)
+	_ld_percent.size = Vector2(112.0, 30.0)
+	_ld_percent.position = Vector2(vp.x - 128.0, vp.y - 53.0)
+
+func _layout_loading_background(vp: Vector2) -> void:
+	if _ld_background == null or _ld_background.texture == null:
+		_ld_reference_scale = 1.0
+		_ld_reference_offset = Vector2.ZERO
+		return
+	# Cover the viewport without distortion.  Top alignment preserves the full
+	# goddess, halo, crown, and arch; only distant foreground floor is cropped.
+	_ld_reference_scale = maxf(vp.x / LOADING_REFERENCE_SIZE.x, vp.y / LOADING_REFERENCE_SIZE.y)
+	var draw_size := LOADING_REFERENCE_SIZE * _ld_reference_scale
+	_ld_reference_offset = Vector2((vp.x - draw_size.x) * 0.5, 0.0)
+	_ld_background.position = _ld_reference_offset
+	_ld_background.size = draw_size
+
+func _loading_source_to_viewport(source_point: Vector2) -> Vector2:
+	return _ld_reference_offset + source_point * _ld_reference_scale
+
+func _loading_source_rect_to_viewport(source_rect: Rect2) -> Rect2:
+	return Rect2(
+		_loading_source_to_viewport(source_rect.position),
+		source_rect.size * _ld_reference_scale
+	)
+
+func _rebuild_loading_route() -> void:
+	_ld_route = Curve2D.new()
+	_ld_route.bake_interval = 2.0
+	var points: Array[Vector2] = []
+	for source_point: Vector2 in LOADING_ROUTE_SOURCE:
+		points.append(_loading_source_to_viewport(source_point))
+	for i in range(points.size()):
+		var previous := points[maxi(i - 1, 0)]
+		var following := points[mini(i + 1, points.size() - 1)]
+		var handle := (following - previous) / 6.0
+		var handle_in := -handle if i > 0 else Vector2.ZERO
+		var handle_out := handle if i < points.size() - 1 else Vector2.ZERO
+		_ld_route.add_point(points[i], handle_in, handle_out)
+	var baked := _ld_route.get_baked_points()
+	_ld_path_glow.points = baked
+	_ld_path_core.points = baked
 
 # ── Flow ──────────────────────────────────────────────────────────────────────
 
@@ -1098,6 +1235,8 @@ func _start_chosen_world(run_id: String, _accent: Color) -> void:
 	var fade := create_tween().set_parallel(true)
 	fade.tween_property(_loading_overlay, "modulate:a", 1.0, 0.6).set_trans(Tween.TRANS_SINE)
 	fade.tween_property(_flash, "color:a", 0.0, 0.9).set_delay(0.3).set_trans(Tween.TRANS_SINE)
+	if has_meta("qa_offline"):
+		return
 	if not ChapterFlow.loading_status.is_connected(_on_flow_status):
 		ChapterFlow.loading_status.connect(_on_flow_status)
 	_launch_flow(run_id)
@@ -1181,11 +1320,17 @@ func _show_loading(initial_status: String) -> void:
 	_ld_target = 0.08
 	_refresh_loading_copy()
 	var gate_texture: Texture2D = _chosen_candidate.get("gate_texture")
-	_ld_art.texture = _cropped_to_door_aspect(gate_texture) if gate_texture != null else null
+	var aperture_aspect := LOADING_APERTURE_SOURCE.size.x / LOADING_APERTURE_SOURCE.size.y
+	_ld_art.texture = _cropped_to_aspect(gate_texture, aperture_aspect) if gate_texture != null else null
 	var accent := Color.from_string(str(_chosen_candidate.get("accent_color", "")), UiKit.COLOR_ACCENT)
 	_ld_glow.self_modulate = accent.lerp(Color.WHITE, 0.55)
-	_ld_soul.modulate.a = 1.0
-	_ld_soul.scale = Vector2.ONE
+	for leaf: TextureRect in [_ld_leaf_left, _ld_leaf_right]:
+		leaf.scale = Vector2.ONE
+		leaf.modulate = Color.WHITE
+	_ld_art.modulate = Color(0.55, 0.55, 0.55, 1.0)
+	_ld_glow.modulate.a = 0.16
+	_ld_soul.modulate = Color.WHITE
+	_ld_soul.scale = Vector2(0.76, 0.76)
 	_loading_overlay.show()
 
 func _refresh_loading_copy() -> void:
@@ -1261,8 +1406,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 	elif _phase == Phase.SEARCHING or _phase == Phase.ERROR:
 		if event.is_action_pressed("ui_cancel"):
+			var viewport := get_viewport()
 			_back_to_menu()
-			get_viewport().set_input_as_handled()
+			if viewport != null:
+				viewport.set_input_as_handled()
 
 func _back_to_menu() -> void:
 	get_tree().change_scene_to_file(START_SCENE_PATH)
@@ -1286,7 +1433,6 @@ func _process(delta: float) -> void:
 	if _goddess.visible and _goddess_idle:
 		_animate_goddess(_goddess, _goddess_strength)
 	if _loading_overlay.visible:
-		_animate_goddess(_loading_goddess, 0.7)
 		# The opening door IS the progress bar: creep the target so motion never
 		# stalls, smooth the displayed value, and drive every element from it.
 		_ld_target = clampf(_ld_target + delta * 0.006, 0.0, 0.97)
@@ -1304,9 +1450,17 @@ func _process(delta: float) -> void:
 		var art_lum := 0.55 + 0.45 * eased
 		_ld_art.modulate = Color(art_lum, art_lum, art_lum, 1.0)
 		var travel := clampf(_ld_progress / 0.95, 0.0, 1.0)
-		var sx := lerpf(158.0, get_viewport_rect().size.x * 0.5, travel)
-		_ld_soul.position = Vector2(sx, 420.0 + sin(_time * 1.7) * 4.0)
-		_ld_path.modulate.a = 0.55 + 0.25 * sin(_time * 1.9)
+		if _ld_route.get_point_count() > 1:
+			var route_offset := _ld_route.get_baked_length() * travel
+			_ld_soul.position = _ld_route.sample_baked(route_offset, true) \
+				+ Vector2(0.0, sin(_time * 1.7) * 1.8)
+		var perspective := lerpf(0.76, 0.24, travel * travel * (3.0 - 2.0 * travel))
+		_ld_soul.scale = Vector2(perspective, perspective)
+		_ld_soul.modulate.a = 1.0 - 0.65 * smoothstep(0.82, 1.0, travel)
+		var loading_halo := _ld_soul.get_node_or_null("Halo") as TextureRect
+		if loading_halo != null:
+			loading_halo.modulate.a = 0.72 + 0.28 * sin(_time * 2.5)
+		_ld_path.modulate.a = 0.72 + 0.18 * sin(_time * 1.9)
 		_ld_percent.text = "%d%%" % int(round(_ld_progress * 100.0))
 
 	if _phase == Phase.REVEAL and _reveal_ready and not _doors.is_empty():

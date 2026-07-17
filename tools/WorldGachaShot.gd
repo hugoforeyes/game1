@@ -39,11 +39,14 @@ func _ready() -> void:
 	SettingsManager.set_language("vi")
 	scene.set("_chosen_candidate", _fake_candidates()[0])
 	scene.call("_show_loading", SettingsManager.text("menu.connecting"))
+	await get_tree().create_timer(0.08).timeout
+	await _shot("gacha_loading_closed.png")
 	scene.call("_on_flow_status", "Fetching item icons...")
 	await get_tree().create_timer(1.4).timeout
 	await _shot("gacha_loading_early.png")
 	scene.call("_on_flow_status", SettingsManager.text("gacha.loading_music"))
 	await get_tree().create_timer(1.2).timeout
+	await _shot("gacha_loading_mid.png")
 	scene.call("_on_flow_status", "Building world...")
 	await get_tree().create_timer(2.4).timeout
 	await _shot("gacha_loading_open.png")
