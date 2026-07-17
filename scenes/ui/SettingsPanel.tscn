@@ -1,0 +1,433 @@
+[gd_scene load_steps=14 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/SettingsPanel.gd" id="1_script"]
+[ext_resource type="Texture2D" path="res://assets/ui/settings_v1/row_idle.png" id="2_row_idle"]
+[ext_resource type="Texture2D" path="res://assets/ui/settings_v1/row_focus.png" id="3_row_focus"]
+[ext_resource type="Texture2D" path="res://assets/ui/settings_v1/selector_frame.png" id="4_selector"]
+[ext_resource type="Texture2D" path="res://assets/ui/settings_v1/divider.png" id="5_divider"]
+[ext_resource type="Texture2D" path="res://assets/ui/settings_v1/back_frame.png" id="6_back"]
+[ext_resource type="Texture2D" path="res://assets/ui/settings_v1/slider_knob.png" id="7_knob"]
+[ext_resource type="FontFile" path="res://assets/fonts/PlayfairDisplay-VariableFont.ttf" id="8_title_font"]
+[ext_resource type="FontFile" path="res://assets/fonts/BeVietnamPro-SemiBold.ttf" id="9_body_font"]
+[ext_resource type="FontFile" path="res://assets/fonts/BeVietnamPro-Bold.ttf" id="10_bold_font"]
+[ext_resource type="Texture2D" path="res://assets/ui/settings_v1/slider_track.png" id="11_slider_track"]
+[ext_resource type="Texture2D" path="res://assets/ui/settings_v1/slider_fill.png" id="12_slider_fill"]
+[ext_resource type="Texture2D" path="res://assets/ui/settings_v1/top_crest.png" id="13_top_crest"]
+
+[node name="SettingsPanel" type="Control"]
+visible = false
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+script = ExtResource("1_script")
+
+[node name="Dim" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.006, 0.012, 0.035, 0.88)
+mouse_filter = 0
+
+[node name="PanelRoot" type="Control" parent="."]
+layout_mode = 0
+offset_right = 860.0
+offset_bottom = 476.0
+mouse_filter = 1
+
+[node name="PanelVisual" type="Control" parent="PanelRoot"]
+layout_mode = 0
+offset_right = 860.0
+offset_bottom = 476.0
+pivot_offset = Vector2(430, 238)
+mouse_filter = 1
+
+[node name="InnerShade" type="ColorRect" parent="PanelRoot/PanelVisual"]
+layout_mode = 0
+offset_left = 24.0
+offset_top = 24.0
+offset_right = 836.0
+offset_bottom = 452.0
+color = Color(0.012, 0.025, 0.065, 0.965)
+mouse_filter = 2
+
+[node name="TopCrest" type="TextureRect" parent="PanelRoot/PanelVisual"]
+layout_mode = 0
+offset_left = 408.0
+offset_top = -8.0
+offset_right = 452.0
+offset_bottom = 40.0
+texture = ExtResource("13_top_crest")
+expand_mode = 1
+stretch_mode = 6
+mouse_filter = 2
+
+[node name="Title" type="Label" parent="PanelRoot/PanelVisual"]
+layout_mode = 0
+offset_left = 180.0
+offset_top = 30.0
+offset_right = 680.0
+offset_bottom = 86.0
+theme_override_colors/font_color = Color(0.99, 0.86, 0.55, 1)
+theme_override_colors/font_shadow_color = Color(0, 0, 0, 0.9)
+theme_override_constants/shadow_offset_x = 2
+theme_override_constants/shadow_offset_y = 4
+theme_override_fonts/font = ExtResource("8_title_font")
+theme_override_font_sizes/font_size = 36
+text = "SETTINGS"
+horizontal_alignment = 1
+vertical_alignment = 1
+mouse_filter = 2
+
+[node name="Divider" type="TextureRect" parent="PanelRoot/PanelVisual"]
+layout_mode = 0
+offset_left = 160.0
+offset_top = 86.0
+offset_right = 700.0
+offset_bottom = 114.0
+texture = ExtResource("5_divider")
+expand_mode = 1
+stretch_mode = 6
+mouse_filter = 2
+
+[node name="MusicRow" type="Control" parent="PanelRoot/PanelVisual"]
+layout_mode = 0
+offset_left = 60.0
+offset_top = 124.0
+offset_right = 800.0
+offset_bottom = 192.0
+
+[node name="Idle" type="TextureRect" parent="PanelRoot/PanelVisual/MusicRow"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+texture = ExtResource("2_row_idle")
+expand_mode = 1
+mouse_filter = 2
+
+[node name="Focus" type="TextureRect" parent="PanelRoot/PanelVisual/MusicRow"]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+texture = ExtResource("3_row_focus")
+expand_mode = 1
+mouse_filter = 2
+
+[node name="Label" type="Label" parent="PanelRoot/PanelVisual/MusicRow"]
+layout_mode = 0
+offset_left = 28.0
+offset_top = 12.0
+offset_right = 274.0
+offset_bottom = 56.0
+theme_override_colors/font_color = Color(0.91, 0.86, 0.72, 0.9)
+theme_override_fonts/font = ExtResource("9_body_font")
+theme_override_font_sizes/font_size = 20
+text = "MUSIC VOLUME"
+vertical_alignment = 1
+mouse_filter = 2
+
+[node name="SliderTrack" type="TextureRect" parent="PanelRoot/PanelVisual/MusicRow"]
+layout_mode = 0
+offset_left = 305.0
+offset_top = 24.0
+offset_right = 615.0
+offset_bottom = 44.0
+texture = ExtResource("11_slider_track")
+expand_mode = 1
+mouse_filter = 2
+
+[node name="SliderFillClip" type="Control" parent="PanelRoot/PanelVisual/MusicRow"]
+clip_contents = true
+layout_mode = 0
+offset_left = 305.0
+offset_top = 24.0
+offset_right = 553.0
+offset_bottom = 44.0
+mouse_filter = 2
+
+[node name="Fill" type="TextureRect" parent="PanelRoot/PanelVisual/MusicRow/SliderFillClip"]
+layout_mode = 0
+offset_right = 310.0
+offset_bottom = 20.0
+texture = ExtResource("12_slider_fill")
+expand_mode = 1
+mouse_filter = 2
+
+[node name="SliderKnob" type="TextureRect" parent="PanelRoot/PanelVisual/MusicRow"]
+layout_mode = 0
+offset_left = 534.0
+offset_top = 14.0
+offset_right = 572.0
+offset_bottom = 54.0
+texture = ExtResource("7_knob")
+expand_mode = 1
+stretch_mode = 6
+mouse_filter = 2
+
+[node name="Slider" type="HSlider" parent="PanelRoot/PanelVisual/MusicRow"]
+self_modulate = Color(1, 1, 1, 0)
+layout_mode = 0
+offset_left = 286.0
+offset_top = 12.0
+offset_right = 634.0
+offset_bottom = 56.0
+focus_mode = 2
+max_value = 100.0
+step = 5.0
+value = 80.0
+scrollable = false
+
+[node name="Value" type="Label" parent="PanelRoot/PanelVisual/MusicRow"]
+layout_mode = 0
+offset_left = 638.0
+offset_top = 12.0
+offset_right = 714.0
+offset_bottom = 56.0
+theme_override_colors/font_color = Color(0.99, 0.86, 0.55, 1)
+theme_override_fonts/font = ExtResource("10_bold_font")
+theme_override_font_sizes/font_size = 20
+text = "80%"
+horizontal_alignment = 1
+vertical_alignment = 1
+mouse_filter = 2
+
+[node name="FullscreenRow" type="Control" parent="PanelRoot/PanelVisual"]
+layout_mode = 0
+offset_left = 60.0
+offset_top = 206.0
+offset_right = 800.0
+offset_bottom = 274.0
+
+[node name="Idle" type="TextureRect" parent="PanelRoot/PanelVisual/FullscreenRow"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+texture = ExtResource("2_row_idle")
+expand_mode = 1
+mouse_filter = 2
+
+[node name="Focus" type="TextureRect" parent="PanelRoot/PanelVisual/FullscreenRow"]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+texture = ExtResource("3_row_focus")
+expand_mode = 1
+mouse_filter = 2
+
+[node name="Label" type="Label" parent="PanelRoot/PanelVisual/FullscreenRow"]
+layout_mode = 0
+offset_left = 28.0
+offset_top = 12.0
+offset_right = 286.0
+offset_bottom = 56.0
+theme_override_colors/font_color = Color(0.91, 0.86, 0.72, 0.9)
+theme_override_fonts/font = ExtResource("9_body_font")
+theme_override_font_sizes/font_size = 20
+text = "FULLSCREEN"
+vertical_alignment = 1
+mouse_filter = 2
+
+[node name="Selector" type="Control" parent="PanelRoot/PanelVisual/FullscreenRow"]
+layout_mode = 0
+offset_left = 290.0
+offset_top = 4.0
+offset_right = 712.0
+offset_bottom = 64.0
+
+[node name="WindowedButton" type="Button" parent="PanelRoot/PanelVisual/FullscreenRow/Selector"]
+layout_mode = 0
+offset_left = 4.0
+offset_top = 4.0
+offset_right = 211.0
+offset_bottom = 56.0
+focus_mode = 2
+theme_override_fonts/font = ExtResource("9_body_font")
+theme_override_font_sizes/font_size = 16
+text = "WINDOWED"
+flat = true
+
+[node name="FullscreenButton" type="Button" parent="PanelRoot/PanelVisual/FullscreenRow/Selector"]
+layout_mode = 0
+offset_left = 211.0
+offset_top = 4.0
+offset_right = 418.0
+offset_bottom = 56.0
+focus_mode = 2
+theme_override_fonts/font = ExtResource("9_body_font")
+theme_override_font_sizes/font_size = 16
+text = "FULLSCREEN"
+flat = true
+
+[node name="Frame" type="TextureRect" parent="PanelRoot/PanelVisual/FullscreenRow/Selector"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+texture = ExtResource("4_selector")
+expand_mode = 1
+mouse_filter = 2
+
+[node name="LanguageRow" type="Control" parent="PanelRoot/PanelVisual"]
+layout_mode = 0
+offset_left = 60.0
+offset_top = 288.0
+offset_right = 800.0
+offset_bottom = 356.0
+
+[node name="Idle" type="TextureRect" parent="PanelRoot/PanelVisual/LanguageRow"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+texture = ExtResource("2_row_idle")
+expand_mode = 1
+mouse_filter = 2
+
+[node name="Focus" type="TextureRect" parent="PanelRoot/PanelVisual/LanguageRow"]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+texture = ExtResource("3_row_focus")
+expand_mode = 1
+mouse_filter = 2
+
+[node name="Label" type="Label" parent="PanelRoot/PanelVisual/LanguageRow"]
+layout_mode = 0
+offset_left = 28.0
+offset_top = 12.0
+offset_right = 286.0
+offset_bottom = 56.0
+theme_override_colors/font_color = Color(0.91, 0.86, 0.72, 0.9)
+theme_override_fonts/font = ExtResource("9_body_font")
+theme_override_font_sizes/font_size = 20
+text = "LANGUAGE"
+vertical_alignment = 1
+mouse_filter = 2
+
+[node name="Selector" type="Control" parent="PanelRoot/PanelVisual/LanguageRow"]
+layout_mode = 0
+offset_left = 290.0
+offset_top = 4.0
+offset_right = 712.0
+offset_bottom = 64.0
+
+[node name="EnglishButton" type="Button" parent="PanelRoot/PanelVisual/LanguageRow/Selector"]
+layout_mode = 0
+offset_left = 4.0
+offset_top = 4.0
+offset_right = 211.0
+offset_bottom = 56.0
+focus_mode = 2
+theme_override_fonts/font = ExtResource("9_body_font")
+theme_override_font_sizes/font_size = 16
+text = "ENGLISH"
+flat = true
+
+[node name="VietnameseButton" type="Button" parent="PanelRoot/PanelVisual/LanguageRow/Selector"]
+layout_mode = 0
+offset_left = 211.0
+offset_top = 4.0
+offset_right = 418.0
+offset_bottom = 56.0
+focus_mode = 2
+theme_override_fonts/font = ExtResource("9_body_font")
+theme_override_font_sizes/font_size = 16
+text = "TIẾNG VIỆT"
+flat = true
+
+[node name="Frame" type="TextureRect" parent="PanelRoot/PanelVisual/LanguageRow/Selector"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+texture = ExtResource("4_selector")
+expand_mode = 1
+mouse_filter = 2
+
+[node name="BackFrame" type="TextureRect" parent="PanelRoot/PanelVisual"]
+layout_mode = 0
+offset_left = 318.0
+offset_top = 388.0
+offset_right = 542.0
+offset_bottom = 444.0
+texture = ExtResource("6_back")
+expand_mode = 1
+mouse_filter = 2
+
+[node name="BackButton" type="Button" parent="PanelRoot/PanelVisual"]
+layout_mode = 0
+offset_left = 318.0
+offset_top = 388.0
+offset_right = 542.0
+offset_bottom = 444.0
+focus_mode = 2
+theme_override_colors/font_color = Color(0.96, 0.9, 0.72, 1)
+theme_override_fonts/font = ExtResource("9_body_font")
+theme_override_font_sizes/font_size = 18
+flat = true
+
+[node name="BackText" type="Label" parent="PanelRoot/PanelVisual"]
+layout_mode = 0
+offset_left = 322.0
+offset_top = 398.0
+offset_right = 478.0
+offset_bottom = 436.0
+theme_override_colors/font_color = Color(0.96, 0.9, 0.72, 1)
+theme_override_fonts/font = ExtResource("9_body_font")
+theme_override_font_sizes/font_size = 18
+text = "BACK"
+horizontal_alignment = 1
+vertical_alignment = 1
+mouse_filter = 2
+
+[node name="EscDivider" type="ColorRect" parent="PanelRoot/PanelVisual"]
+layout_mode = 0
+offset_left = 480.0
+offset_top = 398.0
+offset_right = 482.0
+offset_bottom = 434.0
+color = Color(0.72, 0.55, 0.25, 0.5)
+mouse_filter = 2
+
+[node name="EscHint" type="Label" parent="PanelRoot/PanelVisual"]
+layout_mode = 0
+offset_left = 484.0
+offset_top = 400.0
+offset_right = 536.0
+offset_bottom = 434.0
+theme_override_colors/font_color = Color(0.84, 0.75, 0.55, 0.82)
+theme_override_fonts/font = ExtResource("9_body_font")
+theme_override_font_sizes/font_size = 14
+text = "ESC"
+vertical_alignment = 1
+mouse_filter = 2

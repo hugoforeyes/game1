@@ -361,6 +361,18 @@ func live_action_hold() -> void:
 	velocity = Vector2.ZERO
 
 
+func live_action_face_toward(world_position: Vector2) -> void:
+	## Point the paused walk sprite at a spot (a standoff holder faces the
+	## aggressors). _update_animation keeps idle frames on last_facing.
+	var direction: Vector2 = world_position - global_position
+	if direction.length() < 1.0:
+		return
+	if absf(direction.x) >= absf(direction.y):
+		last_facing = "right" if direction.x > 0.0 else "left"
+	else:
+		last_facing = "down" if direction.y > 0.0 else "up"
+
+
 func live_action_idle() -> bool:
 	## True when the NPC finished (or lost) its current waypoint and awaits the next.
 	return _live_action_active and (active_path.is_empty() or active_path_index >= active_path.size())
@@ -396,7 +408,9 @@ func _live_action_step() -> void:
 		velocity = Vector2.ZERO
 		return
 	var distance: float = global_position.distance_to(target_position)
-	if distance <= ARRIVE_DISTANCE:
+	# Arrive threshold must cover one full step, or a scaled clock (time_scale)
+	# makes the body overshoot back and forth across the point forever.
+	if distance <= maxf(ARRIVE_DISTANCE, _live_action_speed * get_physics_process_delta_time()):
 		global_position = target_position
 		current_tile = target_tile
 		active_path_index += 1

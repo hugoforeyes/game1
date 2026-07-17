@@ -119,8 +119,8 @@ var flee_failed_count: int = 0
 var _ui_mode: UiMode = UiMode.NONE
 var _battle_over: bool = false
 var _pending_finish_result: String = ""
-## Empty for normal outcomes; `escort_ko` distinguishes the no-XP retry path
-## while the public result remains `defeat` for Main's existing reposition flow.
+## Empty for normal outcomes; `escort_ko` records which protected actor caused
+## the otherwise ordinary defeat flow.
 var failure_reason: String = ""
 var _finish_confirm_ready: bool = false
 var _battle_log_entries: Array[Dictionary] = []
@@ -4092,23 +4092,14 @@ func _sync_ally_actor_stats() -> void :
         ally["sp"] = mini(int(ally.get("sp", 0)), int(ally.get("sp_max", 3)))
 
 
-## Losing a protected NPC is a retry, not ordinary player defeat: preserve XP,
-## restore the escort snapshot HP, then emit the existing `defeat` result so Main
-## performs its established player/enemy reposition and cooldown flow.
-func _escort_defeat(escort: Dictionary) -> void:
+## Losing a protected NPC is exactly as terminal as losing the protagonist.
+## Keep the reason for diagnostics, then use the one normal defeat path so XP,
+## presentation, result emission and Main's respawn/reposition behavior agree.
+func _escort_defeat(_escort: Dictionary) -> void:
     if _battle_over or failure_reason == "escort_ko":
         return
     failure_reason = "escort_ko"
-    if _root != null and is_instance_valid(_root):
-        var dark := create_tween()
-        dark.tween_property(_root, "modulate", Color(0.55, 0.5, 0.6), 1.2)
-    for line in _dialogue("player_defeat"):
-        if not _foes.is_empty():
-            _enemy_say(_foes[0], str(line))
-    _reset_escorts_for_retry()
-    _refresh_all_panels()
-    await _say("%s can no longer continue. The escort will restart — no experience is lost." % str(escort.get("name", "The escort")))
-    _finish("defeat")
+    await _defeat()
 
 
 func _reset_escorts_for_retry() -> void:
@@ -4143,6 +4134,9 @@ func _defeat() -> void :
         if str(ally.get("kind")) == "companion":
             ally["downed"] = false
             GameManager.set_companion_hp(str(ally.get("id")), -1)
+    # Every defeat restarts protected NPCs at their snapshotted maximum HP.
+    # This covers both an escort KO and an ordinary all-combatants KO.
+    _reset_escorts_for_retry()
     await _say("Your memory frays... you lose some experience and wake up where you started.")
     _finish("defeat")
 

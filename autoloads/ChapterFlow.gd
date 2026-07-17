@@ -35,6 +35,7 @@ var _suppress_cutscene: bool = false
 # maps zone_key -> true while that zone's download is in flight (dedup guard).
 var _prefetching_zones: Dictionary = {}
 var _prefetch_all_running: bool = false
+var _prefetch_requested_chapter_index: int = -1
 
 
 func _ready() -> void:
@@ -205,8 +206,15 @@ func progress_label() -> String:
 # ── flow control ──────────────────────────────────────────────────────────────
 
 func start_new_game() -> Error:
+	return await start_game_with_run("")
+
+## Start a brand-new game on one SPECIFIC world (run) — the world-gacha's entry
+## point after the soul chooses a door. Empty run_id falls back to the latest
+## playable run (the pre-gacha behavior, kept for tools and stale-save paths).
+func start_game_with_run(run_id: String) -> Error:
 	loading_status.emit("Connecting to story server...")
-	var response: Dictionary = await _http_get_json("/api/godot/runs/latest")
+	var flow_path: String = "/api/godot/runs/latest" if run_id.is_empty() else "/api/godot/runs/%s/flow" % run_id
+	var response: Dictionary = await _http_get_json(flow_path)
 	if not bool(response.get("ok", false)) or (response.get("chapters", []) as Array).is_empty():
 		print("[ChapterFlow] no playable run: %s" % str(response))
 		return ERR_CANT_CONNECT
@@ -261,6 +269,12 @@ func begin_current_chapter() -> Error:
 	# so this never suppresses a cutscene within a chapter.
 	CutsceneDirector.reset()
 	await _load_chapter_content(chapter)
+
+	# The loading screen carries the chapter's MUSIC download too, so both the
+	# intro slides and the first zone start with sound already warmed.
+	if not MusicManager.is_ready(scene_music_context()):
+		loading_status.emit(SettingsManager.text("gacha.loading_music"))
+		await MusicManager.prefetch(scene_music_context())
 
 	loading_status.emit("Fetching chapter intro...")
 	var run_id: String = str(flow.get("run_id", ""))
@@ -398,13 +412,21 @@ func continue_saved_game() -> Error:
 		return await start_new_game()
 
 	loading_status.emit("Connecting to story server...")
-	var response: Dictionary = await _http_get_json("/api/godot/runs/latest")
+	# Resume the SAVED world directly (worlds are chosen per-run via the gacha,
+	# so "latest" is no longer the save's world in general).
+	var saved_run_id: String = str(saved_flow.get("run_id", ""))
+	var flow_path: String = (
+		"/api/godot/runs/%s/flow" % saved_run_id if not saved_run_id.is_empty()
+		else "/api/godot/runs/latest"
+	)
+	var response: Dictionary = await _http_get_json(flow_path)
 	if not bool(response.get("ok", false)) or (response.get("chapters", []) as Array).is_empty():
-		return ERR_CANT_CONNECT
+		# The saved world no longer exists server-side — the save is stale.
+		print("[ChapterFlow] saved run not playable anymore; starting a new game")
+		return await start_new_game()
 	flow = response
-	if str(saved_flow.get("run_id", "")) != str(flow.get("run_id", "")):
-		# The latest world is a different run than the one saved — the save is stale.
-		print("[ChapterFlow] saved run no longer latest; starting a new game")
+	if saved_run_id != str(flow.get("run_id", "")):
+		print("[ChapterFlow] saved run mismatch; starting a new game")
 		return await start_new_game()
 
 	active = true
@@ -475,7 +497,10 @@ func enter_current_zone() -> Error:
 	# beat. This only gates legacy opening_cutscene/chapter-intro fallback.
 	pending_play_opening = (zone_index == 0 and not _suppress_cutscene)
 	var mode: String = str(pending_intro.get("recommended_mode", ""))
-	var cutscene: Dictionary = pending_intro.get("cutscene", {}) as Dictionary
+	# Some intro manifests carry "cutscene": null — a bare `as Dictionary` cast
+	# would raise an invalid-cast script error on those.
+	var cutscene_variant: Variant = pending_intro.get("cutscene", {})
+	var cutscene: Dictionary = cutscene_variant if cutscene_variant is Dictionary else {}
 	if pending_play_opening and mode in ["cutscene", "both"]:
 		if str(cutscene.get("zone_id", "")) == str(zone.get("zone_id", "")):
 			pending_cutscene_actions = (cutscene.get("actions", []) as Array).duplicate(true)
@@ -536,6 +561,7 @@ func scene_music_context() -> Dictionary:
 func _clear_zone_cache() -> void:
 	_prefetching_zones.clear()
 	_prefetch_all_running = false
+	_prefetch_requested_chapter_index = -1
 	var dir: DirAccess = DirAccess.open(CACHE_DIR)
 	if dir == null:
 		return
@@ -590,25 +616,64 @@ func prefetch_current_zone() -> void:
 	MusicManager.prefetch(scene_music_context())
 	await _ensure_zone_cached(zone_key, api_url(str(zone.get("package_url", ""))))
 
-## Background-download every other zone of the current chapter so scene-to-scene
-## transitions are instant once cached. Runs one zone at a time.
+## Background-download the current chapter one zone at a time. Only after every
+## package in it is cached, continue with the next chapter so advancing there is
+## instant too. Calls made while the worker is busy are remembered (for example
+## when the player travels to another chapter from the world map).
 func prefetch_remaining_zones() -> void:
+	if not active:
+		return
+	_prefetch_requested_chapter_index = chapter_index
 	if _prefetch_all_running:
 		return
 	_prefetch_all_running = true
-	MusicManager.prefetch(scene_music_context())
+	while active and _prefetch_requested_chapter_index >= 0:
+		var requested_index := _prefetch_requested_chapter_index
+		_prefetch_requested_chapter_index = -1
+		var current_chapter_complete := await _prefetch_chapter_zones(requested_index)
+		if current_chapter_complete and active:
+			await _prefetch_chapter_zones(requested_index + 1)
+	_prefetch_all_running = false
+
+
+## Cache every zone package (and warm the music) for one chapter without changing
+## chapter_index/zone_index or loading that chapter's catalogs into live managers.
+## Returns false when a package fails so the following chapter is not started
+## before the requested chapter is genuinely complete.
+func _prefetch_chapter_zones(target_chapter_index: int) -> bool:
+	var chapter_items: Array = chapters()
+	if target_chapter_index < 0 or target_chapter_index >= chapter_items.size():
+		return true
+	if not (chapter_items[target_chapter_index] is Dictionary):
+		return false
+	var chapter: Dictionary = chapter_items[target_chapter_index] as Dictionary
 	var run_id: String = str(flow.get("run_id", ""))
-	for entry in current_chapter_zones():
+	MusicManager.prefetch({
+		"run_id": run_id,
+		"chapter": int(chapter.get("chapter", target_chapter_index + 1)),
+	})
+	for entry in chapter.get("zones", []) as Array:
 		if not active:
-			break
+			return false
 		if not (entry is Dictionary):
 			continue
 		var zid: String = str((entry as Dictionary).get("zone_id", ""))
 		if zid.is_empty():
 			continue
-		var zkey: String = "%s::%d::%s" % [run_id, chapter_index, zid]
-		await _ensure_zone_cached(zkey, api_url(str((entry as Dictionary).get("package_url", ""))))
-	_prefetch_all_running = false
+		var zkey: String = "%s::%d::%s" % [run_id, target_chapter_index, zid]
+		var err := await _ensure_zone_cached(
+			zkey,
+			api_url(str((entry as Dictionary).get("package_url", "")))
+		)
+		if err != OK:
+			print("[ChapterFlow] chapter prefetch stopped chapter=%d zone=%s err=%d" % [
+				int(chapter.get("chapter", target_chapter_index + 1)), zid, err,
+			])
+			return false
+	print("[ChapterFlow] chapter %d cached in background" % int(
+		chapter.get("chapter", target_chapter_index + 1)
+	))
+	return true
 
 func is_zone_prefetch_in_progress() -> bool:
 	return _prefetching_zones.has(_current_zone_key())
@@ -663,6 +728,42 @@ func _abort_to_start(reason: String) -> void:
 	print("[ChapterFlow] aborting flow: %s" % reason)
 	active = false
 	get_tree().change_scene_to_file(START_SCENE_PATH)
+
+# ── world gacha (reincarnation screen) ───────────────────────────────────────
+
+## Up to `count` random playable worlds for the reincarnation screen. Each entry
+## has run_id + ready; ready ones carry name/tagline/traits (EN+VI), accent_color
+## and gate_image_url. [] on connection failure.
+func fetch_world_candidates(count: int = 3) -> Array:
+	var response: Dictionary = await _http_get_json("/api/godot/worlds/candidates?count=%d" % count)
+	if not bool(response.get("ok", false)):
+		return []
+	return response.get("candidates", []) as Array
+
+## Ask the server to generate a world's identity (name + gate art) on the spot —
+## the fallback when the gacha drew a world whose identity was never pre-built.
+## Generation runs an LLM call plus one image render, so this can take minutes;
+## the goddess "searching" phase is designed to cover exactly this wait.
+func request_world_identity(run_id: String) -> Dictionary:
+	var request := HTTPRequest.new()
+	request.timeout = 600.0
+	add_child(request)
+	var body: String = JSON.stringify({"run_id": run_id, "provider": "openai_extension"})
+	var start_error: Error = request.request(
+		api_url("/api/world-identity/generate"),
+		["Content-Type: application/json"],
+		HTTPClient.METHOD_POST,
+		body,
+	)
+	if start_error != OK:
+		request.queue_free()
+		return {}
+	var response: Array = await request.request_completed
+	request.queue_free()
+	if int(response[0]) != HTTPRequest.RESULT_SUCCESS:
+		return {}
+	var parsed: Variant = JSON.parse_string((response[3] as PackedByteArray).get_string_from_utf8())
+	return parsed as Dictionary if parsed is Dictionary else {}
 
 # ── http helpers ──────────────────────────────────────────────────────────────
 

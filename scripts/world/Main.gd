@@ -9,6 +9,7 @@ const WorldObjectScript := preload("res://scripts/world/WorldObject.gd")
 const InteriorExitScript := preload("res://scripts/world/InteriorExit.gd")
 const ZoneExitPortalScript := preload("res://scripts/world/ZoneExitPortal.gd")
 const PartyFollowerScript := preload("res://scripts/world/PartyFollower.gd")
+const LiveActionDirectorScript := preload("res://scripts/world/LiveActionDirector.gd")
 const PartyHudViewScript := preload("res://scripts/ui/PartyHudView.gd")
 const QuestCompassViewScript := preload("res://scripts/ui/QuestCompassView.gd")
 const HudShortcutsViewScript := preload("res://scripts/ui/HudShortcutsView.gd")
@@ -194,6 +195,7 @@ func _build_imported_world() -> void:
 	_spawn_item_pickups(tile_context)
 	_create_scene_exits(tile_context)
 	_spawn_party_followers()
+	_mount_live_action_director(package_data)
 
 	var map_pixel_size: Vector2 = GameManager.get_map_pixel_size(package_data, background.texture)
 	lighting_system.initialize($World, package_data, map_pixel_size, generated_props, solid_instances)
@@ -239,6 +241,20 @@ func _mount_quest_compass() -> void:
 	compass.name = "QuestCompass"
 	add_child(compass)
 	compass.setup(self, player)
+
+
+func _mount_live_action_director(package_data: Dictionary) -> void:
+	# Real-time ambient live actions (scene_package.live_actions): the zone's own
+	# NPCs/enemies act out an ongoing story moment (a chase, a standoff, a guard
+	# ring, a rescue shuttle) WHILE the player plays — never a cutscene. The
+	# director self-gates on ui_blocking_input and persists resolved shows.
+	var live_actions: Array = package_data.get("live_actions", []) as Array
+	if live_actions.is_empty():
+		return
+	var director: LiveActionDirector = LiveActionDirectorScript.new()
+	director.name = "LiveActionDirector"
+	add_child(director)
+	director.setup(player, generated_characters, live_actions)
 
 
 func _spawn_party_followers() -> void:

@@ -613,7 +613,7 @@ func _assert_escort_battle_contract(base_enemy: Dictionary) -> void:
 		"escort shield overflow must reach HP normally")
 
 	# Escort KO is terminal for the attempt, unavailable to revive, restores the
-	# stored snapshot for retry and emits ordinary `defeat` without XP loss.
+	# stored snapshot for retry and runs the exact same XP-losing defeat path.
 	(escort["statuses"] as Array).clear()
 	PartyManager.set_escort_hp(ESCORT_ID, 0)
 	escort["downed"] = true
@@ -628,17 +628,40 @@ func _assert_escort_battle_contract(base_enemy: Dictionary) -> void:
 	await probe._tick_escort_statuses_for_round()
 	_check(probe.failure_reason == "escort_ko"
 		and probe._pending_finish_result == "defeat",
-		"escort KO must enter the compatible defeat/retry result")
-	_check(GameManager.player_xp == 19,
-		"escort defeat must not apply the normal XP penalty")
+		"escort KO must enter the normal defeat/respawn result")
+	_check(GameManager.player_xp == int(19 * 0.75),
+		"escort defeat must apply the normal player XP penalty")
 	_check(PartyManager.get_escort_hp(ESCORT_ID) == snapshot_max
 		and not bool(escort.get("downed", true)),
 		"escort defeat must restore snapshot HP for retry")
+
+	# An ordinary player defeat must reset active escorts too, even when the
+	# protected actor was still standing when the battle ended.
+	var normal_defeat_probe := BattleSceneScript.new()
+	add_child(normal_defeat_probe)
+	normal_defeat_probe.enemy = base_enemy.duplicate(true)
+	normal_defeat_probe.enemy["dialogue"] = {}
+	normal_defeat_probe.enemy_id = "escort_normal_defeat_probe"
+	normal_defeat_probe.player_stats = GameManager.player_battle_stats()
+	normal_defeat_probe._build_allies()
+	normal_defeat_probe._root = Control.new()
+	normal_defeat_probe.add_child(normal_defeat_probe._root)
+	PartyManager.set_escort_hp(ESCORT_ID, 1)
+	GameManager.player_xp = 19
+	await normal_defeat_probe._defeat()
+	_check(normal_defeat_probe.failure_reason.is_empty()
+		and normal_defeat_probe._pending_finish_result == "defeat",
+		"ordinary player KO must retain the ordinary defeat reason/result")
+	_check(GameManager.player_xp == int(19 * 0.75),
+		"ordinary player KO must keep applying the normal XP penalty")
+	_check(PartyManager.get_escort_hp(ESCORT_ID) == snapshot_max,
+		"ordinary player defeat must also restore active escort HP")
+	normal_defeat_probe.queue_free()
 	GameManager.player_xp = old_xp
 
 	PartyManager.end_escort(ESCORT_ID)
 	probe.queue_free()
-	print("[PartySmoke] escort battle contract OK — targetable, inert, scaled out, retry-safe")
+	print("[PartySmoke] escort battle contract OK — targetable, inert, scaled out, defeat-linked")
 
 
 func _assert_boss_party_scaling(base_enemy: Dictionary) -> void:

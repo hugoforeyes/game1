@@ -18,7 +18,7 @@ func is_ready(scene_ctx: Dictionary) -> bool:
 
 func _ready() -> void:
 	_player = AudioStreamPlayer.new()
-	_player.bus = "Master"
+	_player.bus = SettingsManager.MUSIC_BUS_NAME
 	add_child(_player)
 
 func _cache_key(scene_ctx: Dictionary) -> String:

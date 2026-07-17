@@ -1,411 +1,440 @@
 extends Control
+## AAA main menu — start_menu_v2 full-native-resolution redesign.
+## A still anime key-visual background (OpenAiExtension art), engine-typeset
+## Playfair title over a generated gold flourish, two ornate plaque buttons
+## (New Game / Settings), rising ember motes like the chapter-intro slides,
+## and an ornate loading overlay. All text is rendered by Godot so EN/VI stay
+## crisp and precisely aligned.
 
-const MENU_DEFAULT_COLOR := Color(0.82, 0.73, 0.51, 0.55)
-const MENU_ACTIVE_COLOR := Color(0.96, 0.88, 0.50, 1.0)
-const PANEL_BG := Color(0.03, 0.02, 0.09, 0.93)
-const PANEL_BORDER := Color(0.78, 0.61, 0.24, 0.35)
+const ART_DIR := "res://assets/ui/start_menu_v2/"
+const SETTINGS_SCENE := preload("res://scenes/ui/SettingsPanel.tscn")
 
-var scene_zip_path: String = ""
-var character_sprite_path: String = ""
-var music_value: int = 8
-var sfx_value: int = 10
-var scanlines_enabled: bool = true
+const GAME_TITLE := "ONE LIFE, ONE WORLD"
+const VERSION_TEXT := "V0.1.0 ALPHA"
+
+const BTN_SIZE := Vector2(400.0, 66.0)
+const BTN_GAP := 24.0              # vertical space between the two plaques
+const GEM_SIZE := 22.0
+const GEM_OFFSET_X := -46.0        # floating cursor gem sits outside the plaque's left tip
+
+const COLOR_TITLE := Color(0.99, 0.88, 0.56, 1.0)
+const COLOR_TITLE_GLOW := Color(1.0, 0.82, 0.42, 0.30)
+const COLOR_BTN_IDLE := Color(0.85, 0.76, 0.55, 0.80)
+const COLOR_BTN_LIT := Color(1.00, 0.94, 0.72, 1.00)
+const COLOR_HINT := Color(0.86, 0.74, 0.48, 0.55)
+const COLOR_VERSION := Color(0.80, 0.68, 0.44, 0.38)
+
 var is_loading_new_game: bool = false
-
 var flash_timer: float = 0.0
-var spinner_timer: float = 0.0
-var spinner_index: int = 0
-const SPINNER_FRAMES := ["* . . .", ". * . .", ". . * .", ". . . *"]
+var _time: float = 0.0
+var _entrance_done := false
 
-
-@onready var bg: TextureRect = $BackgroundImage
-@onready var vignette: ColorRect = $Vignette
-@onready var scanlines: ColorRect = $Scanlines
-@onready var menu: VBoxContainer = $Ui/MenuLayer/Menu
-@onready var new_game_button: Button = $Ui/MenuLayer/Menu/NewGameButton
-@onready var continue_button: Button = $Ui/MenuLayer/Menu/ContinueButton
-@onready var settings_button: Button = $Ui/MenuLayer/Menu/SettingsButton
-@onready var press_key: Label = $PressKey
-@onready var version_label: Label = $Version
-@onready var settings_overlay: Control = $SettingsOverlay
-@onready var music_value_label: Label = $SettingsOverlay/Center/Wrap/Panel/Margin/Content/MusicRow/ValueWrap/Value
-@onready var sfx_value_label: Label = $SettingsOverlay/Center/Wrap/Panel/Margin/Content/SfxRow/ValueWrap/Value
-@onready var scanlines_toggle_button: Button = $SettingsOverlay/Center/Wrap/Panel/Margin/Content/ScanlineRow/ValueWrap/ToggleButton
-@onready var importer_overlay: Control = $ImporterOverlay
-@onready var package_value: LineEdit = $ImporterOverlay/Center/Panel/Margin/Content/PackageSection/PathRow/PackageValue
-@onready var sprite_value: LineEdit = $ImporterOverlay/Center/Panel/Margin/Content/SpriteSection/PathRow/SpriteValue
-@onready var status_label: Label = $ImporterOverlay/Center/Panel/Margin/Content/Status
-@onready var import_button: Button = $ImporterOverlay/Center/Panel/Margin/Content/Actions/ImportButton
-@onready var package_dialog: FileDialog = $PackageDialog
-@onready var sprite_dialog: FileDialog = $SpriteDialog
-@onready var flash_label: Label = $FlashMessage
-@onready var loading_overlay: Control = $LoadingOverlay
-@onready var loading_chapter_label: Label = $LoadingOverlay/Center/Content/ChapterLabel
-@onready var loading_status_label: Label = $LoadingOverlay/Center/Content/StatusLabel
-@onready var loading_spinner_label: Label = $LoadingOverlay/Center/Content/SpinnerLabel
+var _bg: TextureRect
+var _title_glow: Label
+var _title_label: Label
+var _flourish: TextureRect
+var _menu_root: Control
+var new_game_button: Button
+var settings_button: Button
+var _hint_label: Label
+var _version_label: Label
+var flash_label: Label
+var settings_overlay: SettingsPanel
+var _intro_fade: ColorRect
 
 func _ready() -> void:
-	# Authored in a 270-tall design space, scaled 2x to the viewport. The design
-	# width follows the real viewport (512 at 1024x540) so the scene stays
-	# full-bleed on wider resolutions; anchored children adapt automatically.
-	set_anchors_preset(Control.PRESET_TOP_LEFT)
-	position = Vector2.ZERO
-	size = get_viewport_rect().size / 2.0
-	scale = Vector2(2, 2)
-	# The background art (480x270) bakes the menu banners into the painting and
-	# is drawn keep-aspect-COVERED. Mirror that exact mapping (scale + centered
-	# crop offset) so the clickable menu stays glued to its painted banners on
-	# any viewport aspect.
-	var art_scale := maxf(size.x / 480.0, size.y / 270.0)
-	var art_offset := (size - Vector2(480.0, 270.0) * art_scale) * 0.5
-	menu.position = art_offset + Vector2(187.0, 138.0) * art_scale
-	menu.scale = Vector2(art_scale, art_scale)
 	mouse_filter = Control.MOUSE_FILTER_PASS
-	package_dialog.filters = PackedStringArray(["*.zip ; Zip archives"])
-	sprite_dialog.filters = PackedStringArray(["*.png,*.jpg,*.jpeg,*.webp ; Image files"])
-	_apply_visual_styles()
-	_refresh_import_ui()
-	_refresh_settings_ui()
-	_refresh_menu_state()
-	_set_status("Select New Game to import a scene package.")
-
+	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	_build_ui()
+	_refresh_localized_copy()
+	SettingsManager.language_changed.connect(_on_language_changed)
+	settings_overlay.close_requested.connect(_on_settings_panel_closed)
+	get_viewport().size_changed.connect(_layout)
 	new_game_button.grab_focus()
-	get_viewport().size_changed.connect(_on_viewport_resized)
+	_refresh_menu_visuals(false)
+	_play_entrance()
+
+# ── Construction ──────────────────────────────────────────────────────────────
+
+func _build_ui() -> void:
+	set_anchors_preset(Control.PRESET_FULL_RECT)
+
+	var backdrop := ColorRect.new()
+	backdrop.color = Color(0.015, 0.012, 0.05, 1.0)
+	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
+	backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(backdrop)
+
+	var bg_holder := Control.new()
+	bg_holder.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg_holder.clip_contents = true
+	bg_holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(bg_holder)
+
+	_bg = TextureRect.new()
+	_bg.texture = _art("background.png")
+	_bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_bg.stretch_mode = TextureRect.STRETCH_SCALE
+	_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bg_holder.add_child(_bg)
+
+	# Radial vignette keeps the frame edges cinematic and the center luminous.
+	var vignette := TextureRect.new()
+	vignette.texture = _make_vignette_texture()
+	vignette.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	vignette.set_anchors_preset(Control.PRESET_FULL_RECT)
+	vignette.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(vignette)
+
+	add_child(_make_embers(false))
+	add_child(_make_embers(true))
+
+	_title_glow = _make_title_label(COLOR_TITLE_GLOW)
+	var glow_material := CanvasItemMaterial.new()
+	glow_material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	_title_glow.material = glow_material
+	add_child(_title_glow)
+
+	_title_label = _make_title_label(COLOR_TITLE)
+	add_child(_title_label)
+
+	_flourish = TextureRect.new()
+	_flourish.texture = _art("title_flourish.png")
+	_flourish.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_flourish.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_flourish.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_flourish)
+
+	_menu_root = Control.new()
+	_menu_root.mouse_filter = Control.MOUSE_FILTER_PASS
+	add_child(_menu_root)
+	new_game_button = _make_menu_button()
+	new_game_button.pressed.connect(_on_new_game_pressed)
+	_menu_root.add_child(new_game_button)
+	settings_button = _make_menu_button()
+	settings_button.pressed.connect(_on_settings_pressed)
+	_menu_root.add_child(settings_button)
+	# Two-item vertical menu: arrows wrap around both ways.
+	new_game_button.focus_neighbor_bottom = new_game_button.get_path_to(settings_button)
+	new_game_button.focus_neighbor_top = new_game_button.get_path_to(settings_button)
+	settings_button.focus_neighbor_bottom = settings_button.get_path_to(new_game_button)
+	settings_button.focus_neighbor_top = settings_button.get_path_to(new_game_button)
+
+	_hint_label = _make_caps_label(13, COLOR_HINT, 3)
+	add_child(_hint_label)
+
+	_version_label = _make_caps_label(12, COLOR_VERSION, 2)
+	_version_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	add_child(_version_label)
+
+	flash_label = UiKit.make_title("", 22, UiKit.COLOR_ACCENT)
+	flash_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	flash_label.modulate.a = 0.0
+	add_child(flash_label)
+
+	var settings_layer := CanvasLayer.new()
+	settings_layer.name = "SettingsLayer"
+	settings_layer.layer = 46
+	add_child(settings_layer)
+	settings_overlay = SETTINGS_SCENE.instantiate() as SettingsPanel
+	settings_overlay.name = "SettingsOverlay"
+	settings_layer.add_child(settings_overlay)
+
+	_intro_fade = ColorRect.new()
+	_intro_fade.color = Color(0.008, 0.006, 0.03, 1.0)
+	_intro_fade.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_intro_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_intro_fade)
+
+	_layout()
+
+func _art(file_name: String) -> Texture2D:
+	var path := ART_DIR + file_name
+	return load(path) as Texture2D if ResourceLoader.exists(path) else null
+
+func _make_title_label(color: Color) -> Label:
+	var label := Label.new()
+	label.text = GAME_TITLE
+	var variation := FontVariation.new()
+	variation.base_font = UiKit.title_font()
+	variation.variation_opentype = {"wght": 640}
+	variation.spacing_glyph = 2
+	label.add_theme_font_override("font", variation)
+	label.add_theme_font_size_override("font_size", 54)
+	label.add_theme_color_override("font_color", color)
+	if color.a >= 0.9:
+		label.add_theme_color_override("font_shadow_color", Color(0.02, 0.01, 0.0, 0.85))
+		label.add_theme_constant_override("shadow_offset_x", 0)
+		label.add_theme_constant_override("shadow_offset_y", 3)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return label
+
+func _make_caps_label(font_size: int, color: Color, spacing: int) -> Label:
+	var label := Label.new()
+	var variation := FontVariation.new()
+	variation.base_font = UiKit.body_semibold_font()
+	variation.spacing_glyph = spacing
+	label.add_theme_font_override("font", variation)
+	label.add_theme_font_size_override("font_size", font_size)
+	label.add_theme_color_override("font_color", color)
+	label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.7))
+	label.add_theme_constant_override("shadow_offset_x", 1)
+	label.add_theme_constant_override("shadow_offset_y", 1)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return label
+
+func _make_menu_button() -> Button:
+	var button := Button.new()
+	button.flat = true
+	button.focus_mode = Control.FOCUS_ALL
+	button.custom_minimum_size = BTN_SIZE
+	button.size = BTN_SIZE
+	var empty := StyleBoxEmpty.new()
+	for style in ["normal", "hover", "pressed", "focus", "disabled"]:
+		button.add_theme_stylebox_override(style, empty)
+
+	var tex_idle := TextureRect.new()
+	tex_idle.texture = _art("button_idle.png")
+	tex_idle.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	tex_idle.stretch_mode = TextureRect.STRETCH_SCALE
+	tex_idle.set_anchors_preset(Control.PRESET_FULL_RECT)
+	tex_idle.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	button.add_child(tex_idle)
+
+	var tex_selected := TextureRect.new()
+	tex_selected.texture = _art("button_selected.png")
+	tex_selected.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	tex_selected.stretch_mode = TextureRect.STRETCH_SCALE
+	tex_selected.set_anchors_preset(Control.PRESET_FULL_RECT)
+	tex_selected.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tex_selected.modulate.a = 0.0
+	button.add_child(tex_selected)
+
+	var label := _make_caps_label(20, COLOR_BTN_IDLE, 4)
+	label.set_anchors_preset(Control.PRESET_FULL_RECT)
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	button.add_child(label)
+
+	var gem := TextureRect.new()
+	gem.texture = UiKit.kit_texture("cursor_gem.png")
+	gem.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	gem.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	gem.size = Vector2(GEM_SIZE, GEM_SIZE)
+	gem.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	gem.visible = false
+	button.add_child(gem)
+
+	button.set_meta("tex_selected", tex_selected)
+	button.set_meta("label", label)
+	button.set_meta("gem", gem)
+	button.pivot_offset = BTN_SIZE * 0.5
+	button.focus_entered.connect(_refresh_menu_visuals.bind(true))
+	button.focus_exited.connect(_refresh_menu_visuals.bind(true))
+	button.mouse_entered.connect(button.grab_focus)
+	return button
+
+# ── Layout (native viewport units) ────────────────────────────────────────────
+
+func _layout() -> void:
+	var vp := get_viewport_rect().size
+	var cx := vp.x * 0.5
+
+	# The key visual is still: keep-aspect cover, centered. The art is authored
+	# 16:9 like the viewport, so this is a 1:1 fill at the shipped resolution.
+	if _bg.texture != null:
+		var art := _bg.texture.get_size()
+		var cover := maxf(vp.x / art.x, vp.y / art.y)
+		_bg.size = art * cover
+		_bg.position = ((vp - _bg.size) * 0.5).round()
+
+	_title_label.size = Vector2(vp.x, 70)
+	_title_label.position = Vector2(0, vp.y * 0.145)
+	_title_glow.size = _title_label.size
+	_title_glow.position = _title_label.position
+
+	var flourish_size := Vector2(500, 50)
+	if _flourish.texture != null:
+		var aspect := float(_flourish.texture.get_height()) / float(_flourish.texture.get_width())
+		flourish_size = Vector2(500, 500.0 * aspect)
+	_flourish.size = flourish_size
+	_flourish.position = Vector2(cx - flourish_size.x * 0.5, vp.y * 0.295)
+	_flourish.pivot_offset = flourish_size * 0.5
+
+	_menu_root.position = Vector2(cx - BTN_SIZE.x * 0.5, vp.y * 0.535)
+	_menu_root.size = Vector2(BTN_SIZE.x, BTN_SIZE.y * 2.0 + BTN_GAP)
+	new_game_button.position = Vector2.ZERO
+	settings_button.position = Vector2(0, BTN_SIZE.y + BTN_GAP)
+	for button in [new_game_button, settings_button]:
+		var gem := button.get_meta("gem") as TextureRect
+		gem.position = Vector2(GEM_OFFSET_X, (BTN_SIZE.y - GEM_SIZE) * 0.5)
+
+	_hint_label.size = Vector2(vp.x, 20)
+	_hint_label.position = Vector2(0, vp.y - 36)
+	_version_label.size = Vector2(300, 18)
+	_version_label.position = Vector2(20, vp.y - 34)
+
+	flash_label.size = Vector2(vp.x, 34)
+	flash_label.position = Vector2(0, vp.y * 0.845)
+
+# ── Per-frame ambience ────────────────────────────────────────────────────────
 
 func _process(delta: float) -> void:
-	var time: float = Time.get_ticks_msec() * 0.001
-	menu.modulate.a = clampf(menu.modulate.a + delta * 1.1, 0.0, 1.0)
+	_time += delta
 
-	press_key.modulate.a = 0.35 + (sin(time * 2.2) * 0.5 + 0.5) * 0.35
-	scanlines.modulate.a = 0.12 if scanlines_enabled else 0.0
+	_title_glow.modulate.a = 0.55 + 0.45 * sin(_time * 1.3)
+
+	if _entrance_done:
+		_hint_label.modulate.a = 0.62 + 0.38 * (sin(_time * 2.1) * 0.5 + 0.5)
+
+	var focused := get_viewport().gui_get_focus_owner()
+	if focused is Button and (focused == new_game_button or focused == settings_button):
+		var gem := focused.get_meta("gem") as TextureRect
+		gem.position.x = GEM_OFFSET_X + sin(_time * 4.2) * 3.5
+		gem.modulate.a = 0.75 + 0.25 * sin(_time * 5.0)
 
 	if flash_timer > 0.0:
-		flash_timer = max(flash_timer - delta, 0.0)
-		flash_label.modulate.a = min(flash_timer * 3.0, 1.0)
-	else:
-		flash_label.modulate.a = max(flash_label.modulate.a - delta * 4.0, 0.0)
+		flash_timer = maxf(flash_timer - delta, 0.0)
+		flash_label.modulate.a = minf(flash_timer * 3.0, 1.0)
+	elif flash_label.modulate.a > 0.0:
+		flash_label.modulate.a = maxf(flash_label.modulate.a - delta * 4.0, 0.0)
 
-	if loading_overlay.visible:
-		spinner_timer += delta
-		if spinner_timer >= 0.25:
-			spinner_timer = 0.0
-			spinner_index = (spinner_index + 1) % SPINNER_FRAMES.size()
-			loading_spinner_label.text = SPINNER_FRAMES[spinner_index]
+# ── Entrance choreography ────────────────────────────────────────────────────
+
+func _play_entrance() -> void:
+	var fade := create_tween()
+	fade.tween_property(_intro_fade, "color:a", 0.0, 1.0).set_trans(Tween.TRANS_SINE)
+	fade.tween_callback(_intro_fade.hide)
+
+	for setup in [
+		[_title_label, 0.35, Vector2(0, -16)],
+		[_title_glow, 0.35, Vector2(0, -16)],
+		[_flourish, 0.6, Vector2.ZERO],
+		[new_game_button, 0.85, Vector2(0, 20)],
+		[settings_button, 1.0, Vector2(0, 20)],
+		[_hint_label, 1.35, Vector2.ZERO],
+		[_version_label, 1.35, Vector2.ZERO],
+	]:
+		var node := setup[0] as Control
+		var delay := setup[1] as float
+		var offset := setup[2] as Vector2
+		var base_position := node.position
+		node.modulate.a = 0.0
+		node.position = base_position + offset
+		var tween := create_tween().set_parallel(true)
+		tween.tween_property(node, "modulate:a", 1.0, 0.7).set_delay(delay).set_trans(Tween.TRANS_SINE)
+		if offset != Vector2.ZERO:
+			tween.tween_property(node, "position", base_position, 0.8) \
+				.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+
+	# The flourish blooms outward from its gem.
+	_flourish.scale = Vector2(0.55, 0.9)
+	var bloom := create_tween()
+	bloom.tween_property(_flourish, "scale", Vector2.ONE, 0.9) \
+		.set_delay(0.6).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+
+	var finish := create_tween()
+	finish.tween_interval(2.2)
+	finish.tween_callback(func() -> void: _entrance_done = true)
+
+# ── Menu state ────────────────────────────────────────────────────────────────
+
+func _refresh_menu_visuals(animated: bool = true) -> void:
+	for button in [new_game_button, settings_button]:
+		var active: bool = button.has_focus()
+		var tex_selected := button.get_meta("tex_selected") as TextureRect
+		var label := button.get_meta("label") as Label
+		var gem := button.get_meta("gem") as TextureRect
+		gem.visible = active
+		var target_alpha := 1.0 if active else 0.0
+		var target_color := COLOR_BTN_LIT if active else COLOR_BTN_IDLE
+		var target_scale := Vector2(1.03, 1.03) if active else Vector2.ONE
+		if animated:
+			var tween := create_tween().set_parallel(true)
+			tween.tween_property(tex_selected, "modulate:a", target_alpha, 0.16).set_trans(Tween.TRANS_SINE)
+			tween.tween_property(label, "theme_override_colors/font_color", target_color, 0.16)
+			tween.tween_property(button, "scale", target_scale, 0.18).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		else:
+			tex_selected.modulate.a = target_alpha
+			label.add_theme_color_override("font_color", target_color)
+			button.scale = target_scale
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event.is_action_pressed("ui_cancel"):
-		if importer_overlay.visible:
-			_close_importer()
-			get_viewport().set_input_as_handled()
-			return
-		if settings_overlay.visible:
-			_close_settings()
-			get_viewport().set_input_as_handled()
-			return
+	if event.is_action_pressed("ui_cancel") and settings_overlay.visible:
+		settings_overlay.close_panel()
+		get_viewport().set_input_as_handled()
 
-func _apply_visual_styles() -> void:
-	var empty_box: StyleBoxEmpty = StyleBoxEmpty.new()
-	var panel_box: StyleBoxFlat = StyleBoxFlat.new()
-	panel_box.bg_color = PANEL_BG
-	panel_box.border_color = PANEL_BORDER
-	panel_box.set_border_width_all(1)
-	panel_box.content_margin_left = 0
-	panel_box.content_margin_top = 0
-	panel_box.content_margin_right = 0
-	panel_box.content_margin_bottom = 0
+# ── Actions ───────────────────────────────────────────────────────────────────
 
-	var line_edit_box: StyleBoxFlat = StyleBoxFlat.new()
-	line_edit_box.bg_color = Color(0.10, 0.08, 0.16, 0.96)
-	line_edit_box.border_color = Color(0.72, 0.58, 0.27, 0.32)
-	line_edit_box.set_border_width_all(1)
-	line_edit_box.corner_radius_top_left = 4
-	line_edit_box.corner_radius_top_right = 4
-	line_edit_box.corner_radius_bottom_right = 4
-	line_edit_box.corner_radius_bottom_left = 4
-	line_edit_box.content_margin_left = 12
-	line_edit_box.content_margin_right = 12
-	line_edit_box.content_margin_top = 10
-	line_edit_box.content_margin_bottom = 10
+func _on_new_game_pressed() -> void:
+	if is_loading_new_game:
+		return
+	# The world-gacha (reincarnation) scene owns the whole new-game flow now:
+	# candidate fetch, the goddess searching state, world choice, and loading.
+	print("[StartScene] New Game pressed — entering the reincarnation sanctuary")
+	is_loading_new_game = true
+	get_tree().change_scene_to_file("res://scenes/ui/WorldGachaScene.tscn")
 
-	var button_box: StyleBoxFlat = StyleBoxFlat.new()
-	button_box.bg_color = Color(0.10, 0.08, 0.16, 0.92)
-	button_box.border_color = Color(0.74, 0.59, 0.27, 0.35)
-	button_box.set_border_width_all(1)
-	button_box.corner_radius_top_left = 4
-	button_box.corner_radius_top_right = 4
-	button_box.corner_radius_bottom_right = 4
-	button_box.corner_radius_bottom_left = 4
-	button_box.content_margin_left = 14
-	button_box.content_margin_right = 14
-	button_box.content_margin_top = 10
-	button_box.content_margin_bottom = 10
+func _on_settings_pressed() -> void:
+	if is_loading_new_game:
+		return
+	settings_overlay.open_panel()
 
-	var button_hover: StyleBoxFlat = button_box.duplicate() as StyleBoxFlat
-	button_hover.bg_color = Color(0.18, 0.12, 0.06, 0.95)
-	button_hover.border_color = Color(0.90, 0.74, 0.35, 0.7)
-
-	var panel_nodes: Array[PanelContainer] = [
-		$SettingsOverlay/Center/Wrap/Panel,
-		$ImporterOverlay/Center/Panel,
-	]
-	for panel in panel_nodes:
-		panel.add_theme_stylebox_override("panel", panel_box)
-
-	var boxed_buttons: Array[Button] = [
-		$SettingsOverlay/Center/Wrap/Panel/Margin/Content/MusicRow/ValueWrap/DownButton,
-		$SettingsOverlay/Center/Wrap/Panel/Margin/Content/MusicRow/ValueWrap/UpButton,
-		$SettingsOverlay/Center/Wrap/Panel/Margin/Content/SfxRow/ValueWrap/DownButton,
-		$SettingsOverlay/Center/Wrap/Panel/Margin/Content/SfxRow/ValueWrap/UpButton,
-		$SettingsOverlay/Center/Wrap/Panel/Margin/Content/ScanlineRow/ValueWrap/ToggleButton,
-		$SettingsOverlay/Center/Wrap/Panel/Margin/Content/FullscreenRow/ValueWrap/ToggleButton,
-		$SettingsOverlay/Center/Wrap/CloseSettingsButton,
-		$ImporterOverlay/Center/Panel/Margin/Content/PackageSection/PathRow/ChoosePackage,
-		$ImporterOverlay/Center/Panel/Margin/Content/SpriteSection/PathRow/ChooseSprite,
-		$ImporterOverlay/Center/Panel/Margin/Content/Actions/ImportButton,
-		$ImporterOverlay/Center/Panel/Margin/Content/Actions/BuiltinButton,
-		$ImporterOverlay/Center/Panel/Margin/Content/CloseButton,
-	]
-	for button in boxed_buttons:
-		button.add_theme_stylebox_override("normal", button_box)
-		button.add_theme_stylebox_override("hover", button_hover)
-		button.add_theme_stylebox_override("pressed", button_hover)
-		button.add_theme_stylebox_override("focus", button_hover)
-		button.add_theme_color_override("font_color", Color(0.91, 0.75, 0.31, 1.0))
-
-	var menu_buttons: Array[Button] = [
-		new_game_button,
-		continue_button,
-		settings_button,
-	]
-	for button in menu_buttons:
-		button.add_theme_stylebox_override("normal", empty_box)
-		button.add_theme_stylebox_override("hover", empty_box)
-		button.add_theme_stylebox_override("pressed", empty_box)
-		button.add_theme_stylebox_override("focus", empty_box)
-
-	var input_fields: Array[LineEdit] = [package_value, sprite_value]
-	for field in input_fields:
-		field.add_theme_stylebox_override("normal", line_edit_box)
-		field.add_theme_stylebox_override("focus", button_hover)
-		field.add_theme_color_override("font_color", Color(0.93, 0.88, 0.75, 1.0))
-		field.add_theme_color_override("font_placeholder_color", Color(0.63, 0.57, 0.45, 0.7))
-
-func _refresh_menu_state() -> void:
-	_style_menu_button(new_game_button)
-	_style_menu_button(continue_button)
-	_style_menu_button(settings_button)
-	# Continue is only meaningful when a saved run exists.
-	continue_button.disabled = not SaveManager.has_save()
-
-func _style_menu_button(button: Button) -> void:
-	var active: bool = button.has_focus()
-	button.modulate = MENU_ACTIVE_COLOR if active else MENU_DEFAULT_COLOR
-	button.position.x = 10.0 if active else 0.0
-	var cursor: CanvasItem = button.get_node("Cursor") as CanvasItem
-	cursor.visible = active
-
-func _refresh_import_ui() -> void:
-	package_value.text = scene_zip_path
-	sprite_value.text = character_sprite_path
-	import_button.disabled = scene_zip_path.is_empty()
-
-func _set_status(message: String, is_error := false) -> void:
-	status_label.text = message
-	status_label.modulate = Color(0.92, 0.35, 0.35) if is_error else Color(0.80, 0.66, 0.38, 0.92)
-
-func _refresh_settings_ui() -> void:
-	music_value_label.text = str(music_value)
-	sfx_value_label.text = str(sfx_value)
-	scanlines_toggle_button.text = "ON" if scanlines_enabled else "OFF"
-	scanlines.modulate.a = 0.12 if scanlines_enabled else 0.0
+func _on_settings_panel_closed() -> void:
+	settings_button.grab_focus()
 
 func _show_flash(message: String) -> void:
 	flash_label.text = message
 	flash_label.modulate.a = 1.0
 	flash_timer = 1.8
 
-func _open_importer() -> void:
-	scene_zip_path = ""
-	character_sprite_path = ""
-	GameManager.reset_runtime_imports(true)
-	GameManager.reset_combat_progress()
-	_refresh_import_ui()
-	_set_status("Choose a new scene zip and optional character sprite.")
-	importer_overlay.show()
-	package_value.grab_focus()
+# ── Localization ─────────────────────────────────────────────────────────────
 
-func _close_importer() -> void:
-	importer_overlay.hide()
-	new_game_button.grab_focus()
+func _refresh_localized_copy() -> void:
+	(new_game_button.get_meta("label") as Label).text = SettingsManager.text("menu.new_game")
+	(settings_button.get_meta("label") as Label).text = SettingsManager.text("menu.settings")
+	_hint_label.text = SettingsManager.text("menu.hint")
+	_version_label.text = VERSION_TEXT
 
-func _open_settings() -> void:
-	settings_overlay.show()
+func _on_language_changed(_locale: String) -> void:
+	_refresh_localized_copy()
 
-func _close_settings() -> void:
-	settings_overlay.hide()
-	settings_button.grab_focus()
+# ── Ambient builders ─────────────────────────────────────────────────────────
 
-func _on_new_game_pressed() -> void:
-	if is_loading_new_game:
-		return
+## Rising light motes, native-resolution tuning of the intro slides' embers.
+## far=false: bright gold foreground sparks; far=true: faint cyan drift layer.
+func _make_embers(far: bool) -> CPUParticles2D:
+	var embers := CPUParticles2D.new()
+	var vp := get_viewport_rect().size
+	embers.position = Vector2(vp.x * 0.5, vp.y + 12.0)
+	embers.amount = 18 if far else 30
+	embers.lifetime = 11.0 if far else 8.0
+	embers.preprocess = 10.0
+	embers.emission_shape = CPUParticles2D.EMISSION_SHAPE_RECTANGLE
+	embers.emission_rect_extents = Vector2(vp.x * 0.55, 6.0)
+	embers.direction = Vector2(0, -1)
+	embers.spread = 16.0
+	embers.gravity = Vector2(0, -14.0)
+	embers.initial_velocity_min = 16.0 if far else 30.0
+	embers.initial_velocity_max = 34.0 if far else 74.0
+	embers.scale_amount_min = 1.2 if far else 1.5
+	embers.scale_amount_max = 2.4 if far else 3.4
+	embers.color = Color(0.62, 0.88, 0.95, 0.20) if far else Color(1.0, 0.80, 0.44, 0.55)
+	return embers
 
-	print("[StartScene] New Game pressed — fetching world flow from server")
-	is_loading_new_game = true
-	new_game_button.disabled = true
-	_show_loading("Connecting to story server...")
-	if not ChapterFlow.loading_status.is_connected(_on_flow_status):
-		ChapterFlow.loading_status.connect(_on_flow_status)
-
-	var flow_error: Error = await ChapterFlow.start_new_game()
-	if flow_error != OK:
-		print("[StartScene] flow start failed err=%d" % flow_error)
-		is_loading_new_game = false
-		new_game_button.disabled = false
-		_hide_loading()
-		_show_flash("- COULD NOT REACH STORY SERVER -")
-		return
-	# ChapterFlow has switched the scene (intro slides or world).
-
-func _on_flow_status(message: String) -> void:
-	_set_loading_status(message)
-	loading_chapter_label.text = ChapterFlow.progress_label()
-
-func _show_loading(initial_status: String) -> void:
-	loading_chapter_label.text = ""
-	loading_status_label.text = initial_status
-	spinner_index = 0
-	spinner_timer = 0.0
-	loading_spinner_label.text = SPINNER_FRAMES[0]
-	loading_overlay.show()
-
-func _hide_loading() -> void:
-	loading_overlay.hide()
-
-func _set_loading_status(message: String) -> void:
-	loading_status_label.text = message
-
-
-
-func _on_continue_pressed() -> void:
-	if is_loading_new_game:
-		return
-	if not SaveManager.has_save():
-		_show_flash("- NO SAVE FOUND -")
-		return
-
-	print("[StartScene] Continue pressed — resuming saved run")
-	is_loading_new_game = true
-	new_game_button.disabled = true
-	continue_button.disabled = true
-	_show_loading("Đang tải bản lưu...")
-	if not ChapterFlow.loading_status.is_connected(_on_flow_status):
-		ChapterFlow.loading_status.connect(_on_flow_status)
-
-	var flow_error: Error = await ChapterFlow.continue_saved_game()
-	if flow_error != OK:
-		print("[StartScene] continue failed err=%d" % flow_error)
-		is_loading_new_game = false
-		new_game_button.disabled = false
-		continue_button.disabled = false
-		_hide_loading()
-		_show_flash("- COULD NOT REACH STORY SERVER -")
-		return
-	# ChapterFlow has switched the scene to the saved zone.
-
-func _on_settings_pressed() -> void:
-	_open_settings()
-
-func _on_music_down_pressed() -> void:
-	music_value = max(music_value - 1, 0)
-	_refresh_settings_ui()
-
-func _on_music_up_pressed() -> void:
-	music_value = min(music_value + 1, 10)
-	_refresh_settings_ui()
-
-func _on_sfx_down_pressed() -> void:
-	sfx_value = max(sfx_value - 1, 0)
-	_refresh_settings_ui()
-
-func _on_sfx_up_pressed() -> void:
-	sfx_value = min(sfx_value + 1, 10)
-	_refresh_settings_ui()
-
-func _on_scanlines_toggle_pressed() -> void:
-	scanlines_enabled = not scanlines_enabled
-	_refresh_settings_ui()
-
-func _on_fullscreen_toggle_pressed() -> void:
-	if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN:
-		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
-	else:
-		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
-
-func _on_close_settings_pressed() -> void:
-	_close_settings()
-
-func _on_close_importer_pressed() -> void:
-	_close_importer()
-
-func _on_package_value_text_changed(new_text: String) -> void:
-	scene_zip_path = new_text.strip_edges()
-	_refresh_import_ui()
-
-func _on_sprite_value_text_changed(new_text: String) -> void:
-	character_sprite_path = new_text.strip_edges()
-	_refresh_import_ui()
-
-func _on_choose_package_pressed() -> void:
-	_open_dialog(package_dialog)
-
-func _on_choose_sprite_pressed() -> void:
-	_open_dialog(sprite_dialog)
-
-func _on_package_dialog_file_selected(path: String) -> void:
-	scene_zip_path = path
-	_set_status("Scene package selected. Import it when you're ready.")
-	_refresh_import_ui()
-
-func _on_sprite_dialog_file_selected(path: String) -> void:
-	character_sprite_path = path
-	_set_status("Character sprite selected. Import it together with the scene package.")
-	_refresh_import_ui()
-
-func _on_import_button_pressed() -> void:
-	if scene_zip_path.is_empty():
-		_set_status("Select a zip file that contains scene_package.json first.", true)
-		return
-
-	GameManager.reset_runtime_imports(true)
-	GameManager.reset_combat_progress()
-	var import_error: Error = GameManager.import_scene_package_zip(scene_zip_path)
-	if import_error != OK:
-		_set_status("Could not import the scene zip: %s" % error_string(import_error), true)
-		return
-
-	if not character_sprite_path.is_empty():
-		var sprite_error: Error = GameManager.import_player_sprite(character_sprite_path)
-		if sprite_error != OK:
-			_set_status("Could not import the character sprite: %s" % error_string(sprite_error), true)
-			return
-
-	get_tree().change_scene_to_file(GameManager.WORLD_SCENE_PATH)
-
-func _on_use_builtin_pressed() -> void:
-	GameManager.reset_runtime_imports(true)
-	GameManager.reset_combat_progress()
-	get_tree().change_scene_to_file(GameManager.WORLD_SCENE_PATH)
-
-func _open_dialog(dialog: FileDialog) -> void:
-	var viewport_size: Vector2 = get_viewport_rect().size
-	dialog.size = Vector2i(
-		int(clamp(viewport_size.x * 0.82, 860.0, 1080.0)),
-		int(clamp(viewport_size.y * 0.72, 520.0, 680.0))
-	)
-	dialog.popup_centered()
-
-func _on_viewport_resized() -> void:
-	queue_redraw()
-
-func _on_menu_focus_entered() -> void:
-	_refresh_menu_state()
+## Soft radial vignette rendered once into a texture (dark corners, clear center).
+func _make_vignette_texture() -> GradientTexture2D:
+	var gradient := Gradient.new()
+	gradient.colors = PackedColorArray([
+		Color(0, 0, 0, 0.0), Color(0.01, 0.008, 0.04, 0.05), Color(0.01, 0.008, 0.04, 0.42),
+	])
+	gradient.offsets = PackedFloat32Array([0.0, 0.62, 1.0])
+	var texture := GradientTexture2D.new()
+	texture.gradient = gradient
+	texture.fill = GradientTexture2D.FILL_RADIAL
+	texture.fill_from = Vector2(0.5, 0.5)
+	texture.fill_to = Vector2(0.5, -0.12)
+	texture.width = 512
+	texture.height = 288
+	return texture
