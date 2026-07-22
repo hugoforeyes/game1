@@ -9,6 +9,9 @@ const PANEL_SIZE := Vector2(860.0, 476.0)
 const SLIDER_TRACK_WIDTH := 310.0
 const SLIDER_KNOB_LEFT := 286.0
 const SLIDER_KNOB_TEXTURE := preload("res://assets/ui/settings_v1/slider_knob.png")
+const SETTINGS_PICK_SFX := preload("res://assets/audio/sfx/settings_pick.wav")
+const MENU_CONFIRM_SFX := preload("res://assets/audio/sfx/menu_confirm.wav")
+const PICK_SFX_COOLDOWN_MSEC := 75
 
 @onready var panel_root: Control = $PanelRoot
 @onready var panel_visual: Control = $PanelRoot/PanelVisual
@@ -32,12 +35,23 @@ const SLIDER_KNOB_TEXTURE := preload("res://assets/ui/settings_v1/slider_knob.pn
 @onready var back_text: Label = $PanelRoot/PanelVisual/BackText
 
 var _active_row := 0
+var _pick_player: AudioStreamPlayer
+var _back_player: AudioStreamPlayer
+var _last_pick_msec := -PICK_SFX_COOLDOWN_MSEC
 
 
 func _ready() -> void:
 	# Settings follows Journey/Inventory: native viewport geometry on an identity
 	# CanvasLayer, with linear sampling limited to its OpenAiExtension artwork.
 	panel_visual.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	_pick_player = AudioStreamPlayer.new()
+	_pick_player.name = "SettingsPickPlayer"
+	_pick_player.stream = SETTINGS_PICK_SFX
+	add_child(_pick_player)
+	_back_player = AudioStreamPlayer.new()
+	_back_player.name = "SettingsBackPlayer"
+	_back_player.stream = MENU_CONFIRM_SFX
+	add_child(_back_player)
 	_add_resolution_safe_frame()
 	_apply_control_styles()
 	_connect_controls()
@@ -73,7 +87,7 @@ func close_panel() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if visible and event.is_action_pressed("ui_cancel"):
-		close_panel()
+		_close_from_ui()
 		get_viewport().set_input_as_handled()
 
 
@@ -139,11 +153,11 @@ func _segment_style(selected: bool, highlighted: bool) -> StyleBoxFlat:
 
 func _connect_controls() -> void:
 	music_slider.value_changed.connect(_on_music_slider_changed)
-	windowed_button.pressed.connect(func() -> void: SettingsManager.set_fullscreen(false))
-	fullscreen_button.pressed.connect(func() -> void: SettingsManager.set_fullscreen(true))
-	english_button.pressed.connect(func() -> void: SettingsManager.set_language("en"))
-	vietnamese_button.pressed.connect(func() -> void: SettingsManager.set_language("vi"))
-	back_button.pressed.connect(close_panel)
+	windowed_button.pressed.connect(_set_fullscreen_from_ui.bind(false))
+	fullscreen_button.pressed.connect(_set_fullscreen_from_ui.bind(true))
+	english_button.pressed.connect(_set_language_from_ui.bind("en"))
+	vietnamese_button.pressed.connect(_set_language_from_ui.bind("vi"))
+	back_button.pressed.connect(_close_from_ui)
 
 	music_slider.focus_entered.connect(func() -> void: _set_active_row(0))
 	windowed_button.focus_entered.connect(func() -> void: _set_active_row(1))
@@ -220,7 +234,41 @@ func _set_active_row(index: int) -> void:
 
 
 func _on_music_slider_changed(value: float) -> void:
-	SettingsManager.set_music_volume_percent(roundi(value))
+	var percent := roundi(value)
+	if percent == SettingsManager.music_volume_percent:
+		return
+	SettingsManager.set_music_volume_percent(percent)
+	_play_pick_sfx()
+
+
+func _set_fullscreen_from_ui(enabled: bool) -> void:
+	if enabled == SettingsManager.fullscreen_enabled:
+		return
+	_play_pick_sfx()
+	SettingsManager.set_fullscreen(enabled)
+
+
+func _set_language_from_ui(locale: String) -> void:
+	if locale == SettingsManager.language:
+		return
+	_play_pick_sfx()
+	SettingsManager.set_language(locale)
+
+
+func _play_pick_sfx() -> void:
+	var now := Time.get_ticks_msec()
+	if now - _last_pick_msec < PICK_SFX_COOLDOWN_MSEC:
+		return
+	_last_pick_msec = now
+	_pick_player.play()
+
+
+func _close_from_ui() -> void:
+	if not visible:
+		return
+	_pick_player.stop()
+	_back_player.play()
+	close_panel()
 
 
 func _on_music_volume_changed(percent: int) -> void:

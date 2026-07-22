@@ -2,12 +2,15 @@ extends Node
 
 const BASE_URL := "http://127.0.0.1:5001"
 const WEB_BASE_URL := ""
+const MENU_MUSIC := preload("res://assets/audio/music/celestial_rebirth_gate.mp3")
 
 ## Emitted when a chapter's music finishes caching (so the intro slides can wait
 ## for music to be ready before entering the world).
 signal music_ready(key: String)
 
 var _player: AudioStreamPlayer = null
+var _volume_tween: Tween = null
+var _playing_menu_music := false
 # chapter cache_key -> generate_music dict, warmed by prefetch() during slides.
 var _music_cache: Dictionary = {}
 
@@ -20,6 +23,43 @@ func _ready() -> void:
 	_player = AudioStreamPlayer.new()
 	_player.bus = SettingsManager.MUSIC_BUS_NAME
 	add_child(_player)
+
+
+## The main menu and world-selection sanctuary share one uninterrupted track.
+## Calling this again after changing between those scenes does not restart it.
+func play_menu_music() -> void:
+	if _playing_menu_music and _player.playing:
+		return
+	_kill_volume_tween()
+	var stream := MENU_MUSIC.duplicate() as AudioStreamMP3
+	stream.loop = true
+	_playing_menu_music = true
+	_player.stream = stream
+	_player.volume_db = 0.0
+	_player.play()
+
+
+## Fade the currently playing UI track to silence. Confirmation SFX use their
+## own players, so they remain crisp while only the background music recedes.
+func fade_out(duration: float = 1.5) -> void:
+	if not _player.playing:
+		_playing_menu_music = false
+		return
+	_kill_volume_tween()
+	_playing_menu_music = false
+	if duration <= 0.0:
+		_finish_fade_out()
+		return
+	_volume_tween = create_tween()
+	_volume_tween.tween_property(_player, "volume_db", -80.0, duration) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	_volume_tween.tween_callback(_finish_fade_out)
+
+
+func _finish_fade_out() -> void:
+	_player.stop()
+	_player.volume_db = 0.0
+	_volume_tween = null
 
 func _cache_key(scene_ctx: Dictionary) -> String:
 	return "%s::chapter_%d" % [str(scene_ctx.get("run_id", "")), int(scene_ctx.get("chapter", 1))]
@@ -139,13 +179,23 @@ func _play_track(track: Dictionary) -> void:
 	stream.data = raw
 	stream.loop  = true
 
+	_kill_volume_tween()
+	_playing_menu_music = false
 	_player.volume_db = -80.0
 	_player.stream = stream
 	_player.play()
 	print("[Music] Playing: %s" % track.get("label", track.get("id", "?")))
 
-	var tween := create_tween()
-	tween.tween_property(_player, "volume_db", 0.0, 3.0).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	_volume_tween = create_tween()
+	_volume_tween.tween_property(_player, "volume_db", 0.0, 3.0).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+
+
+func _kill_volume_tween() -> void:
+	if _volume_tween != null and _volume_tween.is_valid():
+		_volume_tween.kill()
+	_volume_tween = null
 
 func stop() -> void:
+	_kill_volume_tween()
+	_playing_menu_music = false
 	_player.stop()

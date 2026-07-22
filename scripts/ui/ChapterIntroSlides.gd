@@ -3,8 +3,8 @@ extends Control
 ## Full-bleed illustrated slides with crossfade + Ken Burns drift, cinematic
 ## title card typography, generated ornate UI frame assets, typewriter
 ## narration, progress diamonds, ambient embers, and an input hint.
-## Reads ChapterFlow.pending_intro; when finished, hands control back to
-## ChapterFlow.enter_current_zone().
+## Reads fully prepared local image paths from ChapterFlow.pending_intro. The
+## slideshow performs no downloads; finishing every slide enters the world.
 
 const TYPE_SPEED := 34.0
 const COLOR_TEXT := Color(0.93, 0.88, 0.75, 1.0)
@@ -41,9 +41,6 @@ var _auto_follow: bool = true
 var _dragging: bool = false
 var _drag_last_y: float = 0.0
 var _finishing: bool = false
-# True once the player has read through the slides but the zone download is still
-# in flight; the slides loop and we auto-enter the world when it completes.
-var _waiting_for_download: bool = false
 var _ken_active: bool = false
 var _ken_elapsed: float = 0.0
 var _ken_start_pos: Vector2 = Vector2.ZERO
@@ -81,10 +78,6 @@ func _ready() -> void:
 	if slides.is_empty():
 		_finish()
 		return
-	ChapterFlow.loading_status.connect(_on_loading_status)
-	# Start downloading the first zone's scene package + music in the background
-	# while the player reads the slides, so entering the world is instant.
-	ChapterFlow.prefetch_current_zone()
 	_build_progress_pips()
 	_play_slide(0)
 
@@ -319,12 +312,16 @@ func _play_slide(index: int) -> void:
 	_title_center_ornament.visible = not _title_label.text.is_empty()
 	_text_rtl.text = ""
 
-	# Download next image into the back rect, then crossfade front<->back.
-	var image_url: Variant = slide.get("image_url")
+	# Images were downloaded and validated during the preceding loading phase.
+	# Loading this stable local cache path performs no network request.
 	var new_texture: Texture2D = null
-	if image_url != null and not str(image_url).is_empty():
-		new_texture = await ChapterFlow.download_image_texture(str(image_url))
+	var prepared_image_path := str(slide.get("_runtime_image_path", ""))
+	if not prepared_image_path.is_empty():
+		new_texture = GameManager.load_texture(prepared_image_path)
+	if new_texture != null:
 		new_texture = _make_smooth_slide_texture(new_texture)
+	else:
+		push_error("Prepared intro slide image is unavailable: %s" % prepared_image_path)
 
 	_image_back.texture = new_texture
 	_image_back.modulate.a = 0.0
@@ -483,7 +480,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if _finishing:
 		return
 	if event.is_action_pressed("ui_cancel"):
-		_finish()
+		# Chapter intros are mandatory; consume cancel instead of skipping slides.
 		get_viewport().set_input_as_handled()
 		return
 	if not event.is_action_pressed("ui_accept"):
@@ -507,50 +504,14 @@ func _unhandled_input(event: InputEvent) -> void:
 func _finish() -> void:
 	if _finishing:
 		return
-	# Don't drop the player onto a blank "Loading music..." screen: loop the slides
-	# until the world is fully ready (scene package downloaded AND chapter music
-	# cached), then enter automatically — no extra input needed.
-	if not ChapterFlow.is_world_ready_for_current_zone():
-		_waiting_for_download = true
-		if not ChapterFlow.zone_download_finished.is_connected(_on_world_ready_check):
-			ChapterFlow.zone_download_finished.connect(_on_world_ready_check)
-		if not MusicManager.music_ready.is_connected(_on_world_ready_check):
-			MusicManager.music_ready.connect(_on_world_ready_check)
-		# It may have become ready in the gap between the check and the connects.
-		if ChapterFlow.is_world_ready_for_current_zone():
-			_enter_world()
-			return
-		# Safety net: never loop forever if a download/music fetch silently fails.
-		get_tree().create_timer(20.0).timeout.connect(_on_ready_timeout)
-		_play_slide(0)  # replay from slide 1 while we wait
-		return
 	_enter_world()
-
-func _on_ready_timeout() -> void:
-	if _finishing or not _waiting_for_download:
-		return
-	_enter_world()
-
-func _on_world_ready_check(_arg = null) -> void:
-	# Fired by zone_download_finished() or music_ready(key); enter only once BOTH
-	# the package and the music are ready.
-	if _finishing or not _waiting_for_download:
-		return
-	if ChapterFlow.is_world_ready_for_current_zone():
-		_enter_world()
 
 func _enter_world() -> void:
 	if _finishing:
 		return
-	if ChapterFlow.zone_download_finished.is_connected(_on_world_ready_check):
-		ChapterFlow.zone_download_finished.disconnect(_on_world_ready_check)
-	if MusicManager.music_ready.is_connected(_on_world_ready_check):
-		MusicManager.music_ready.disconnect(_on_world_ready_check)
 	_finishing = true
 	_typing = false
 	_continue_marker.visible = false
-	_loading_label.visible = true
-	_loading_label.text = "..."
 	var fade := create_tween()
 	fade.tween_property(_fade, "color:a", 1.0, 0.5)
 	await fade.finished
@@ -563,13 +524,10 @@ func _enter_world() -> void:
 	_image_front.visible = false
 	_image_back.visible = false
 	_fade.color.a = 0.85
-	_loading_label.visible = true
 	GameManager.ui_blocking_input = false
-	var err: Error = await ChapterFlow.enter_current_zone()
+	var err: Error = await ChapterFlow.enter_prepared_current_zone()
 	if err != OK:
+		_loading_label.visible = true
 		_loading_label.text = "Could not load the scene. Returning to menu..."
 		await get_tree().create_timer(2.0).timeout
 		get_tree().change_scene_to_file(ChapterFlow.START_SCENE_PATH)
-
-func _on_loading_status(message: String) -> void:
-	_loading_label.text = message

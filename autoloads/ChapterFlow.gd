@@ -6,10 +6,11 @@ extends Node
 ## cutscene), then its zones are played through explicit scene exits/transitions.
 
 signal loading_status(message: String)
-## Emitted when a background prefetch_current_zone() finishes (success or fail).
+## Emitted whenever a zone package cache request finishes successfully.
 signal zone_download_finished()
 
 const CACHE_DIR := "user://downloads/zones"
+const INTRO_IMAGE_CACHE_DIR := "user://downloads/intro"
 const SLIDES_SCENE_PATH := "res://scenes/ui/ChapterIntroSlides.tscn"
 const GAME_END_SCENE_PATH := "res://scenes/ui/GameEndScene.tscn"
 const START_SCENE_PATH := "res://scenes/ui/StartScene.tscn"
@@ -36,6 +37,9 @@ var _suppress_cutscene: bool = false
 var _prefetching_zones: Dictionary = {}
 var _prefetch_all_running: bool = false
 var _prefetch_requested_chapter_index: int = -1
+# The imported zone waiting behind a mandatory chapter intro. Matching this key
+# lets the slides hand off without any network or world-building work.
+var _prepared_zone_key: String = ""
 
 
 func _ready() -> void:
@@ -261,6 +265,7 @@ func begin_current_chapter() -> Error:
 	pending_intro = {}
 	pending_cutscene_actions = []
 	pending_play_opening = false
+	_prepared_zone_key = ""
 	# Planned-cutscene ids repeat across chapters (every chapter's opening is
 	# `cs_opening_main`, ending `cs_ending_main`, etc.). The played set is per-run,
 	# so without clearing it here a later chapter's opening/ending would be treated
@@ -281,21 +286,84 @@ func begin_current_chapter() -> Error:
 	var intro_response: Dictionary = await _http_get_json(
 		"/api/godot/runs/%s/chapters/%d/intro" % [run_id, int(chapter.get("chapter", 0))]
 	)
-	if bool(intro_response.get("ok", false)):
-		pending_intro = intro_response.get("chapter_intro", {}) as Dictionary
+	if not bool(intro_response.get("ok", false)):
+		print("[ChapterFlow] required chapter intro request failed: %s" % str(intro_response))
+		return ERR_CANT_CONNECT
+	pending_intro = intro_response.get("chapter_intro", {}) as Dictionary
+	var intro_prepare_error := await _prepare_intro_slides()
+	if intro_prepare_error != OK:
+		return intro_prepare_error
+	var cutscene_payload: Variant = pending_intro.get("cutscene", {})
+	var cutscene_action_count := 0
+	if cutscene_payload is Dictionary:
+		cutscene_action_count = ((cutscene_payload as Dictionary).get("actions", []) as Array).size()
 	print("[ChapterFlow] chapter %s intro mode='%s' slides=%d cutscene_actions=%d" % [
 		str(chapter.get("chapter", "?")),
 		str(pending_intro.get("recommended_mode", "none")),
 		(pending_intro.get("slides", []) as Array).size(),
-		((pending_intro.get("cutscene", {}) as Dictionary).get("actions", []) as Array).size(),
+		cutscene_action_count,
 	])
 
-	var mode: String = str(pending_intro.get("recommended_mode", ""))
-	var slides: Array = pending_intro.get("slides", []) as Array
-	if not slides.is_empty() and mode in ["slides", "both"]:
-		get_tree().change_scene_to_file(SLIDES_SCENE_PATH)
-		return OK
-	return await enter_current_zone()
+	var zone_prepare_error := await prepare_current_zone()
+	if zone_prepare_error != OK:
+		return zone_prepare_error
+	# Start the cached chapter track as the mandatory intro opens. MusicManager is
+	# an autoload, so the same playback continues seamlessly into the world.
+	await MusicManager.load_and_play(GameManager.get_scene_context())
+	# The slideshow is a required chapter beat. recommended_mode only controls
+	# the optional in-world cutscene fallback after these slides.
+	get_tree().change_scene_to_file(SLIDES_SCENE_PATH)
+	return OK
+
+
+## Download and validate every slide image during the loading phase. The scene
+## receives stable local paths instead of transient ImageTexture objects, so a
+## scene change cannot drop the artwork and the slideshow performs no network IO.
+func _prepare_intro_slides() -> Error:
+	var source_slides: Array = pending_intro.get("slides", []) as Array
+	var prepared_slides: Array = []
+	for slide_index in range(source_slides.size()):
+		var raw_slide: Variant = source_slides[slide_index]
+		if not (raw_slide is Dictionary):
+			continue
+		var slide := (raw_slide as Dictionary).duplicate(true)
+		var image_url := str(slide.get("image_url", ""))
+		if image_url.is_empty():
+			print("[ChapterFlow] required intro slide %d has no image URL" % [slide_index + 1])
+			return ERR_FILE_NOT_FOUND
+		var local_path := await _ensure_intro_image_cached(image_url)
+		if local_path.is_empty():
+			print("[ChapterFlow] intro slide image preparation failed url=%s" % image_url)
+			return ERR_CANT_CONNECT
+		slide["_runtime_image_path"] = local_path
+		prepared_slides.append(slide)
+	if prepared_slides.is_empty():
+		print("[ChapterFlow] required chapter intro contains no valid slides")
+		return ERR_FILE_CORRUPT
+	pending_intro["slides"] = prepared_slides
+	return OK
+
+
+func _ensure_intro_image_cached(image_url: String) -> String:
+	var cache_name := "%s.png" % image_url.sha256_text()
+	var cache_path := INTRO_IMAGE_CACHE_DIR.path_join(cache_name)
+	if FileAccess.file_exists(cache_path):
+		if _is_valid_intro_image(cache_path):
+			return cache_path
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(cache_path))
+	var download_error := await _download_file(api_url(image_url), cache_path)
+	if download_error != OK:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(cache_path))
+		return ""
+	if not _is_valid_intro_image(cache_path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(cache_path))
+		return ""
+	return cache_path
+
+
+func _is_valid_intro_image(path: String) -> bool:
+	var image := Image.new()
+	return image.load(path) == OK and image.get_width() > 0 and image.get_height() > 0
 
 
 ## Load a chapter's content catalogs (quests, item catalog + icons, companion roster
@@ -461,13 +529,17 @@ func continue_saved_game() -> Error:
 	])
 	return await enter_current_zone()
 
-func enter_current_zone() -> Error:
+## Download and import the current zone without changing scenes. Chapter starts
+## call this before the mandatory slides so the intro contains no hidden loading.
+func prepare_current_zone() -> Error:
 	var zone: Dictionary = current_zone()
 	if zone.is_empty():
 		return _finish_game()
 
 	var package_url: String = api_url(str(zone.get("package_url", "")))
 	var zone_key: String = _current_zone_key()
+	if _prepared_zone_key == zone_key:
+		return OK
 	var cache_path: String = _zone_cache_path(zone_key)
 
 	if FileAccess.file_exists(cache_path):
@@ -486,10 +558,6 @@ func enter_current_zone() -> Error:
 		print("[ChapterFlow] zone import failed err=%d" % import_error)
 		return import_error
 
-	# Once in the world, keep filling the cache with the chapter's other zones so
-	# walking through an exit is instant when the target is already downloaded.
-	prefetch_remaining_zones()
-
 	# Legacy in-scene intro cutscene plays in the chapter's first zone only, and
 	# never when the player merely walked back into a zone through an exit.
 	pending_cutscene_actions = []
@@ -505,24 +573,44 @@ func enter_current_zone() -> Error:
 		if str(cutscene.get("zone_id", "")) == str(zone.get("zone_id", "")):
 			pending_cutscene_actions = (cutscene.get("actions", []) as Array).duplicate(true)
 	_suppress_cutscene = false
+	_prepared_zone_key = zone_key
+	return OK
 
-	# Only show the music loader if it isn't already warmed (the intro slides wait
-	# for it via is_world_ready_for_current_zone, so normally it's instant here).
+
+## General entry path used by saves and zone exits. These routes may still need
+## preparation because they do not pass through the chapter intro loading phase.
+func enter_current_zone() -> Error:
+	var prepare_error := await prepare_current_zone()
+	if prepare_error != OK:
+		return prepare_error
+
 	if not MusicManager.is_ready(GameManager.get_scene_context()):
 		loading_status.emit("Loading music...")
 	await MusicManager.load_and_play(GameManager.get_scene_context())
+	return _commit_prepared_zone_entry()
+
+
+## Mandatory intro handoff. All remote data and world building completed before
+## the slides opened, so this path performs no downloads and changes scene now.
+func enter_prepared_current_zone() -> Error:
+	if _prepared_zone_key != _current_zone_key():
+		push_error("Chapter intro finished without a prepared current zone")
+		return ERR_UNCONFIGURED
+	# Chapter music already started before the intro scene and must not restart
+	# when the final slide hands off to gameplay.
+	return _commit_prepared_zone_entry()
+
+
+func _commit_prepared_zone_entry() -> Error:
+	# Start caching later zones only after the intro has finished and gameplay is
+	# entering, never while the mandatory slides are on screen.
+	prefetch_remaining_zones()
+	# Runtime slide textures are no longer needed once the intro hands off.
+	pending_intro = {}
 	get_tree().change_scene_to_file(GameManager.WORLD_SCENE_PATH)
 	# Persist the new position + progression so a later "Continue" resumes here.
 	SaveManager.request_autosave()
 	return OK
-
-
-## True when the current zone is ready to enter without a loading screen: its
-## package is downloaded AND its chapter music is cached. The intro slides loop
-## until this holds.
-func is_world_ready_for_current_zone() -> bool:
-	var cached: bool = FileAccess.file_exists(_zone_cache_path(_current_zone_key()))
-	return cached and MusicManager.is_ready(scene_music_context())
 
 func take_pending_cutscene() -> Array:
 	var actions: Array = pending_cutscene_actions
@@ -562,6 +650,7 @@ func _clear_zone_cache() -> void:
 	_prefetching_zones.clear()
 	_prefetch_all_running = false
 	_prefetch_requested_chapter_index = -1
+	_prepared_zone_key = ""
 	var dir: DirAccess = DirAccess.open(CACHE_DIR)
 	if dir == null:
 		return
@@ -601,20 +690,6 @@ func _ensure_zone_cached(zone_key: String, package_url: String) -> Error:
 	else:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(cache_path))  # drop partial
 	return err
-
-## Start downloading the current zone's package AND warming its music in the
-## background. Called while the chapter intro slides are showing so the world is
-## ready the instant the slides finish. Safe to call more than once.
-func prefetch_current_zone() -> void:
-	if not active:
-		return
-	var zone: Dictionary = current_zone()
-	if zone.is_empty():
-		return
-	var zone_key: String = _current_zone_key()
-	# Music is a separate endpoint — fetch it in parallel (fire-and-forget).
-	MusicManager.prefetch(scene_music_context())
-	await _ensure_zone_cached(zone_key, api_url(str(zone.get("package_url", ""))))
 
 ## Background-download the current chapter one zone at a time. Only after every
 ## package in it is cached, continue with the next chapter so advancing there is

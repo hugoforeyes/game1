@@ -8,14 +8,16 @@ extends Control
 
 const ART_DIR := "res://assets/ui/start_menu_v2/"
 const SETTINGS_SCENE := preload("res://scenes/ui/SettingsPanel.tscn")
+const MENU_SELECTION_SFX := preload("res://assets/audio/sfx/menu_selection_click.wav")
+const MENU_CONFIRM_SFX := preload("res://assets/audio/sfx/menu_confirm.wav")
 
 const GAME_TITLE := "ONE LIFE, ONE WORLD"
 const VERSION_TEXT := "V0.1.0 ALPHA"
 
 const BTN_SIZE := Vector2(400.0, 66.0)
 const BTN_GAP := 24.0              # vertical space between the two plaques
-const GEM_SIZE := 22.0
-const GEM_OFFSET_X := -46.0        # floating cursor gem sits outside the plaque's left tip
+const SOUL_CURSOR_SIZE := 38.0
+const SOUL_CURSOR_OFFSET_X := -54.0
 
 const COLOR_TITLE := Color(0.99, 0.88, 0.56, 1.0)
 const COLOR_TITLE_GLOW := Color(1.0, 0.82, 0.42, 0.30)
@@ -41,11 +43,14 @@ var _version_label: Label
 var flash_label: Label
 var settings_overlay: SettingsPanel
 var _intro_fade: ColorRect
+var _menu_selection_player: AudioStreamPlayer
+var _focused_menu_button: Button
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_PASS
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	_build_ui()
+	MusicManager.play_menu_music()
 	_refresh_localized_copy()
 	SettingsManager.language_changed.connect(_on_language_changed)
 	settings_overlay.close_requested.connect(_on_settings_panel_closed)
@@ -119,6 +124,11 @@ func _build_ui() -> void:
 	new_game_button.focus_neighbor_top = new_game_button.get_path_to(settings_button)
 	settings_button.focus_neighbor_bottom = settings_button.get_path_to(new_game_button)
 	settings_button.focus_neighbor_top = settings_button.get_path_to(new_game_button)
+
+	_menu_selection_player = AudioStreamPlayer.new()
+	_menu_selection_player.name = "MenuSelectionPlayer"
+	_menu_selection_player.stream = MENU_SELECTION_SFX
+	add_child(_menu_selection_player)
 
 	_hint_label = _make_caps_label(13, COLOR_HINT, 3)
 	add_child(_hint_label)
@@ -217,23 +227,85 @@ func _make_menu_button() -> Button:
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	button.add_child(label)
 
-	var gem := TextureRect.new()
-	gem.texture = UiKit.kit_texture("cursor_gem.png")
-	gem.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	gem.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	gem.size = Vector2(GEM_SIZE, GEM_SIZE)
-	gem.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	gem.visible = false
-	button.add_child(gem)
+	var soul_cursor := _make_soul_cursor()
+	soul_cursor.visible = false
+	button.add_child(soul_cursor)
 
 	button.set_meta("tex_selected", tex_selected)
 	button.set_meta("label", label)
-	button.set_meta("gem", gem)
+	button.set_meta("cursor", soul_cursor)
 	button.pivot_offset = BTN_SIZE * 0.5
-	button.focus_entered.connect(_refresh_menu_visuals.bind(true))
+	button.focus_entered.connect(_on_menu_button_focused.bind(button))
 	button.focus_exited.connect(_refresh_menu_visuals.bind(true))
 	button.mouse_entered.connect(button.grab_focus)
 	return button
+
+func _make_soul_cursor() -> Control:
+	var soul := Control.new()
+	soul.name = "SoulCursor"
+	soul.size = Vector2(SOUL_CURSOR_SIZE, SOUL_CURSOR_SIZE)
+	soul.pivot_offset = soul.size * 0.5
+	soul.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	soul.z_index = 3
+
+	var additive := CanvasItemMaterial.new()
+	additive.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+
+	var halo := TextureRect.new()
+	halo.name = "Halo"
+	halo.texture = _make_soul_glow_texture(
+		Color(0.72, 0.96, 1.0, 0.65),
+		Color(0.38, 0.84, 1.0, 0.22),
+	)
+	halo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	halo.size = Vector2(52, 52)
+	halo.position = Vector2(-7, -7)
+	halo.material = additive
+	halo.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	soul.add_child(halo)
+
+	var core := TextureRect.new()
+	core.name = "Core"
+	core.texture = _make_soul_glow_texture(
+		Color(1.0, 1.0, 1.0, 1.0),
+		Color(0.48, 0.91, 1.0, 0.82),
+	)
+	core.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	core.size = Vector2(18, 18)
+	core.position = Vector2(10, 10)
+	core.material = additive.duplicate()
+	core.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	soul.add_child(core)
+
+	var trail := CPUParticles2D.new()
+	trail.name = "Trail"
+	trail.position = soul.size * 0.5
+	trail.amount = 12
+	trail.lifetime = 0.9
+	trail.local_coords = false
+	trail.direction = Vector2(-1, 0)
+	trail.spread = 34.0
+	trail.gravity = Vector2(-4, -5)
+	trail.initial_velocity_min = 7.0
+	trail.initial_velocity_max = 18.0
+	trail.scale_amount_min = 0.7
+	trail.scale_amount_max = 1.6
+	trail.color = Color(0.62, 0.93, 1.0, 0.58)
+	soul.add_child(trail)
+	return soul
+
+func _make_soul_glow_texture(inner: Color, middle: Color) -> GradientTexture2D:
+	var gradient := Gradient.new()
+	gradient.colors = PackedColorArray([inner, middle, Color(middle.r, middle.g, middle.b, 0.0)])
+	gradient.offsets = PackedFloat32Array([0.0, 0.32, 1.0])
+	var texture := GradientTexture2D.new()
+	texture.gradient = gradient
+	texture.fill = GradientTexture2D.FILL_RADIAL
+	texture.fill_from = Vector2(0.5, 0.5)
+	texture.fill_to = Vector2(0.5, 0.0)
+	texture.width = 128
+	texture.height = 128
+	return texture
 
 # ── Layout (native viewport units) ────────────────────────────────────────────
 
@@ -267,8 +339,11 @@ func _layout() -> void:
 	new_game_button.position = Vector2.ZERO
 	settings_button.position = Vector2(0, BTN_SIZE.y + BTN_GAP)
 	for button in [new_game_button, settings_button]:
-		var gem := button.get_meta("gem") as TextureRect
-		gem.position = Vector2(GEM_OFFSET_X, (BTN_SIZE.y - GEM_SIZE) * 0.5)
+		var soul_cursor := button.get_meta("cursor") as Control
+		soul_cursor.position = Vector2(
+			SOUL_CURSOR_OFFSET_X,
+			(BTN_SIZE.y - SOUL_CURSOR_SIZE) * 0.5,
+		)
 
 	_hint_label.size = Vector2(vp.x, 20)
 	_hint_label.position = Vector2(0, vp.y - 36)
@@ -290,9 +365,11 @@ func _process(delta: float) -> void:
 
 	var focused := get_viewport().gui_get_focus_owner()
 	if focused is Button and (focused == new_game_button or focused == settings_button):
-		var gem := focused.get_meta("gem") as TextureRect
-		gem.position.x = GEM_OFFSET_X + sin(_time * 4.2) * 3.5
-		gem.modulate.a = 0.75 + 0.25 * sin(_time * 5.0)
+		var soul_cursor := focused.get_meta("cursor") as Control
+		soul_cursor.position.x = SOUL_CURSOR_OFFSET_X + sin(_time * 4.2) * 3.5
+		soul_cursor.modulate.a = 0.82 + 0.18 * sin(_time * 5.0)
+		var pulse := 0.94 + 0.08 * (sin(_time * 5.0) * 0.5 + 0.5)
+		soul_cursor.scale = Vector2(pulse, pulse)
 
 	if flash_timer > 0.0:
 		flash_timer = maxf(flash_timer - delta, 0.0)
@@ -340,13 +417,19 @@ func _play_entrance() -> void:
 
 # ── Menu state ────────────────────────────────────────────────────────────────
 
+func _on_menu_button_focused(button: Button) -> void:
+	if _focused_menu_button != null and _focused_menu_button != button:
+		_menu_selection_player.play()
+	_focused_menu_button = button
+	_refresh_menu_visuals(true)
+
 func _refresh_menu_visuals(animated: bool = true) -> void:
 	for button in [new_game_button, settings_button]:
 		var active: bool = button.has_focus()
 		var tex_selected := button.get_meta("tex_selected") as TextureRect
 		var label := button.get_meta("label") as Label
-		var gem := button.get_meta("gem") as TextureRect
-		gem.visible = active
+		var soul_cursor := button.get_meta("cursor") as Control
+		soul_cursor.visible = active
 		var target_alpha := 1.0 if active else 0.0
 		var target_color := COLOR_BTN_LIT if active else COLOR_BTN_IDLE
 		var target_scale := Vector2(1.03, 1.03) if active else Vector2.ONE
@@ -360,6 +443,15 @@ func _refresh_menu_visuals(animated: bool = true) -> void:
 			label.add_theme_color_override("font_color", target_color)
 			button.scale = target_scale
 
+func _play_menu_confirmation() -> void:
+	# Keep this one-shot on the SceneTree root so changing scenes cannot cut it off.
+	var player := AudioStreamPlayer.new()
+	player.name = "MenuConfirmPlayer"
+	player.stream = MENU_CONFIRM_SFX
+	get_tree().root.add_child(player)
+	player.finished.connect(player.queue_free)
+	player.play()
+
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel") and settings_overlay.visible:
 		settings_overlay.close_panel()
@@ -370,6 +462,7 @@ func _unhandled_input(event: InputEvent) -> void:
 func _on_new_game_pressed() -> void:
 	if is_loading_new_game:
 		return
+	_play_menu_confirmation()
 	# The world-gacha (reincarnation) scene owns the whole new-game flow now:
 	# candidate fetch, the goddess searching state, world choice, and loading.
 	print("[StartScene] New Game pressed — entering the reincarnation sanctuary")
@@ -379,6 +472,7 @@ func _on_new_game_pressed() -> void:
 func _on_settings_pressed() -> void:
 	if is_loading_new_game:
 		return
+	_play_menu_confirmation()
 	settings_overlay.open_panel()
 
 func _on_settings_panel_closed() -> void:

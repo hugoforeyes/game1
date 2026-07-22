@@ -10,27 +10,37 @@ extends Control
 const ART_DIR := "res://assets/ui/world_gacha_v1/"
 const MENU_ART_DIR := "res://assets/ui/start_menu_v2/"
 const START_SCENE_PATH := "res://scenes/ui/StartScene.tscn"
+const WORLD_SELECTION_SFX := preload("res://assets/audio/sfx/gacha_selection.wav")
+const WORLD_CONFIRM_SFX := preload("res://assets/audio/sfx/gacha_confirm.mp3")
+const GATE_REVEAL_SFX := preload("res://assets/audio/sfx/gate_reveal.wav")
+const TELEPORT_SFX := preload("res://assets/audio/sfx/teleport.wav")
 
 const DOOR_ASPECT := 781.0 / 1279.0    # door_frame.png trim
 const DOOR_HEIGHT := 336.0
 const DOOR_SPACING := 300.0
 const DOOR_TOP_Y := 88.0
 const MIN_SEARCH_SECONDS := 2.4
+const MENU_MUSIC_FADE_SECONDS := 1.45
 
-# Loading-background measurements, in the 1536x1024 source image.  Keeping the
-# geometry in source pixels means the painted gate, its invisible runtime
-# aperture, and the soul route all share the exact same cover transform.
-const LOADING_REFERENCE_SIZE := Vector2(1536.0, 1024.0)
-const LOADING_APERTURE_SOURCE := Rect2(614.0, 231.0, 308.0, 522.0)
+# Loading-background measurements, in the 1536x864 source image (a 16:9 crop of
+# the supplied 1536x1024 art, rows 40..904).  Keeping the geometry in source
+# pixels means the painted gate, its invisible runtime aperture, and the soul
+# route all share the exact same cover transform.  Every Y below is the original
+# calibration minus the 40px top crop.
+const LOADING_REFERENCE_SIZE := Vector2(1536.0, 864.0)
+const LOADING_APERTURE_SOURCE := Rect2(614.0, 191.0, 308.0, 522.0)
 const LOADING_ARCH_SPRING_V := 173.0 / 522.0
+# Traced along the painted golden light-trail on the floor (bottom-left → gate
+# threshold at the aperture-base center 768,713); calibrated on the 16:9 crop.
 const LOADING_ROUTE_SOURCE := [
-	Vector2(316.0, 864.0),
-	Vector2(321.0, 851.0),
-	Vector2(360.0, 827.0),
-	Vector2(445.0, 803.0),
-	Vector2(565.0, 781.0),
-	Vector2(670.0, 764.0),
-	Vector2(768.0, 753.0),
+	Vector2(208.0, 840.0),
+	Vector2(285.0, 812.0),
+	Vector2(370.0, 791.0),
+	Vector2(460.0, 770.0),
+	Vector2(552.0, 752.0),
+	Vector2(648.0, 736.0),
+	Vector2(720.0, 723.0),
+	Vector2(768.0, 713.0),
 ]
 
 const COLOR_TITLE := Color(0.99, 0.88, 0.56, 1.0)
@@ -117,17 +127,20 @@ var _ld_route := Curve2D.new()
 var _ld_reference_scale := 1.0
 var _ld_reference_offset := Vector2.ZERO
 var _ld_soul: Control               # the traveling soul on the loading screen
-var _ld_plate_label: Label          # world name on the plaque
 var _ld_percent: Label
 var _ld_progress := 0.0             # displayed (smoothed) 0..1
 var _ld_target := 0.0               # milestone-driven target
 var _chosen_candidate: Dictionary = {}
 var _intro_fade: ColorRect
+var _world_selection_player: AudioStreamPlayer
+var _world_confirm_player: AudioStreamPlayer
+var _teleport_player: AudioStreamPlayer
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_PASS
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	_build_ui()
+	MusicManager.play_menu_music()
 	_refresh_localized_copy()
 	SettingsManager.language_changed.connect(_on_language_changed)
 	get_viewport().size_changed.connect(_layout)
@@ -142,6 +155,15 @@ func _art(file_name: String, dir: String = ART_DIR) -> Texture2D:
 
 func _build_ui() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
+
+	_world_selection_player = AudioStreamPlayer.new()
+	_world_selection_player.name = "WorldSelectionPlayer"
+	_world_selection_player.stream = WORLD_SELECTION_SFX
+	add_child(_world_selection_player)
+	_teleport_player = AudioStreamPlayer.new()
+	_teleport_player.name = "TeleportPlayer"
+	_teleport_player.stream = TELEPORT_SFX
+	add_child(_teleport_player)
 
 	var backdrop := ColorRect.new()
 	backdrop.color = Color(0.010, 0.010, 0.045, 1.0)
@@ -490,39 +512,16 @@ func _build_loading_overlay() -> void:
 	_ld_soul = _build_soul(false)
 	_loading_overlay.add_child(_ld_soul)
 
-	# Compact bottom HUD keeps every label away from the measured aperture and
-	# preserves the cinematic composition at the native 16:9 viewport.
-	var hud := Panel.new()
-	hud.name = "LoadingHud"
-	hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var hud_style := StyleBoxFlat.new()
-	hud_style.bg_color = Color(0.006, 0.010, 0.028, 0.82)
-	hud_style.border_color = Color(0.86, 0.68, 0.31, 0.34)
-	hud_style.border_width_top = 1
-	hud_style.border_width_left = 1
-	hud_style.corner_radius_top_left = 14
-	hud.add_theme_stylebox_override("panel", hud_style)
-	_loading_overlay.add_child(hud)
-
-	# world nameplate + chapter + status + percent
-	var plate := Control.new()
-	plate.name = "Plate"
-	plate.size = Vector2(264, 36)
-	plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_loading_overlay.add_child(plate)
-	var plate_texture := _make_plate_texture("button_selected.png", plate.size)
-	plate.add_child(plate_texture)
-	_ld_plate_label = _make_caps_label(15, COLOR_NAME_LIT, 2)
-	_ld_plate_label.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_ld_plate_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	plate.add_child(_ld_plate_label)
-
+	# Centered bottom HUD — just the status line and percent (no world nameplate).
+	# Kept for progress bookkeeping but never shown.
 	_loading_chapter = _make_caps_label(12, Color(0.85, 0.73, 0.48, 0.9), 2)
+	_loading_chapter.visible = false
 	_loading_overlay.add_child(_loading_chapter)
 	_loading_status = UiKit.make_label("", 12, UiKit.COLOR_TEXT_DIM)
 	_loading_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_loading_overlay.add_child(_loading_status)
 	_ld_percent = _make_title_label(20, COLOR_TITLE)
+	_ld_percent.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_loading_overlay.add_child(_ld_percent)
 
 func _make_loading_arch_material(uv_scale: Vector2, uv_offset: Vector2) -> ShaderMaterial:
@@ -537,18 +536,10 @@ func _make_loading_arch_material(uv_scale: Vector2, uv_offset: Vector2) -> Shade
 
 func _make_leaf(file_name: String) -> TextureRect:
 	var leaf := TextureRect.new()
-	var source := _art(file_name)
-	# The original leaf PNGs include large transparent margins and a pointed
-	# arch baked for door_frame.png.  Sample the clean rectangular panel body;
-	# the measured ellipse shader now supplies the correct photographed arch.
-	if source != null:
-		var image := source.get_image()
-		if image != null:
-			var panel_region := Rect2i(240, 500, 150, 647) if file_name.contains("left") \
-				else Rect2i(0, 500, 151, 647)
-			leaf.texture = ImageTexture.create_from_image(image.get_region(panel_region))
-		else:
-			leaf.texture = source
+	# door_leaf_*.png are the clean left/right halves of the reference-matched
+	# door (door_v2), already filling their panel edge-to-edge.  Use them whole;
+	# the elliptical arch shader clips each half to the photographed gate opening.
+	leaf.texture = _art(file_name)
 	leaf.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	leaf.stretch_mode = TextureRect.STRETCH_SCALE
 	leaf.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -805,17 +796,11 @@ func _layout() -> void:
 	_ld_leaf_right.position = Vector2(leaf_size.x, 0.0)
 	_ld_leaf_right.pivot_offset = Vector2(leaf_size.x, leaf_size.y * 0.5)
 	_rebuild_loading_route()
-	var hud := _loading_overlay.get_node("LoadingHud") as Control
-	hud.position = Vector2(vp.x - 424.0, vp.y - 64.0)
-	hud.size = Vector2(424.0, 64.0)
-	var plate := _loading_overlay.get_node("Plate") as Control
-	plate.position = Vector2(vp.x - 412.0, vp.y - 58.0)
-	_loading_chapter.size = Vector2(100.0, 18.0)
-	_loading_chapter.position = Vector2(vp.x - 404.0, vp.y - 20.0)
-	_loading_status.size = Vector2(276.0, 18.0)
-	_loading_status.position = Vector2(vp.x - 304.0, vp.y - 20.0)
-	_ld_percent.size = Vector2(112.0, 30.0)
-	_ld_percent.position = Vector2(vp.x - 128.0, vp.y - 53.0)
+	# Centered bottom HUD, stacked below the gate's threshold: status, percent.
+	_loading_status.size = Vector2(vp.x, 18.0)
+	_loading_status.position = Vector2(0.0, vp.y - 78.0)
+	_ld_percent.size = Vector2(vp.x, 30.0)
+	_ld_percent.position = Vector2(0.0, vp.y - 58.0)
 
 func _layout_loading_background(vp: Vector2) -> void:
 	if _ld_background == null or _ld_background.texture == null:
@@ -978,6 +963,11 @@ func _enter_reveal(offered: Array) -> void:
 		land_last = maxf(land_last, land)
 		_launch_seed(door_center, launch, flight, bundle["accent"] as Color)
 		_schedule_reveal_fx(door_center, root.size, bundle["accent"] as Color, land)
+
+		# The gate's arrival chime — one per world, staggered as each materializes.
+		var chime := create_tween()
+		chime.tween_interval(land)
+		chime.tween_callback(_play_gate_reveal_sfx)
 
 		var materialize := create_tween().set_parallel(true)
 		materialize.tween_property(root, "modulate:a", 1.0, 0.28).set_delay(land)
@@ -1156,6 +1146,11 @@ func _confirm_choice() -> void:
 	if _phase != Phase.REVEAL or _doors.is_empty():
 		return
 	_phase = Phase.CONFIRMING
+	_world_selection_player.stop()
+	_play_world_confirmation()
+	# Keep the confirm chime at full presence while the shared menu music gently
+	# leaves before the silent loading overlay appears (~1.57s from this point).
+	MusicManager.fade_out(MENU_MUSIC_FADE_SECONDS)
 	var bundle := _doors[_focus_index] as Dictionary
 	var candidate := bundle["candidate"] as Dictionary
 	var run_id := str(candidate.get("run_id", ""))
@@ -1182,11 +1177,47 @@ func _confirm_choice() -> void:
 	ignite.tween_interval(0.72)
 	ignite.tween_callback(_ignite_door_light.bind(door_center, run_id, accent))
 
+## One gate-arrival chime, on its own short-lived player so overlapping gates
+## (they materialize ~0.14s apart) each ring out fully instead of cutting.
+func _play_gate_reveal_sfx() -> void:
+	var player := AudioStreamPlayer.new()
+	player.stream = GATE_REVEAL_SFX
+	add_child(player)
+	player.finished.connect(player.queue_free)
+	player.play()
+
+func _play_world_confirmation() -> void:
+	# The flow can replace this scene before the clip ends, so own it from root.
+	var player := AudioStreamPlayer.new()
+	player.name = "WorldConfirmPlayer"
+	player.stream = WORLD_CONFIRM_SFX
+	get_tree().root.add_child(player)
+	_world_confirm_player = player
+	player.finished.connect(_on_world_confirmation_finished.bind(player))
+	player.play()
+
+
+func _on_world_confirmation_finished(player: AudioStreamPlayer) -> void:
+	if _world_confirm_player == player:
+		_world_confirm_player = null
+	player.queue_free()
+
+
+func _stop_world_confirmation() -> void:
+	if not is_instance_valid(_world_confirm_player):
+		_world_confirm_player = null
+		return
+	_world_confirm_player.stop()
+	_world_confirm_player.queue_free()
+	_world_confirm_player = null
+
 ## Radiating white light from the chosen door: a warm-white radial burst with a
 ## solid core grows from the door center until its core covers the farthest
 ## screen corner, then the full-screen flash takes over seamlessly and the
 ## loading overlay crossfades in beneath it.
 func _ignite_door_light(center: Vector2, run_id: String, accent: Color) -> void:
+	# The teleport swell begins on the exact frame the white radiance erupts.
+	_teleport_player.play()
 	var vp := get_viewport_rect().size
 	var gradient := Gradient.new()
 	gradient.colors = PackedColorArray([
@@ -1310,6 +1341,12 @@ func _bump_progress(message: String) -> void:
 	_ld_target = target
 
 func _show_loading(initial_status: String) -> void:
+	# Reincarnation preparation is deliberately silent. The chapter track starts
+	# only when ChapterFlow opens the mandatory intro slides.
+	MusicManager.stop()
+	_world_selection_player.stop()
+	_teleport_player.stop()
+	_stop_world_confirmation()
 	# The white flash covers this moment — retire the reveal/searching layers so
 	# nothing ghosts through the loading screen's dim.
 	_reveal_root.hide()
@@ -1318,7 +1355,6 @@ func _show_loading(initial_status: String) -> void:
 	_loading_status.text = _localized_status(initial_status)
 	_ld_progress = 0.0
 	_ld_target = 0.08
-	_refresh_loading_copy()
 	var gate_texture: Texture2D = _chosen_candidate.get("gate_texture")
 	var aperture_aspect := LOADING_APERTURE_SOURCE.size.x / LOADING_APERTURE_SOURCE.size.y
 	_ld_art.texture = _cropped_to_aspect(gate_texture, aperture_aspect) if gate_texture != null else null
@@ -1330,25 +1366,24 @@ func _show_loading(initial_status: String) -> void:
 	_ld_art.modulate = Color(0.55, 0.55, 0.55, 1.0)
 	_ld_glow.modulate.a = 0.16
 	_ld_soul.modulate = Color.WHITE
-	_ld_soul.scale = Vector2(0.76, 0.76)
+	_ld_soul.scale = Vector2(2.0, 2.0)
 	_loading_overlay.show()
-
-func _refresh_loading_copy() -> void:
-	if _chosen_candidate.is_empty():
-		_ld_plate_label.text = ""
-		return
-	_ld_plate_label.text = _candidate_text(_chosen_candidate, "world_name").to_upper()
-	_fit_label_font(_ld_plate_label, 212.0, 15, 11)
 
 func _hide_loading() -> void:
 	_loading_overlay.hide()
+	# A failed load returns to the sanctuary, so restore its shared menu track.
+	MusicManager.play_menu_music()
 
 # ── Focus / input ─────────────────────────────────────────────────────────────
 
 func _set_focus(index: int, animated: bool) -> void:
 	if _phase != Phase.REVEAL or _doors.is_empty():
 		return
-	_focus_index = clampi(index, 0, _doors.size() - 1)
+	var next_focus_index := clampi(index, 0, _doors.size() - 1)
+	var focus_changed := next_focus_index != _focus_index
+	_focus_index = next_focus_index
+	if focus_changed:
+		_world_selection_player.play()
 	for i in range(_doors.size()):
 		var bundle := _doors[i] as Dictionary
 		var focused := i == _focus_index
@@ -1454,7 +1489,7 @@ func _process(delta: float) -> void:
 			var route_offset := _ld_route.get_baked_length() * travel
 			_ld_soul.position = _ld_route.sample_baked(route_offset, true) \
 				+ Vector2(0.0, sin(_time * 1.7) * 1.8)
-		var perspective := lerpf(0.76, 0.24, travel * travel * (3.0 - 2.0 * travel))
+		var perspective := lerpf(2.0, 0.75, travel * travel * (3.0 - 2.0 * travel))
 		_ld_soul.scale = Vector2(perspective, perspective)
 		_ld_soul.modulate.a = 1.0 - 0.65 * smoothstep(0.82, 1.0, travel)
 		var loading_halo := _ld_soul.get_node_or_null("Halo") as TextureRect
@@ -1503,7 +1538,6 @@ func _refresh_localized_copy() -> void:
 	_search_sub.text = SettingsManager.text("gacha.searching_sub")
 	_reveal_title.text = SettingsManager.text("gacha.title")
 	_hint_label.text = SettingsManager.text("gacha.hint")
-	_refresh_loading_copy()
 	if _phase == Phase.ERROR:
 		_search_title.text = SettingsManager.text("gacha.error")
 		_search_sub.text = SettingsManager.text("gacha.error_hint")
